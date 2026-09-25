@@ -68,7 +68,8 @@ src/dzmm_bot/
 | **图片** | 普通账号 Socket + `chatroom.uploadImage` |
 | **小说/故事集分享** | 普通账号 Socket，`content.type=share / shareType=novel` |
 
-→ 小小糯的**骰子私聊**、**公演小说**、以及 `_rollback_last_id` 撤回逻辑，**都必须留在侧车**。
+→ 小小糯的**骰子私聊**与**公演小说**必须留在侧车。
+（**更正**：`_rollback_last_id` 回退的是**入站游标** `last_id`，**不是**撤回消息；小小糯当前**没有**撤回功能。）
 
 ### 约束 2：普通账号有 **1000 字符 / 10 个换行** 限制
 
