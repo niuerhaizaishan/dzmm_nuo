@@ -4351,6 +4351,17 @@ def _log_runtime_status() -> None:
             st.get("backend"), st.get("db") or "-", st.get("counts") or {}))
     except Exception as e:                                 # noqa: BLE001
         log("P7: 状态未知（" + str(e)[:60] + "）")
+    try:
+        import runtime.prompts as _prompts
+        ps = _prompts.stats()
+        # 这行是 P8 第 3 步的自证：prompt 到底来自文件还是代码里的默认值。
+        # 外置最常见的坑是"文件没挂上 → 悄悄退回默认值"，不打印就看不出来。
+        log("P8: prompt dir={} 来自文件={}/{} 磁盘文件={}".format(
+            ps.get("dir"), ps.get("from_file"), ps.get("total"),
+            ps.get("files_on_disk")))
+    except Exception as e:                                 # noqa: BLE001
+        log("P8: 无 runtime.prompts，prompt 全部用代码默认值（"
+            + str(e)[:50] + "）")
 
 
 def _wrap_with_outbox(sender, dry: bool):

@@ -57,6 +57,9 @@ services:
       - ./profiles.json:/app/profiles.json
       - ./profile_scan.json:/app/profile_scan.json
       - ./novels:/app/novels
+      # prompt 外置（P8 第 3 步）：挂上才能"改 prompt 不重新 build"。
+      # 目录为空/没挂上 -> 自动退回代码里的默认值（见 runtime/prompts.py），不会变空。
+      - ./prompts:/app/prompts
       # 出站队列 sqlite（P3）：原先没挂，容器重建即丢（只影响审计留痕）
       - ./data:/app/data
       # 日志持久化（容器重建不清空，历史可追溯）

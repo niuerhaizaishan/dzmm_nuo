@@ -108,7 +108,12 @@ function Get-CodeFiles {
         $rel = Get-RelPath $_.FullName
         if (Test-Excluded $rel) { return $false }
         if ($ExcludeFileNames -contains $_.Name) { return $false }
+        # prompts/*.md is RUNTIME code (Prompt externalisation, P8 step 3).
+        # It must ship; other .md files stay local (they are notes, and the
+        # repo root has plenty of them).
+        $isPrompt = $rel -like 'prompts\*'
         ($_.Name -match '\.(py|sh|yml|yaml|service)$') -or
+        ($isPrompt -and ($_.Name -match '\.md$')) -or
         ($_.Name -in @('Dockerfile', 'requirements.txt'))
     }
 }
@@ -221,7 +226,11 @@ switch ($Action) {
         foreach ($f in Get-CodeFiles) {
             $rel = (Get-RelPath $f.FullName) -replace '\\', '/'
             $localHash = (Get-FileHash $f.FullName -Algorithm MD5).Hash.ToLower()
-            $remoteMd5 = (Invoke-Ssh "md5sum '$RemoteDir/$rel' 2>/dev/null | cut -d' ' -f1").Trim()
+            # Null-safe: a file that is not on the server yet makes md5sum print
+            # nothing, and calling .Trim() on that $null aborted the whole diff.
+            $out = Invoke-Ssh "md5sum '$RemoteDir/$rel' 2>/dev/null | cut -d' ' -f1"
+            $remoteMd5 = ''
+            if ($out) { $remoteMd5 = ("$out").Trim() }
             if ($localHash -eq $remoteMd5) { $mark = '  = ' } else { $mark = '  <>' }
             Write-Host "$mark $rel  local=$localHash  remote=$remoteMd5"
         }
