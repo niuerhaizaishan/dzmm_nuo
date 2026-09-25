@@ -1,7 +1,23 @@
-# DZMM Bot 运维手册
+# DZMM Bot 运维手册（Bot API 迁移开发副本）
 
-> dzmm.ai 平台的自动化聊天机器人，运行在阿里云 Docker 实例 `47.237.152.187`。
-> 本目录是云端 `/opt/dzmm` 的全量镜像（通过 SSH 免密 scp 同步）。
+> 🚧 **本目录是 `dzmm_cloud` 的开发副本 `dzmm_botapi`，用于"会话自动化 → 官方 Bot API"迁移。**
+> 迁移设计见 `docs/BotAPI迁移方案.md`，实施步骤见 `docs/BotAPI实施计划.md`，当前进度见 `docs/BotAPI能力矩阵.md`。
+>
+> **与生产隔离（重要）**
+>
+> | 项 | 生产 | 本副本 |
+> |---|---|---|
+> | 容器 / 镜像 | `dzmm-bot` | `dzmm-botapi` |
+> | 云端目录 | `/opt/dzmm` | `/opt/dzmm-botapi` |
+> | 会话凭据 | 挂载 `.dzmm_token.json` / `.dzmm_login.json` | **刻意不挂载**（两处同时续期会互相踢掉 session） |
+> | 告警通道 | 飞书 + 微信 | **已置空**（防本地调试误推生产） |
+>
+> ⚠️ `.env` 里的 `FEISHU_*` / `WX_*` 在本副本中被置空。**部署为生产前必须从 `../dzmm_cloud/.env` 恢复**，否则线上无告警。
+>
+> **进度**：W1 探针工具包已就绪（`probe/`），等待平台侧的测试 Bot + 公网 HTTPS 回调。
+
+> 原始说明（仍适用于遗留通道部分）：dzmm.ai 平台的自动化聊天机器人，运行在阿里云 Docker 实例 `47.237.152.187`。
+> `dzmm_cloud` 是云端 `/opt/dzmm` 的全量镜像（通过 SSH 免密 scp 同步）。
 
 ## 一、架构
 
