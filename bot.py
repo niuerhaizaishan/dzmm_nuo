@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """DZMM Agent — c5269e31 专用。全异步 + Playwright 常驻复用，低延迟."""
 # build-marker: dsh-link-check-2026-08-31  # dsh 部署链路验证标记（无害，可删）
-import asyncio, json, sys, time, random, hashlib, re, subprocess, unicodedata
+import asyncio, json, os, sys, time, random, hashlib, re, subprocess, unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -4247,9 +4247,46 @@ def _next_interval(cur: float, had_new: bool) -> float:
     return min(cur * 2 * random.uniform(0.9, 1.1), max_i * random.uniform(0.95, 1.05))
 
 
+# ---------------------------------------------------------------- 出站队列（P3）
+# 防御性导入：deploy.ps1 目前只上传顶层 *.py，runtime/ 子包可能不在线上。
+# 缺包时静默退回直发，绝不让 bot 起不来。
+try:
+    from runtime.outbox import OutboxSender, OutboxStore
+    _OUTBOX_IMPORT_OK = True
+except Exception as _e:                                    # noqa: BLE001
+    _OUTBOX_IMPORT_OK = False
+    _OUTBOX_IMPORT_ERR = str(_e)[:120]
+
+
+def _outbox_enabled() -> bool:
+    """DZMM_OUTBOX=off/0/no/false 可退回直发（回滚开关）。"""
+    v = (os.environ.get("DZMM_OUTBOX") or "on").strip().lower()
+    return v not in ("off", "0", "no", "false")
+
+
+def _wrap_with_outbox(sender, dry: bool):
+    """把 Sender 包一层出站队列。任何异常都退回直发，不阻断 bot 启动。"""
+    if dry or not _OUTBOX_IMPORT_OK:
+        if not _OUTBOX_IMPORT_OK:
+            log("outbox: runtime 包不可用，直发（" + _OUTBOX_IMPORT_ERR + "）")
+        return sender
+    if not _outbox_enabled():
+        log("outbox: 已禁用（DZMM_OUTBOX=off），直发")
+        return sender
+    try:
+        db = os.environ.get("DZMM_OUTBOX_DB") or str(ROOT / "data" / "outbox.db")
+        store = OutboxStore(db)
+        wrapped = OutboxSender(sender, store)
+        log("outbox: 已启用 db=" + db + " worker=" + wrapped.worker_id)
+        return wrapped
+    except Exception as e:                                 # noqa: BLE001
+        log("outbox: 初始化失败，退回直发：" + str(e)[:100])
+        return sender
+
+
 async def main_loop(interval: float, dry: bool, once: bool):
     global _ACTIVE_CID, _captcha_active, _captcha_notified
-    sender = Sender()
+    sender = _wrap_with_outbox(Sender(), dry)
     if not dry:
         try:
             await sender.start()
