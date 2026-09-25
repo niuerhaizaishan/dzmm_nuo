@@ -4283,41 +4283,89 @@ def _next_interval(cur: float, had_new: bool) -> float:
     return min(cur * 2 * random.uniform(0.9, 1.1), max_i * random.uniform(0.95, 1.05))
 
 
-# ---------------------------------------------------------------- 出站队列（P3）
-# 防御性导入：deploy.ps1 目前只上传顶层 *.py，runtime/ 子包可能不在线上。
+# ---------------------------------------------------------------- 出站队列（P3）+ Bot 路由（P4）
+# 防御性导入：deploy.ps1 需递归上传才能带上 runtime/ 子包。
 # 缺包时静默退回直发，绝不让 bot 起不来。
+_RUNTIME_IMPORT_ERR = ""                                   # 无条件定义，避免条件定义隐患
 try:
     from runtime.outbox import OutboxSender, OutboxStore
-    _OUTBOX_IMPORT_OK = True
+    from runtime.routing import RoutingSender
+    from runtime.transport_bot import DzmmBotSender
+    _RUNTIME_IMPORT_OK = True
 except Exception as _e:                                    # noqa: BLE001
-    _OUTBOX_IMPORT_OK = False
-    _OUTBOX_IMPORT_ERR = str(_e)[:120]
+    _RUNTIME_IMPORT_OK = False
+    _RUNTIME_IMPORT_ERR = str(_e)[:120]
+
+
+def _truthy_env(name: str, default: str = "off") -> bool:
+    return (os.environ.get(name) or default).strip().lower() in ("on", "1", "yes", "true")
 
 
 def _outbox_enabled() -> bool:
-    """DZMM_OUTBOX=off/0/no/false 可退回直发（回滚开关）。"""
+    """DZMM_OUTBOX=off/0/no/false 可退回直发（回滚开关）。默认开。"""
     v = (os.environ.get("DZMM_OUTBOX") or "on").strip().lower()
     return v not in ("off", "0", "no", "false")
 
 
+def _log_route(event: str, cid: str, detail: str = "") -> None:
+    """路由审计。account 太频繁不记；bot_* 事件都记（切换期观察用）。"""
+    if event == "account":
+        return
+    log("bot路由: {} cid={} {}".format(event, (cid or "")[:8], str(detail)[:80]))
+
+
+def _wrap_with_bot_routing(account):
+    """把装了官方 Bot 的群路由到 Bot。**默认关闭** —— 接线但不上线。
+
+    `DZMM_BOT_ROUTING=on` 才启用；缺 token/cid 或初始化异常一律退回账号。
+    切换时机由人决定，不由代码替人决定。
+    """
+    if not _RUNTIME_IMPORT_OK:
+        return account
+    if not _truthy_env("DZMM_BOT_ROUTING", "off"):
+        log("bot路由: 未启用（DZMM_BOT_ROUTING=off），全部走账号")
+        return account
+    token = (os.environ.get("DZMM_BOT_TOKEN") or "").strip()
+    cid = (os.environ.get("DZMM_BOT_CID") or "").strip()
+    if not token or not cid:
+        log("bot路由: 缺少 DZMM_BOT_TOKEN 或 DZMM_BOT_CID，退回账号")
+        return account
+    try:
+        origin = (os.environ.get("DZMM_BOT_ORIGIN") or ORIGIN).rstrip("/")
+        bot = DzmmBotSender(origin, token, proxy=(os.environ.get("DZMM_PROXY") or None))
+        log("bot路由: 已启用 cid={} origin={}".format(cid[:8], origin))
+        return RoutingSender(account, {cid: bot}, on_route=_log_route)
+    except Exception as e:                                 # noqa: BLE001
+        log("bot路由: 初始化失败，退回账号：" + str(e)[:100])
+        return account
+
+
 def _wrap_with_outbox(sender, dry: bool):
-    """把 Sender 包一层出站队列。任何异常都退回直发，不阻断 bot 启动。"""
-    if dry or not _OUTBOX_IMPORT_OK:
-        if not _OUTBOX_IMPORT_OK:
-            log("outbox: runtime 包不可用，直发（" + _OUTBOX_IMPORT_ERR + "）")
+    """组装发送链：`OutboxSender( RoutingSender( 账号 ) )`。
+
+    出站队列放**最外层** —— 无论最终走 Bot 还是账号，都要落库、串行、可审计。
+    任何一层异常都退回更简单的形态，不阻断 bot 启动。
+    """
+    if dry:
         return sender
+    if not _RUNTIME_IMPORT_OK:
+        log("outbox: runtime 包不可用，直发（" + _RUNTIME_IMPORT_ERR + "）")
+        return sender
+
+    inner = _wrap_with_bot_routing(sender)
+
     if not _outbox_enabled():
         log("outbox: 已禁用（DZMM_OUTBOX=off），直发")
-        return sender
+        return inner
     try:
         db = os.environ.get("DZMM_OUTBOX_DB") or str(ROOT / "data" / "outbox.db")
         store = OutboxStore(db)
-        wrapped = OutboxSender(sender, store)
+        wrapped = OutboxSender(inner, store)
         log("outbox: 已启用 db=" + db + " worker=" + wrapped.worker_id)
         return wrapped
     except Exception as e:                                 # noqa: BLE001
         log("outbox: 初始化失败，退回直发：" + str(e)[:100])
-        return sender
+        return inner
 
 
 async def main_loop(interval: float, dry: bool, once: bool):
