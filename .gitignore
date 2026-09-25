@@ -23,6 +23,8 @@ probe/captured/
 __pycache__/
 *.pyc
 .pytest_cache/
+pytest-cache-files-*/
+tmp*/
 
 # Playwright
 pw_profile/
