@@ -32,7 +32,7 @@ BOT_IMPORT_ANCHOR = "import state_store"      # bot.py 里新 import 插在它�
 
 class Slice:
     def __init__(self, module, header, funcs=(), consts=(), remove_texts=(),
-                 rewrites=(), export_in_bot=True):
+                 rewrites=(), export_in_bot=True, append=False):
         self.module = module
         self.header = header
         self.funcs = list(funcs)
@@ -43,6 +43,10 @@ class Slice:
         # 所以它仍然能证明"除了这些声明过的改写，一个字符都没动"。
         self.rewrites = list(rewrites)
         self.export_in_bot = export_in_bot
+        # append=True：目标是**已有模块**，把函数追加进去（header 只用于校验，
+        # 不会重写文件头）。给"某几个函数天然属于已存在的模块"这种情况用 ——
+        # 为它们单开一个模块反而把边界搞碎。
+        self.append = append
 
 
 SLICES = {}
@@ -96,8 +100,7 @@ BOT_UID = (os.environ.get("DZMM_BOT_ID") or "").strip()
 BOT_NAME = (os.environ.get("DZMM_BOT_NAME") or "小小糯").strip()
 BOT_NAME_SHORT = (os.environ.get("DZMM_BOT_SHORT") or "小小糯").strip()
 
-# 昵称缓存（uid -> 昵称），跨轮次复用
-_name_cache: dict = {}
+# （_name_cache 随搬运一起进来，见本 slice 的 consts）
 
 __all__ = [
     "NUO_UID", "BOT_UID", "BOT_NAME", "BOT_NAME_SHORT",
@@ -184,8 +187,7 @@ SLICES["text"] = Slice(
 import re
 import unicodedata
 
-# 繁→简转换器懒加载；opencc 不可用时为 False（跳过转换，不影响其它归一化）
-_OPENCC_T2S = None
+# （_OPENCC_T2S 随搬运一起进来，见本 slice 的 consts）
 
 __all__ = [
     "_get_opencc", "_normalize_cn", "_simplify", "_strip_parenthesis",
@@ -221,7 +223,7 @@ from runtime.identity import (_load_member_names, _name_cache, get_full_name,
                               get_name, is_self)
 from runtime.text import _normalize_cn, _simplify, _squash
 
-HISTORY_MAX = 5             # 每人保留最近 5 版变化轨迹（姓名/签名/简介一起）
+# （HISTORY_MAX 随搬运一起进来，见本 slice 的 consts）
 
 __all__ = [
     "_extract_msgs", "_get_msgs_by_uid", "_member_profile_text",
@@ -389,6 +391,402 @@ __all__ = [
             "_SIGN_SHORT", "_SIGN_ME_RE", "_SIGN_NAMES"],
     rewrites=[("load_state(", "state_store.load_state("),
               ("save_state(", "state_store.save_state(")],
+)
+
+
+# ---------------------------------------------------------------- 第 6 片：按群状态存取器
+SLICES["group_state"] = Slice(
+    module="runtime/group_state.py",
+    header='''"""按群持久化状态的**薄存取器**（P8 第 4 步从 bot.py 搬出）。
+
+这是 P8 第 1 步那批"读全部群 → 改 → 写全部群"样板的最终归宿：
+它们全部只做一件事 —— 从 `state_store` 按群读/写一个键。
+单独成模块是因为**五个状态机、记忆、上一段动作全都要用**，
+留在 bot.py 里，后面每个切片都得回指它。
+
+⚠️ 骰子局的 `_dice_state`/`_dice_save` 不在这里，而在 `runtime/dice.py`：
+它用的是**顶层键**（`dice_game` 不按 cid 存），不是"按群"的。
+"""
+import time
+
+import state_store
+
+# （MEMORY_MAX 等常量随搬运一起进来，见本 slice 的 consts）
+
+__all__ = [
+    "_get_fasao_state", "_set_fasao_state", "_get_dj_state", "_set_dj_state",
+    "_get_perf_state", "_set_perf_state", "_get_vote_state", "_set_vote_state",
+    "_get_story_state", "_set_story_state",
+    "_get_memory", "_remember", "_set_last_action", "_get_last_action",
+]
+''',
+    funcs=["_get_fasao_state", "_set_fasao_state", "_get_dj_state", "_set_dj_state",
+           "_get_perf_state", "_set_perf_state", "_get_vote_state",
+           "_set_vote_state", "_get_story_state", "_set_story_state",
+           "_get_memory", "_remember", "_set_last_action", "_get_last_action"],
+    consts=["MEMORY_MAX"],
+)
+
+# ---------------------------------------------------------------- 第 7 片：发情值
+SLICES["heat"] = Slice(
+    module="runtime/heat.py",
+    header='''"""发情值（P8 第 4 步从 bot.py 搬出）。
+
+`_add_heat` 是**最热的写路径**（几乎每个玩法得分都要调它），
+所以 P8 第 1 步就先把它改成了单键写入（只写该群那一行）。
+
+11 个 `HEAT_*` 取值与 P8 之前的字面量逐个相同，由
+`tests/test_p8_refactor.py` 钉死 —— 调平衡只改常量，改错了测试会说话。
+搬到这里之后，调用方从 `runtime.heat` 取（bot.py 仍 re-export，老调用点不用改）。
+"""
+import state_store
+
+from runtime.identity import is_self
+
+__all__ = [
+    "_add_heat",
+    "HEAT_SCENE_PICK", "HEAT_SCENE_CONTINUE_TARGET", "HEAT_SCENE_CONTINUE_SENDER",
+    "HEAT_INSULT_TARGET", "HEAT_INSULT_SENDER", "HEAT_FASAO_PICK",
+    "HEAT_DIAOJIAO_ROUND", "HEAT_VOTE_STARTER", "HEAT_VOTE_VOTER",
+    "HEAT_STORY_VOTER", "HEAT_STORY_PROTAGONIST",
+]
+''',
+    funcs=["_add_heat"],
+    consts=["HEAT_SCENE_PICK", "HEAT_SCENE_CONTINUE_TARGET",
+            "HEAT_SCENE_CONTINUE_SENDER", "HEAT_INSULT_TARGET",
+            "HEAT_INSULT_SENDER", "HEAT_FASAO_PICK", "HEAT_DIAOJIAO_ROUND",
+            "HEAT_VOTE_STARTER", "HEAT_VOTE_VOTER", "HEAT_STORY_VOTER",
+            "HEAT_STORY_PROTAGONIST"],
+)
+
+
+# ---------------------------------------------------------------- 第 8 片：记忆与档案变更
+SLICES["memory"] = Slice(
+    module="runtime/memory.py",
+    header='''"""长期记忆 + 档案变更轨迹（P8 第 4 步从 bot.py 搬出）。
+
+两件事放在一起是因为它们是同一条链：
+/记住 写入的记忆要能被 /回忆 找回来（先关键词粗排、再交给 AI 精筛），
+而"人变了"（改名/改签名/改简介）也要留痕，查人时才能拿新旧对比做反差。
+
+`_retrieve_memory` 的两级筛选是刻意的：先用纯本地的词面匹配把候选压到几条，
+再花一次 LLM 调用精筛 —— 直接全量喂 LLM 又慢又贵。
+"""
+import re
+import time
+
+from brains import _call_llm
+from dzmm import get_user
+from profiles import get_profile, load_profiles, upsert_profile
+from runtime import ctx
+from runtime.group_state import _get_memory, _remember
+from runtime.identity import get_full_name
+from runtime.members import HISTORY_MAX, _profile_history
+from runtime.obs import log
+import state_store
+
+__all__ = [
+    "_extract_names", "_extract_keywords", "_fast_rank", "_ai_filter",
+    "_retrieve_memory", "_append_memory_ref", "_extract_remember",
+    "is_remember_cmd", "is_recall_cmd",
+    "_record_history", "_on_rename", "_refresh_profile_latest",
+]
+''',
+    funcs=["_extract_names", "_extract_keywords", "_fast_rank", "_ai_filter",
+           "_retrieve_memory", "_append_memory_ref", "_extract_remember",
+           "is_remember_cmd", "is_recall_cmd",
+           "_record_history", "_on_rename", "_refresh_profile_latest"],
+    consts=["MEMORY_TRIGGERS", "MEMORY_FILTER_PROMPT"],
+    rewrites=[("_ACTIVE_CID", "ctx.get_active_cid()"),
+              ("load_state(", "state_store.load_state("),
+              ("save_state(", "state_store.save_state(")],
+)
+
+
+# ---------------------------------------------------------------- 第 9 片：藏头诗/夸夸诗
+SLICES["poem"] = Slice(
+    module="runtime/poem.py",
+    header='''"""藏头诗与夸夸诗（P8 第 4 步从 bot.py 搬出）。
+
+它是第 4 步里**最后被解锁**的一片：原来卡在 `_retrieve_memory` 与
+`_refresh_profile_latest` 上 —— 这两个属于"记忆与档案变更"那一簇。
+先搬那一簇，这一片才能做到**零回指**，而不是回指 bot.py 假装解耦。
+"""
+import time
+
+from brains import POEM_STYLES, generate_poem, generate_poem_theme
+from dzmm import get_messages_all, get_user
+from profiles import get_profile, load_profiles, upsert_profile
+from runtime import ctx
+from runtime.identity import get_full_name, get_name
+from runtime.members import (_archive_text_from_profile, _find_in_profiles,
+                             _find_user_in_msgs, _get_msgs_by_uid,
+                             _member_profile_text)
+from runtime.memory import _refresh_profile_latest, _retrieve_memory
+from runtime.obs import log
+from runtime.text import _norm_poem
+import state_store
+
+__all__ = [
+    "is_poem_cmd", "poem", "_do_poem", "_poem_text", "_poem_resolve",
+    "_record_poem", "_get_poem_history", "_parse_poem_style",
+]
+''',
+    funcs=["is_poem_cmd", "poem", "_do_poem", "_poem_text", "_poem_resolve",
+           "_record_poem", "_get_poem_history", "_parse_poem_style"],
+    consts=["POEM_STYLE_KEYWORDS"],
+    rewrites=[("_ACTIVE_CID", "ctx.get_active_cid()")],
+)
+
+
+# ------------------------------------------------------- 追加：点名成员提取 -> members
+SLICES["mentioned_members"] = Slice(
+    module="runtime/members.py",
+    header="（追加，不使用）",
+    funcs=["_extract_mentioned_members"],
+    append=True,
+)
+
+
+# ---------------------------------------------------------------- 第 10 片：小说落盘
+SLICES["novel"] = Slice(
+    module="runtime/novel.py",
+    header='''"""公演小说落盘（P8 第 4 步从 bot.py 搬出）。
+
+标题提取 / 文件名生成 / 目录创建。放在公演之前，因为公演结束时要存小说。
+
+`_group_name_cache` 是**可变对象**：`bot.py` 的 `get_group_name` 也用同一个 dict
+（群名 5 分钟缓存），所以搬出来之后两边共享，不需要改 `get_group_name`。
+"""
+import time
+from datetime import datetime
+from pathlib import Path
+
+from dzmm import get_chatroom_name
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# （_group_name_cache 随搬运一起进来，见本 slice 的 consts）
+
+__all__ = ["_extract_novel_title", "_novel_filename", "_novel_save_path"]
+''',
+    funcs=["_extract_novel_title", "_novel_filename", "_novel_save_path"],
+    consts=["_group_name_cache"],
+)
+
+
+# ---------------------------------------------------------------- 第 11 片：投票
+SLICES["vote"] = Slice(
+    module="runtime/vote.py",
+    header='''"""群投票（P8 第 4 步从 bot.py 搬出）。
+
+⚠️ 分派顺序是行为，不是风格：`/投票结束` **同时**命中开始与结束两个判定，
+而结束判定会被"没有进行中的投票"挡掉 → 落到开始判定 →
+**开出一个标题叫"结束"的投票**。这条顺序见 `docs/保全清单.md`，不得重排。
+"""
+import time
+from datetime import datetime, timedelta
+
+from brains import generate_vote_options
+from dzmm import get_messages_all
+from runtime.group_state import _get_vote_state, _set_vote_state
+from runtime.heat import HEAT_VOTE_STARTER, HEAT_VOTE_VOTER, _add_heat
+from runtime.identity import get_name, is_self
+from runtime.members import _extract_mentioned_members
+from runtime.obs import log
+from runtime.text import _dedupe_options, _extract_deadline_seconds, _is_stop_word, _normalize_choice
+import state_store
+
+# （VOTE_DEFAULT_SECONDS 随搬运一起进来，见本 slice 的 consts）
+
+__all__ = [
+    "is_vote_start_cmd", "is_vote_end_cmd", "is_vote_choice_cmd",
+    "_extract_vote_title", "_vote_members_text", "start_vote", "_record_vote",
+    "_finish_vote", "_check_vote", "VOTE_DEFAULT_SECONDS",
+]
+''',
+    funcs=["is_vote_start_cmd", "is_vote_end_cmd", "is_vote_choice_cmd",
+           "_extract_vote_title", "_vote_members_text", "start_vote",
+           "_record_vote", "_finish_vote", "_check_vote"],
+    consts=["VOTE_DEFAULT_SECONDS"],
+)
+
+# ---------------------------------------------------------------- 第 12 片：剧情
+SLICES["story"] = Slice(
+    module="runtime/story.py",
+    header='''"""群剧情接龙（P8 第 4 步从 bot.py 搬出）。
+
+`/剧情结束` **实测**只命中结束判定（`is_story_start_cmd=False`、
+`is_story_end_cmd=True`），**没有**投票/发骚那种"开始与结束同时命中"的重叠。
+`docs/保全清单.md` 登记的重叠只有 `/投票结束`、`/发骚结束`、`/调教结束`。
+
+`_record_story_vote` / `_story_vote_result` 是**剧情与投票共用**的两个函数
+（剧情也用投票选下一步），所以放在这里、由 vote 侧引用 —— 不能两边各留一份。
+"""
+import time
+from datetime import datetime, timedelta
+
+import random
+
+from brains import generate_story_end, generate_story_start, generate_story_step
+from dzmm import get_messages_all
+from runtime.group_state import _get_story_state, _set_story_state
+from runtime.heat import HEAT_STORY_PROTAGONIST, HEAT_STORY_VOTER, _add_heat
+from runtime.identity import get_full_name, is_self
+from runtime.members import _find_in_profiles, _find_user_in_msgs, _random_member_uid
+from runtime.obs import log
+from runtime.text import _is_stop_word, _squash
+import state_store
+
+# （STORY_MAX_ROUND / STORY_VOTE_SECONDS 随搬运一起进来，见本 slice 的 consts）
+
+__all__ = [
+    "is_story_start_cmd", "is_story_end_cmd", "start_story", "_check_story",
+    "_finish_story", "_advance_story", "_record_story_vote",
+    "_story_vote_result", "STORY_MAX_ROUND", "STORY_VOTE_SECONDS",
+]
+''',
+    funcs=["is_story_start_cmd", "is_story_end_cmd", "start_story",
+           "_check_story", "_finish_story", "_advance_story",
+           "_record_story_vote", "_story_vote_result"],
+    consts=["STORY_MAX_ROUND", "STORY_VOTE_SECONDS"],
+)
+
+
+# ---------------------------------------------------------------- 第 13 片：公演
+SLICES["perf"] = Slice(
+    module="runtime/perf.py",
+    header='''"""公演（P8 第 4 步从 bot.py 搬出）。
+
+公演是这一整套里**唯一会用后台任务续跑**的玩法：`_perf_end_bg` 在结束广播之后
+继续生成小说，所以它跨了"主循环结束"这个边界 —— 搬的时候要保证
+后台任务里引用的名字全都还在（这正是迁移工具的静态依赖检查在防的事）。
+"""
+import asyncio
+import random
+import time
+from datetime import datetime, timedelta
+
+from brains import (generate_perf_comment, generate_perf_ending,
+                    generate_perf_enrich, generate_perf_insult,
+                    generate_perf_novel, generate_perf_novel_chunked,
+                    generate_person_summary)
+from dzmm import get_messages_all, get_messages_since, get_user
+from wx_alert import send_weixin
+from runtime import ctx
+from runtime.group_state import _get_perf_state, _set_perf_state
+from runtime.heat import _add_heat
+from runtime.identity import get_full_name, get_name, is_self, self_names
+from runtime.members import (_extract_msgs, _find_uid_by_name,
+                             _find_user_in_msgs, _random_member_uid)
+from runtime.novel import _extract_novel_title, _novel_save_path
+from runtime.obs import log
+from runtime.text import _is_stop_word, _squash
+import state_store
+
+# （OWNER_UID 随搬运一起进来，见本 slice 的 consts）
+
+__all__ = [
+    "_detect_perf_query", "summarize_person_perf", "is_perf_start_cmd",
+    "is_perf_end_cmd", "_get_perf_content", "_get_perf_content_full",
+    "_perf_heat_target", "_perf_m_name", "_perf_send", "_handle_perf_start",
+    "_perf_end_bg", "_handle_perf_end", "_check_perf_interact", "OWNER_UID",
+]
+''',
+    funcs=["_detect_perf_query", "summarize_person_perf", "is_perf_start_cmd",
+           "is_perf_end_cmd", "_get_perf_content", "_get_perf_content_full",
+           "_perf_heat_target", "_perf_m_name", "_perf_send",
+           "_handle_perf_start", "_perf_end_bg", "_handle_perf_end",
+           "_check_perf_interact"],
+    consts=["OWNER_UID"],
+    rewrites=[("_ACTIVE_CID", "ctx.get_active_cid()")],
+)
+
+# ---------------------------------------------------------------- 第 14 片：发骚 / 场景
+SLICES["fasao"] = Slice(
+    module="runtime/fasao.py",
+    header='''"""发骚骰子与场景扮演（P8 第 4 步从 bot.py 搬出）。
+
+`/发骚` **同时**命中发骚与场景两个判定（靠分派顺序区分）、
+`/发骚结束` 在没有进行中的发骚时会**开一场目标叫"结束"的场景** ——
+两条都在 `docs/保全清单.md` 里登记为"现状行为"，顺序不得重排。
+
+场景/体位/附加词库与 XP 偏好表跟着这一片走：只有这里用。
+`_parse_scene_target` 也被调教用（调教要按场景目标开局），所以调教排在它后面。
+"""
+import random
+import time
+from datetime import datetime, timedelta
+
+from brains import (generate_heat_fasao, generate_scene, generate_scene_continue,
+                    generate_scene_end, generate_scene_rewrite)
+from dzmm import get_messages_all
+from profiles import get_profile
+from runtime import ctx
+from runtime.group_state import (_get_fasao_state, _set_fasao_state,
+                                 _set_last_action)
+from runtime.heat import HEAT_FASAO_PICK, HEAT_SCENE_PICK, _add_heat
+from runtime.identity import get_full_name, is_self
+from runtime.members import (_find_in_profiles, _find_user_in_msgs,
+                             _gender_label, _random_member_uid)
+from runtime.memory import _retrieve_memory
+from runtime.obs import log
+from runtime.text import _is_stop_word, _strip_parenthesis
+
+# （FASAO_TIMEOUT / SCENES / POSITIONS / EXTRAS / XP_BIAS 随搬运一起进来，
+#   见本 slice 的 consts —— 在 header 里再写一遍会变成重复定义）
+
+__all__ = [
+    "is_fasao_cmd", "fasao", "is_scene_cmd", "_parse_scene_target", "scene",
+    "is_fasao_end_cmd", "_check_fasao_timeout", "end_fasao", "_pick_combo_by_xp",
+    "FASAO_TIMEOUT", "SCENES", "POSITIONS", "EXTRAS", "XP_BIAS",
+]
+''',
+    funcs=["is_fasao_cmd", "fasao", "is_scene_cmd", "_parse_scene_target", "scene",
+           "is_fasao_end_cmd", "_check_fasao_timeout", "end_fasao",
+           "_pick_combo_by_xp"],
+    consts=["FASAO_TIMEOUT", "SCENES", "POSITIONS", "EXTRAS", "XP_BIAS"],
+    rewrites=[("_ACTIVE_CID", "ctx.get_active_cid()")],
+)
+
+# ---------------------------------------------------------------- 第 15 片：调教
+SLICES["diaojiao"] = Slice(
+    module="runtime/diaojiao.py",
+    header='''"""调教（P8 第 4 步从 bot.py 搬出）。
+
+**这是 5 个状态机里最后一个、也是最少动的一个。**
+
+`is_dj_command_cmd` 刻意**不搬**：它不是调教的一部分，而是**总分发口** ——
+它调用另外 4 个状态机的 20 个谓词函数（`is_fasao_cmd` / `is_perf_start_cmd` /
+`is_vote_start_cmd` / `is_poem_cmd` / `is_recall_cmd` …）。
+把它一起搬出去会制造 31 条回指，只是把文字换个位置，不产生任何解耦。
+"""
+import time
+from datetime import datetime, timedelta
+
+from brains import generate_diaojiao, generate_diaojiao_end
+from profiles import get_profile
+from runtime import ctx
+from runtime.fasao import _parse_scene_target
+from runtime.group_state import _get_dj_state, _set_dj_state
+from runtime.heat import HEAT_DIAOJIAO_ROUND, _add_heat
+from runtime.identity import get_full_name
+from runtime.members import _archive_text_from_profile, _member_profile_text
+from runtime.memory import _retrieve_memory
+from runtime.obs import log
+from runtime.text import _is_stop_word
+
+# （DJ_PARTICIPATE_HINT 随搬运一起进来，见本 slice 的 consts）
+
+__all__ = [
+    "is_dj_end_cmd", "_dj_target_text", "_dj_end_text", "is_diaojiao_cmd",
+    "start_diaojiao", "_check_diaojiao", "DJ_PARTICIPATE_HINT",
+]
+''',
+    funcs=["is_dj_end_cmd", "_dj_target_text", "_dj_end_text", "is_diaojiao_cmd",
+           "start_diaojiao", "_check_diaojiao"],
+    consts=["DJ_PARTICIPATE_HINT"],
+    rewrites=[("_ACTIVE_CID", "ctx.get_active_cid()")],
 )
 
 
@@ -564,8 +962,15 @@ def main(argv) -> int:
 
     # ---------- 闸门 0：存在性 / 防重复执行 ----------
     target = ROOT / sl.module
-    if target.exists() and "P8 第 4 步" in read_raw(target):
-        print("[中止] {} 已存在，看起来已经搬过了".format(sl.module))
+    if target.exists():
+        if not sl.append:
+            print("[中止] {} 已存在（要往里追加请设 append=True）".format(sl.module))
+            return 1
+        if "P8 第 4 步" not in read_raw(target):
+            print("[中止] {} 存在但不是本步生成的，不敢追加".format(sl.module))
+            return 1
+    elif sl.append:
+        print("[中止] append=True 但 {} 不存在".format(sl.module))
         return 1
     for label, want, pool in (("函数", sl.funcs, funcs), ("常量", sl.consts, consts)):
         miss = [x for x in want if x not in pool]
@@ -578,15 +983,29 @@ def main(argv) -> int:
               for f in sl.funcs}
     cblocks = {c: norm_src(apply_rewrites(block_of(lines, consts[c]), sl.rewrites))
                for c in sl.consts}
-    parts = [to_lf(sl.header).rstrip("\n")]
-    for c in sl.consts:
-        parts.append(cblocks[c])
-    for f in sl.funcs:
-        parts.append(blocks[f])
-    module_src = "\n\n\n".join(parts) + "\n"
+    if sl.append:
+        base = to_lf(read_raw(target)).rstrip("\n")
+        module_src = base + "\n\n\n" + "\n\n\n".join(
+            [cblocks[c] for c in sl.consts] + [blocks[f] for f in sl.funcs]) + "\n"
+    else:
+        parts = [to_lf(sl.header).rstrip("\n")]
+        for c in sl.consts:
+            parts.append(cblocks[c])
+        for f in sl.funcs:
+            parts.append(blocks[f])
+        module_src = "\n\n\n".join(parts) + "\n"
 
     # ---------- 闸门 1：新模块里的未解析依赖 ----------
     have = bound_names(module_src) | set(dir(builtins))
+    # 头部自己又定义了一遍 consts 里的常量 = 同一个常量在模块里出现两次。
+    # 文本相同时看不出问题（后者覆盖前者，值也对），但"改了一边不生效"这类坑
+    # 就埋下了 —— `DJ_PARTICIPATE_HINT` 抄漏几个字，正是被审计的逐字比对抓出来的。
+    if sl.consts and not sl.append:
+        dup = sorted(set(sl.consts) & bound_names(sl.header))
+        if dup:
+            print("[中止] header 里已经定义了这些常量，别再列进 consts（会重复定义）: {}"
+                  .format(dup))
+            return 1
     unresolved = {}
     for f in sl.funcs:
         bad = sorted(needed_names(blocks[f]) - have)
@@ -698,7 +1117,8 @@ def main(argv) -> int:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(module_src.encode("utf-8"))
     BOT.write_bytes(bot_src.encode("utf-8"))
-    print("已写入        : {}".format(sl.module))
+    print("已写入        : {}{}".format(
+        sl.module, "（追加）" if sl.append else ""))
 
     # ---------- 闸门 2：搬完逐个比对源码文本 ----------
     if str(ROOT) not in sys.path:

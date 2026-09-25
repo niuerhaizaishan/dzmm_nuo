@@ -17,7 +17,6 @@ from runtime.identity import (_load_member_names, _name_cache, get_full_name,
                               get_name, is_self)
 from runtime.text import _normalize_cn, _simplify, _squash
 
-HISTORY_MAX = 5             # 每人保留最近 5 版变化轨迹（姓名/签名/简介一起）
 
 __all__ = [
     "_extract_msgs", "_get_msgs_by_uid", "_member_profile_text",
@@ -218,3 +217,33 @@ def _profile_history(profile: dict) -> list:
                              "sig": "", "bio": ""})
         profile["history"] = hist
     return hist
+
+
+def _extract_mentioned_members(text: str, cid: str) -> list:
+    """从自然语言提取点名的群成员（按用户顺序），返回简化昵称列表."""
+    cleaned = text
+    for sep in ["、", "，", ","]:
+        cleaned = cleaned.replace(sep, " ")
+    tokens = cleaned.split()
+    profiles = load_profiles()
+    mentioned = []
+    for tok in tokens:
+        if len(tok) < 2:
+            continue
+        uid = None
+        for u, p in profiles.items():
+            name = p.get("name", "")
+            if name == tok or _simplify(name) == tok:
+                uid = u
+                break
+        if not uid:
+            for u, p in profiles.items():
+                simp = _simplify(p.get("name", ""))
+                if simp and len(simp) >= 2 and tok.startswith(simp):
+                    uid = u
+                    break
+        if uid:
+            label = get_name(uid) or _simplify(get_full_name(uid))
+            if label and label not in mentioned:
+                mentioned.append(label)
+    return mentioned

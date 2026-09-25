@@ -65,7 +65,10 @@ for m in ["bot", "dzmm", "token_store", "profiles", "state_store",
           "runtime.routing", "runtime.transport_bot", "runtime.store",
           "runtime.prompts", "runtime.ctx", "runtime.obs", "runtime.identity",
           "runtime.dice", "runtime.text", "runtime.members", "runtime.fortune",
-          "runtime.trend", "runtime.recap", "runtime.sign"]:
+          "runtime.trend", "runtime.recap", "runtime.sign", "runtime.group_state",
+          "runtime.heat", "runtime.memory", "runtime.poem", "runtime.novel",
+          "runtime.vote", "runtime.story", "runtime.perf", "runtime.fasao",
+          "runtime.diaojiao"]:
     try:
         __import__(m)
         check(m, True)
@@ -280,13 +283,23 @@ try:
     import runtime.ctx as _ctx
     import runtime.dice as _dice
     import runtime.fortune as _fort
+    import runtime.diaojiao as _dj
+    import runtime.fasao as _fasao
+    import runtime.group_state as _gstate
+    import runtime.heat as _heat
     import runtime.identity as _ident
     import runtime.members as _memb
+    import runtime.memory as _mem
+    import runtime.novel as _novel
     import runtime.obs as _obs
+    import runtime.perf as _perf
+    import runtime.poem as _poem
     import runtime.recap as _recap
     import runtime.sign as _sign
+    import runtime.story as _story
     import runtime.text as _textm
     import runtime.trend as _trend
+    import runtime.vote as _vote
 
     # a) 搬走的函数必须还是**同一个对象**（不是两边各定义一份）
     _moved = {
@@ -301,6 +314,12 @@ try:
         "week_trend": _trend, "_trend_chong": _trend,
         "recap_absent": _recap, "is_recap_cmd": _recap,
         "_sign_reply": _sign, "_sign_calc": _sign, "_is_flower_grab": _sign,
+        "_get_vote_state": _gstate, "_remember": _gstate, "_add_heat": _heat,
+        "_retrieve_memory": _mem, "is_remember_cmd": _mem,
+        "_norm_poem": _textm, "poem": _poem, "_novel_save_path": _novel,
+        "is_vote_start_cmd": _vote, "is_story_end_cmd": _story,
+        "_handle_perf_start": _perf, "is_fasao_cmd": _fasao,
+        "is_diaojiao_cmd": _dj,
     }
     _bad = [n for n, m in _moved.items() if getattr(bot, n, None) is not getattr(m, n)]
     check("搬走的 {} 个函数仍是同一对象".format(len(_moved)), not _bad, _bad[:4])

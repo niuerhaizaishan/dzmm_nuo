@@ -48,24 +48,9 @@ PUSH_CIDS = [
 _ACTIVE_CID = GROUPS[0]  # 当前处理的群，主循环每次迭代设置；真源在 runtime/ctx.py
 
 
-OWNER_UID = "a56cbd67-3a1e-439a-8beb-d1557dbeff79"  # 糯糯～（群主，可代注册）
-
 # 涩涩骰子词库
-SCENES = ["更衣室", "办公室", "教室", "浴室", "天台", "停车场", "公厕隔间", "深夜公园", "KTV包间", "楼梯间"]
-POSITIONS = ["后入", "骑乘", "69", "口爆", "颜射", "捆绑", "spanking", "道具（跳蛋·振动棒·肛塞）", "项圈牵引", "露出", "强制高潮", "失禁play", "兽耳cos", "师生角色扮演", "主人与宠物", "双飞", "群P"]
-EXTRAS = ["蒙眼", "手铐", "戴项圈", "不许出声", "公开play被围观", "边被玩边打电话", "塞着跳蛋出门", "让她求饶才停"]
 
 # XP → 场景/体位/附加 偏好（发骚骰子按目标 XP 定制）
-XP_BIAS = {
-    "小M": {"pos": ["后入", "口爆", "捆绑", "项圈牵引", "spanking", "失禁play"]},
-    "被支配": {"pos": ["后入", "捆绑", "强制高潮", "项圈牵引"]},
-    "小S": {"pos": ["骑乘", "颜射", "spanking", "强制高潮"]},
-    "支配": {"pos": ["骑乘", "spanking", "强制高潮"]},
-    "露出": {"scene": ["天台", "深夜公园", "停车场", "公厕隔间"], "extra": ["露出", "公开play被围观", "塞着跳蛋出门"]},
-    "口交": {"pos": ["口爆", "69"]},
-    "绳缚": {"pos": ["捆绑"], "extra": ["手铐", "戴项圈"]},
-    "母狗化": {"extra": ["戴项圈", "让她求饶才停"]},
-}
 
 from dzmm import get_messages, get_messages_all, get_messages_since, get_user, get_chatroom_name, get_members, remove_member, get_verified, get_private_cid
 from dice_game import roll_dice, roll_wild, dice_str, count_point, is_legal_raise, judge_open, parse_call
@@ -86,6 +71,17 @@ from runtime.fortune import is_fortune_cmd, fortune, _fortune_calc, _fortune_sco
 from runtime.trend import is_trend_cmd, is_trend_board_cmd, _trend_days, _trend_spark, _trend_chong, _trend_stats, _wd_cn, _md_cn, week_trend, week_trend_board, TREND_CIDS, TREND_DEFAULT_DAYS, TREND_MAX_DAYS  # P8 第 4 步：搬到 runtime/trend.py
 from runtime.recap import is_recap_cmd, _recap_intent, _recap_window, _day0, _msg_ts, _fmt_ts, _recap_mentions, _recap_transcript, recap_absent, RECAP_CIDS, RECAP_MAX_MSGS, RECAP_MAX_HOURS, RECAP_COOLDOWN  # P8 第 4 步：搬到 runtime/recap.py
 from runtime.sign import _room_owner, _is_room_trigger, _is_flower_grab, _sign_from_md, _sign_intent, _sign_find, _sign_parse_birth, _sign_stored, _sign_remember, _sign_calc, _sign_recent, _sign_card, _sign_reply, _ROOM_LAYOUT_WORDS, _ROOM_CONJURE_WORDS, _SIGN_FULL, _SIGN_SHORT, _SIGN_ME_RE, _SIGN_NAMES  # P8 第 4 步：搬到 runtime/sign.py
+from runtime.group_state import _get_fasao_state, _set_fasao_state, _get_dj_state, _set_dj_state, _get_perf_state, _set_perf_state, _get_vote_state, _set_vote_state, _get_story_state, _set_story_state, _get_memory, _remember, _set_last_action, _get_last_action, MEMORY_MAX  # P8 第 4 步：搬到 runtime/group_state.py
+from runtime.heat import _add_heat, HEAT_SCENE_PICK, HEAT_SCENE_CONTINUE_TARGET, HEAT_SCENE_CONTINUE_SENDER, HEAT_INSULT_TARGET, HEAT_INSULT_SENDER, HEAT_FASAO_PICK, HEAT_DIAOJIAO_ROUND, HEAT_VOTE_STARTER, HEAT_VOTE_VOTER, HEAT_STORY_VOTER, HEAT_STORY_PROTAGONIST  # P8 第 4 步：搬到 runtime/heat.py
+from runtime.memory import _extract_names, _extract_keywords, _fast_rank, _ai_filter, _retrieve_memory, _append_memory_ref, _extract_remember, is_remember_cmd, is_recall_cmd, _record_history, _on_rename, _refresh_profile_latest, MEMORY_TRIGGERS, MEMORY_FILTER_PROMPT  # P8 第 4 步：搬到 runtime/memory.py
+from runtime.poem import is_poem_cmd, poem, _do_poem, _poem_text, _poem_resolve, _record_poem, _get_poem_history, _parse_poem_style, POEM_STYLE_KEYWORDS  # P8 第 4 步：搬到 runtime/poem.py
+from runtime.members import _extract_mentioned_members  # P8 第 4 步：搬到 runtime/members.py
+from runtime.novel import _extract_novel_title, _novel_filename, _novel_save_path, _group_name_cache  # P8 第 4 步：搬到 runtime/novel.py
+from runtime.vote import is_vote_start_cmd, is_vote_end_cmd, is_vote_choice_cmd, _extract_vote_title, _vote_members_text, start_vote, _record_vote, _finish_vote, _check_vote, VOTE_DEFAULT_SECONDS  # P8 第 4 步：搬到 runtime/vote.py
+from runtime.story import is_story_start_cmd, is_story_end_cmd, start_story, _check_story, _finish_story, _advance_story, _record_story_vote, _story_vote_result, STORY_MAX_ROUND, STORY_VOTE_SECONDS  # P8 第 4 步：搬到 runtime/story.py
+from runtime.perf import _detect_perf_query, summarize_person_perf, is_perf_start_cmd, is_perf_end_cmd, _get_perf_content, _get_perf_content_full, _perf_heat_target, _perf_m_name, _perf_send, _handle_perf_start, _perf_end_bg, _handle_perf_end, _check_perf_interact, OWNER_UID  # P8 第 4 步：搬到 runtime/perf.py
+from runtime.fasao import is_fasao_cmd, fasao, is_scene_cmd, _parse_scene_target, scene, is_fasao_end_cmd, _check_fasao_timeout, end_fasao, _pick_combo_by_xp, FASAO_TIMEOUT, SCENES, POSITIONS, EXTRAS, XP_BIAS  # P8 第 4 步：搬到 runtime/fasao.py
+from runtime.diaojiao import is_dj_end_cmd, _dj_target_text, _dj_end_text, is_diaojiao_cmd, start_diaojiao, _check_diaojiao, DJ_PARTICIPATE_HINT  # P8 第 4 步：搬到 runtime/diaojiao.py
 
 # DZMM 主站 origin（多线路切换：env_config 从 DZMM_HOST 环境变量读）
 ORIGIN = env_config.get_dzmm_origin()
@@ -107,8 +103,6 @@ CAPTCHA_RECOVERED_NOTICE = ("✅ 验证码风控解除啦～查资料、踢人�
 
 # 页面会话刷新：页面存活超 2 小时强制 reload（兜底防会话老化；token 变化也会触发 reload）
 PAGE_MAX_AGE_SEC = 7200
-
-_group_name_cache = {}  # cid -> {"name":..., "ts":...}
 
 
 # 状态存储：P7 起默认走 SQLite（`state_store`），`DZMM_STORE=json` 可回退。
@@ -538,220 +532,6 @@ def _strip_at(text: str) -> str:
     return text.strip()
 
 
-def _extract_remember(text: str):
-    """从自然语言提取"记住"的内容。返回内容，None=不是记忆请求或无意义内容。"""
-    for kw in MEMORY_TRIGGERS:
-        idx = text.find(kw)
-        if idx >= 0:
-            content = text[idx + len(kw):].strip()
-            # 循环清理前缀残留（语气词/标点/"忆" 等）
-            while True:
-                cleaned = False
-                for p in ["一下", "一下下", "一件事", "这件事", "这个", "要", "我", "给我",
-                          "，", ",", "！", "!", "。", "？", "?", "～", "~", "忆"]:
-                    if content.startswith(p):
-                        content = content[len(p):].strip()
-                        cleaned = True
-                        break
-                if not cleaned:
-                    break
-            content = content.strip(" ，,！!。？?～~·")
-            # 过滤无意义：太短 / 纯标点 / 纯语气词
-            if not content or len(content) < 2:
-                return None
-            if all(c in "，,！!。？?～~ 的了吗呢啊吧呀哦" for c in content):
-                return None
-            return content
-    return None
-
-
-def _get_memory(cid: str) -> list:
-    """读取记忆列表（按群）。"""
-    return state_store.group_get(cid, "memory", []) or []
-
-
-def _remember(cid: str, text: str, from_name: str) -> None:
-    """写入一条记忆（滑动窗口，最多 MEMORY_MAX 条），失败静默。"""
-    try:
-        mem = state_store.group_get(cid, "memory", []) or []
-        mem.append({"text": text, "from": from_name,
-                    "at": time.strftime("%Y-%m-%d %H:%M")})
-        state_store.group_set(cid, "memory", mem[-MEMORY_MAX:])
-    except Exception:
-        pass
-
-
-def is_remember_cmd(cmd: str):
-    """识别记忆指令，返回要记的内容（空串=是但内容空），None=不是。"""
-    for p in ["/记住", "/记一下", "/记", "/别忘了"]:
-        if cmd.startswith(p):
-            return cmd[len(p):].strip()
-    return None
-
-
-def is_recall_cmd(cmd: str) -> bool:
-    """识别回忆指令。"""
-    return any(cmd.startswith(p) for p in ["/回忆", "/记忆", "/记得什么", "/我让你记住"])
-
-
-MEMORY_FILTER_PROMPT = """你是记忆筛选助手。下面给你一个「问题」和若干条「记忆」，判断哪些记忆与问题相关、能帮助回答。
-
-输出规则：
-- 只输出选中的记忆条目原文，每条一行
-- 不加序号、不加解释、不改写原文
-- 最多选 {limit} 条
-- 一条都不相关就输出：无
-"""
-
-
-def _extract_names(text: str) -> list:
-    """从文本提取出现的成员昵称（人名是记忆最强锚点）。"""
-    found = []
-    try:
-        for p in load_profiles().values():
-            n = p.get("name", "")
-            if n and len(n) >= 2 and n in text:
-                found.append(n)
-    except Exception:
-        pass
-    return found
-
-
-def _extract_keywords(text: str) -> list:
-    """提取问题关键词（2-3 字片段/英文单词），用于弱匹配。"""
-    clean = re.sub(r'[@～~！!？?。，,\s]+', ' ', text).strip()
-    words = []
-    for token in re.findall(r'[A-Za-z0-9]+|[\u4e00-\u9fa5]+', clean):
-        if re.match(r'^[A-Za-z0-9]+$', token):
-            if len(token) >= 2 and token not in words:
-                words.append(token)
-        else:
-            for i in range(len(token) - 1):
-                seg = token[i:i + 3]
-                if len(seg) >= 2 and seg not in words:
-                    words.append(seg)
-        if len(words) >= 8:
-            break
-    return words[:8]
-
-
-def _fast_rank(cid: str, question: str, top: int = 20) -> list:
-    """快速粗筛：人名命中(+4) + 关键词命中(+1) 打分，取 top。"""
-    mem = _get_memory(cid)
-    if not mem:
-        return []
-    names = _extract_names(question)
-    kws = _extract_keywords(question)
-    scored = []
-    for m in mem:
-        text = m["text"]
-        s = 0
-        for n in names:
-            if n and n in text:
-                s += 4
-        for kw in kws:
-            if kw and kw in text:
-                s += 1
-        if s > 0:
-            scored.append((s, m))
-    scored.sort(key=lambda x: -x[0])
-    return [m for _, m in scored[:top]]
-
-
-def _ai_filter(question: str, candidates: list, limit: int = 10) -> list:
-    """AI 精筛：从候选里挑与问题相关的（≤limit 条）。"""
-    try:
-        items = "\n".join(f"- {m['text']}" for m in candidates)
-        content = f"问题：{question}\n\n记忆条目：\n{items}"
-        reply = _call_llm(MEMORY_FILTER_PROMPT.format(limit=limit), content, max_tokens=500)
-        picked = []
-        for line in (reply or "").splitlines():
-            line = line.strip().lstrip("-·•* ")
-            if not line or line == "无":
-                continue
-            for m in candidates:
-                if m["text"] == line or (len(line) >= 4 and (line in m["text"] or m["text"] in line)):
-                    if m not in picked:
-                        picked.append(m)
-                    break
-            if len(picked) >= limit:
-                break
-        return picked if picked else candidates[:limit]
-    except Exception:
-        return candidates[:limit]
-
-
-def _retrieve_memory(cid: str, question: str, limit: int = 10) -> list:
-    """两级检索：快速粗筛 → AI 精筛。"""
-    mem = _get_memory(cid)
-    if not mem:
-        return []
-    cand = _fast_rank(cid, question, top=20)
-    if not cand:
-        cand = mem[-limit:]
-    if len(cand) <= limit:
-        return cand
-    return _ai_filter(question, cand, limit)
-
-
-def _append_memory_ref(text: str, cid: str, subject: str, limit: int = 10) -> str:
-    """在文本后追加与 subject 相关的记忆参考。"""
-    try:
-        mem = _retrieve_memory(cid, subject, limit)
-        if mem:
-            ref = "\n".join("· " + m["text"] for m in mem)
-            return text + "\n\n（以下是小小糯记住的与" + subject + "相关的事，回答时可参考，但不要主动提'这是记忆'）\n" + ref
-    except Exception:
-        pass
-    return text
-
-
-def _detect_perf_query(at_msg: str):
-    """检测 @ 消息是否是"谁表现怎么样"类请求，返回 (目标名, 是否今天) 或 None."""
-    triggers = ("表现怎么样", "表现如何", "表现咋样", "最近怎么样", "今天怎么样",
-                "最近表现", "今天表现", "最近咋样", "表现")
-    if not any(t in at_msg for t in triggers):
-        return None
-    today = ("今天" in at_msg) and ("最近" not in at_msg)
-    name = at_msg
-    for n in self_names():
-        if n:
-            name = name.replace("@" + n, "")
-    for t in triggers:
-        name = name.replace(t, "")
-    for w in ("今天", "最近", "的", "了", "啊", "呀", "呢", "吗", "嘛", "么",
-              "怎么样", "如何", "咋样", "表现", "天气", "温度", "下雨", "下雪", "晴", "阴",
-              "？", "?", "！", "!", " ", "～", "~", "，", "。", "、"):
-        name = name.replace(w, "")
-    name = name.strip()
-    if not name:
-        return None
-    return name, today
-
-
-def summarize_person_perf(target_name: str, today: bool) -> str:
-    """按人总结表现（正常小小糯人设，不毒舌）."""
-    msgs = get_messages_all(_ACTIVE_CID, max_count=200)
-    uid, full = _find_user_in_msgs(target_name, msgs)
-    if not uid:
-        return "没找到" + target_name + "这个人哦～"
-    if today:
-        since = datetime.now().strftime("%Y-%m-%d") + "T00:00:00Z"
-        their = _extract_msgs(uid, get_messages_since(_ACTIVE_CID, since, max_count=1000))
-        label = "今天"
-    else:
-        their = _extract_msgs(uid, get_messages_all(_ACTIVE_CID, max_count=300))
-        label = "最近"
-    if not their:
-        return full + label + "都没怎么说话呢～"
-    text = "\n".join(their[-50:])
-    try:
-        summary = generate_person_summary(full, text, label)
-        return (summary or "").strip().replace("🤖", "")
-    except Exception:
-        return full + label + "聊得挺热闹的，不过我这边整理得有点乱～"
-
-
 def get_group_name() -> str:
     """查询群名（5分钟缓存，按群隔离）."""
     cid = _ACTIVE_CID
@@ -809,8 +589,6 @@ JOIN_WARN_NOT_VERIFIED = "⚠️ 新成员「{name}」加入但未通过妹子�
 # 运势磕头道歉文案（2026-09-05 赔罪日追加在运势分析后）
 
 # 记忆功能：触发词 + 上限
-MEMORY_TRIGGERS = ["帮我记住", "帮我记", "记住", "记一下", "记着", "别忘了", "牢记"]
-MEMORY_MAX = 100
 
 INTRO_TEXT = """我是小小糯～19岁，糯糯姐的私人秘书，银白双马尾配红蓝异色瞳，软软糯糯的小奶猫一只～♡
 我会查档案、排骚度、羞辱人、总结群聊，还能陪姐姐们聊天～
@@ -961,27 +739,6 @@ def rank_summary() -> str:
 
 # ============ 发情值增量（P8 集中管理）============
 # 原先 5/8/10/15/20 散落在十余个函数里，改规则要到处找。括号内是原行号，便于对照。
-HEAT_SCENE_PICK = 10              # 发骚骰子：被抽中（2887）
-HEAT_SCENE_CONTINUE_TARGET = 10   # 发骚续写：目标（3028）
-HEAT_SCENE_CONTINUE_SENDER = 10   # 发骚续写：发起人（3030）
-HEAT_INSULT_TARGET = 15           # 被羞辱（3056、4921）
-HEAT_INSULT_SENDER = 10           # 羞辱续写：发起人（3058）
-HEAT_FASAO_PICK = 15              # 被点名发骚 /发情点名（1680）
-HEAT_DIAOJIAO_ROUND = 20          # 被调教一轮（3290）
-HEAT_VOTE_STARTER = 8             # 投票：发起人（3562）
-HEAT_VOTE_VOTER = 5               # 投票：参与者（3565）
-HEAT_STORY_VOTER = 8              # 剧情：投票者（3746）
-HEAT_STORY_PROTAGONIST = 15       # 剧情：主角（3748）
-
-
-def _add_heat(cid: str, uid: str, delta: int) -> None:
-    """给某人加发情值（持久化，排除小小糯）."""
-    if not uid or is_self(uid) or delta <= 0:
-        return
-    # P8：单键读写 —— 只写该群那一行（原先每次都要重写全部群）
-    heat = state_store.group_get(cid, "heat_value", {}) or {}
-    heat[uid] = heat.get(uid, 0) + delta
-    state_store.group_set(cid, "heat_value", heat)
 
 
 def _rollback_last_id(cid: str, old_last_id: str) -> None:
@@ -1172,46 +929,6 @@ async def _publish_memory_report(sender, cid: str, dry: bool):
 DICE_TIMEOUT_SEC = 180  # 3 分钟超时弃权
 
 
-def is_fasao_cmd(cmd: str) -> bool:
-    """识别发骚点名指令."""
-    return cmd.startswith("/发骚") or cmd.startswith("/发情点名")
-
-
-def fasao(cmd: str) -> str:
-    """发骚点名：随机抽或指定某人发骚，加发情值."""
-    cid = _ACTIVE_CID
-    target = ""
-    for prefix in ["/发骚", "/发情点名"]:
-        if cmd.startswith(prefix):
-            target = cmd[len(prefix):].strip().lstrip("@").strip()
-            break
-    uid = None
-    full = ""
-    if target:
-        uid, _p = _find_in_profiles(target)
-        if uid:
-            full = get_full_name(uid)
-        else:
-            msgs = get_messages_all(cid, max_count=200)
-            uid, full = _find_user_in_msgs(target, msgs)
-        if not uid:
-            return "没找到这个人哦～"
-    else:
-        uid = _random_member_uid()
-        full = get_full_name(uid) if uid else ""
-        if not uid:
-            return "群里还没有可以点名的人～"
-    try:
-        text = generate_heat_fasao(full)
-    except Exception:
-        text = ""
-    text = (text or "").strip().replace("🤖", "")
-    if not text:
-        text = full + "，发个骚给主人看看～"
-    _add_heat(cid, uid, HEAT_FASAO_PICK)
-    return "🎯 点中 " + full + "！\n" + text
-
-
 def profile_summary(query: str) -> str:
     """查资料+发言，返回给 AI 的文本."""
     uid, full = find_user_by_name(query)
@@ -1275,206 +992,13 @@ def _record_insult(uid: str, style: str, text: str) -> None:
         pass
 
 
-def _poem_text(uid: str, profile: dict) -> str:
-    """写诗素材：实时简介/签名 + 档案画像 + 近期发言（化入意象，不机械翻译）。"""
-    lines = ["【写诗素材（只作参考，不要机械翻译成诗句）】", "昵称：" + profile.get("name", "")]
-    # 1. 实时简介/签名（DZMM 当前资料，会变，比档案里注册时缓存的旧值准）
-    try:
-        u = get_user(_ACTIVE_CID, uid)
-        if u:
-            if u.get("quirk"):
-                lines.append("签名：" + str(u["quirk"]))
-            if u.get("bio"):
-                lines.append("简介：" + str(u["bio"]))
-            if u.get("gender"):
-                lines.append("性别：" + str(u["gender"]))
-    except Exception:
-        pass
-    # 2. 档案沉淀（XP/画像，实时拿不到，注册时生成）
-    if profile.get("xp"):
-        lines.append("XP性癖：" + "、".join(profile["xp"]))
-    if profile.get("register_summary"):
-        lines.append("画像：" + profile["register_summary"][:150])
-    # 3. 近期发言（找气质/故事点/意象，即兴发挥）
-    try:
-        their = _get_msgs_by_uid(uid)
-        if their:
-            lines.append("【近期发言（找气质/故事点/意象，即兴发挥）】")
-            for t in their[-10:]:
-                lines.append("  - " + t[:50])
-    except Exception:
-        pass
-    # 4. 与该人相关的记忆（可提炼意象）
-    try:
-        mem = _retrieve_memory(_ACTIVE_CID, profile.get("name", ""), 5)
-        if mem:
-            lines.append("【TA 相关的记忆（可提炼意象）】")
-            for m in mem:
-                lines.append("  - " + m["text"])
-    except Exception:
-        pass
-    return "\n".join(lines)
-
-
-def _get_poem_history(uid: str) -> list:
-    """读某人的写诗历史（避免重复用），profile 全局共享。"""
-    p = get_profile(uid)
-    return (p or {}).get("poem_history") or []
-
-
-def _record_poem(uid: str, style: str, text: str) -> None:
-    """记录一次写诗（方向 + 内容），供下次避免重复。保留最近 3 首。没档案也建最小档案记录。"""
-    try:
-        p = get_profile(uid)
-        if not p:
-            p = {"name": get_full_name(uid), "poem_history": []}
-        hist = (p.get("poem_history") or [])[-2:]
-        hist.append({"style": style, "text": (text or "")[:200], "at": time.strftime("%m-%d %H:%M")})
-        p["poem_history"] = hist
-        upsert_profile(uid, p)
-    except Exception:
-        pass
-
-
-def _poem_resolve(query: str):
-    """解析写诗目标（非空 query），返回 (uid, 素材文本, 是否找到)。匹配不到人返回 found=False。"""
-    uid, profile = _find_in_profiles(query)
-    if uid:
-        _refresh_profile_latest(uid, profile)
-        return uid, _poem_text(uid, profile), True
-    msgs = get_messages_all(_ACTIVE_CID)
-    uid2, full = _find_user_in_msgs(query, msgs)
-    if uid2:
-        return uid2, _member_profile_text(uid2, full, msgs), True
-    tokens = query.split()
-    if len(tokens) > 1:
-        for i in range(len(tokens) - 1, 0, -1):
-            name_part = " ".join(tokens[:i])
-            uid3, profile3 = _find_in_profiles(name_part)
-            if uid3:
-                _refresh_profile_latest(uid3, profile3)
-                return uid3, _poem_text(uid3, profile3), True
-    return None, "", False
-
-
 # 指定诗词形式的关键词 → POEM_STYLES 匹配（长词优先）
-POEM_STYLE_KEYWORDS = {
-    "七言绝句": ["七言绝句", "七绝", "绝句", "七言"],
-    "五言绝句": ["五言绝句", "五绝", "五言"],
-    "七言律诗": ["七言律诗", "七律", "律诗"],
-    "五言律诗": ["五言律诗", "五律"],
-    "宋词": ["宋词", "填词", "写词", "如梦令", "菩萨蛮", "浣溪沙", "卜算子", "鹧鸪天",
-             "蝶恋花", "清平乐", "忆江南", "点绛唇", "西江月", "虞美人", "长相思", "采桑子", "醉花阴", "满江红"],
-}
-
-
-def _parse_poem_style(rest: str):
-    """识别指定形式（开头或结尾均可，如"宋词 林九鹓"或"林九鹓 宋词"）。
-    返回 (POEM_STYLES 匹配项 or None, 剩余内容)。"""
-    candidates = []
-    for style_key, kws in POEM_STYLE_KEYWORDS.items():
-        for kw in kws:
-            candidates.append((len(kw), style_key, kw))
-    candidates.sort(key=lambda x: -x[0])  # 长关键词优先
-    # 1. 开头匹配：宋词 林九鹓 / 七言绝句 苏苏
-    for _, style_key, kw in candidates:
-        if rest.startswith(kw):
-            for s in POEM_STYLES:
-                if s.startswith(style_key):
-                    return s, rest[len(kw):].strip()
-    # 2. 结尾匹配：林九鹓 宋词 / 御褚 如梦令（最后一个空格分隔的词是形式）
-    tokens = rest.split()
-    if len(tokens) >= 2:
-        last = tokens[-1]
-        for _, style_key, kw in candidates:
-            if last == kw or last.startswith(kw):
-                for s in POEM_STYLES:
-                    if s.startswith(style_key):
-                        return s, rest[: -len(last)].strip()
-    return None, rest
-
-
-def is_poem_cmd(cmd: str) -> str:
-    """识别写诗指令，返回目标（空串=给自己），None=不是写诗。"""
-    for prefix in ["/写诗", "/作诗", "/赋诗"]:
-        if cmd.startswith(prefix):
-            return cmd[len(prefix):].strip()
-    return None
-
-
-def poem(cmd: str, sender_uid: str) -> str:
-    """写诗：不填=给自己，指定人=给那人，指定主题=按主题写。
-    支持 /写诗 宋词 xxx、/写诗 七言绝句 xxx 指定形式。"""
-    target = is_poem_cmd(cmd)
-    target = target if target is not None else ""
-    # 解析开头指定的形式（如"宋词""七言绝句"）
-    style, target = _parse_poem_style(target)
-    if not target:
-        # 给自己写
-        profile = get_profile(sender_uid)
-        text = _poem_text(sender_uid, profile) if profile else "昵称：" + get_full_name(sender_uid)
-        return _do_poem(sender_uid, text, get_full_name(sender_uid), style)
-    # 尝试匹配人
-    uid, text, found = _poem_resolve(target)
-    if found and uid:
-        return _do_poem(uid, text, get_full_name(uid), style)
-    # 匹配不到人 → 按主题写
-    poem_text, st = generate_poem_theme(target, style=style)
-    poem_text = _norm_poem(poem_text)
-    if not poem_text:
-        return "写诗失败啦，再试一次～"
-    return "📜 关于「" + target + "」的诗词：\n" + poem_text
-
-
-def _do_poem(uid: str, text: str, full: str, style: str = None) -> str:
-    """给人写诗（带历史避让，保证每次不一样）。style 指定形式则用指定。"""
-    history = _get_poem_history(uid)
-    poem_text, st = generate_poem(text, history, style=style)
-    _record_poem(uid, st, poem_text)
-    poem_text = _norm_poem(poem_text)
-    if not poem_text:
-        return "写诗失败啦，再试一次～"
-    return "📜 " + full + " 的诗词：\n" + poem_text
-
-
-def _on_rename(uid: str, old: str, new: str) -> int:
-    """检测到改名：把记忆里的旧昵称替换成新昵称。返回替换条数。"""
-    try:
-        if not old or not new or old == new:
-            return 0
-        state = load_state()
-        n = 0
-        for cid, gs in state.items():
-            if not isinstance(gs, dict):
-                continue
-            for m in (gs.get("memory") or []):
-                if isinstance(m, dict):
-                    t = str(m.get("text") or "")
-                    if old in t:
-                        m["text"] = t.replace(old, new)
-                        n += 1
-        if n:
-            save_state(state)
-        log("🔄 改名 " + old + " → " + new + "，已更新记忆 " + str(n) + " 条")
-        return n
-    except Exception as e:
-        log("改名记忆替换失败: " + str(e)[:60])
-        return 0
 
 
 PROFILE_SCAN_FILE = ROOT / "profile_scan.json"  # 全群档案扫描基线（跨重启保留）
 PROFILE_SCAN_HOUR = 6      # 每天 06:00 后首次循环执行一次
 PROFILE_SCAN_MAX_API = 150  # 单次扫描 get_user 上限（防限流）
 PROFILE_NOTICE_MAX = 10     # 单次扫描最多发几条群通知（防刷屏）
-
-
-def _record_history(profile: dict, old: dict, at: str) -> None:
-    """把「变更前」的姓名/签名/简介一起存档进轨迹（留最近 HISTORY_MAX 版）。"""
-    hist = _profile_history(profile)
-    hist.append({"at": at, "name": str(old.get("name") or ""),
-                 "sig": str(old.get("sig") or ""), "bio": str(old.get("bio") or "")})
-    del hist[:-HISTORY_MAX]
-    profile.pop("name_history", None)
 
 
 def _scan_load() -> dict:
@@ -1575,41 +1099,6 @@ def _daily_profile_scan() -> list:
         + "，变化 " + str(len(notices))
         + ("（首次运行，只建基线）" if first_run else ""))
     return notices[:PROFILE_NOTICE_MAX]
-
-
-def _refresh_profile_latest(uid: str, profile: dict) -> None:
-    """实时刷新某人 name/bio/signature/gender 到本地档案（简介会变，羞辱/查人要用最新找反差）。失败静默。"""
-    try:
-        u = get_user(_ACTIVE_CID, uid)
-        if not u:
-            return
-        changed = False
-        old = {"name": str(profile.get("name") or ""),
-               "sig": str(profile.get("signature") or ""),
-               "bio": str(profile.get("bio") or "")}
-        # 改名检测（对比档案里的旧名）
-        new_name = str(u.get("fullName") or "").strip()
-        if new_name:
-            profile["name"] = new_name
-        if u.get("bio"):
-            profile["bio"] = u["bio"]
-        if u.get("quirk"):
-            profile["signature"] = u["quirk"]
-        if u.get("gender"):
-            profile["gender"] = str(u["gender"])
-        newv = {"name": str(profile.get("name") or ""),
-                "sig": str(profile.get("signature") or ""),
-                "bio": str(profile.get("bio") or "")}
-        if newv != old:
-            # 姓名/签名/简介一起进轨迹，查人时就能看到 TA 以前的样子
-            _record_history(profile, old, time.strftime("%m-%d %H:%M"))
-            if old["name"] and newv["name"] and old["name"] != newv["name"]:
-                _on_rename(uid, old["name"], newv["name"])
-            changed = True
-        if changed:
-            upsert_profile(uid, profile)
-    except Exception:
-        pass
 
 
 def archive_query(query: str):
@@ -1720,11 +1209,6 @@ def is_insult_cmd(cmd: str) -> str:
 
 
 # 本命地支 × 当日地支：六冲 = 明确的凶日信号，六合 = 顺遂（让「凶」真的算得出来）
-
-
-def is_scene_cmd(cmd: str) -> bool:
-    """识别涩涩骰子指令（/发骚 为主，旧的保留作别名）."""
-    return cmd.startswith("/发骚") or cmd.startswith("/体位骰") or cmd.startswith("/场景骰") or cmd.startswith("/涩涩骰")
 
 
 def _maybe_devil_roast(cid: str, msgs: list, group_state: dict) -> str:
@@ -1863,132 +1347,6 @@ def _maybe_devil_cold_roast(cid: str) -> str:
     return roast
 
 
-def _pick_combo_by_xp(xp):
-    """按 XP 偏好 > 随机 选场景/体位/附加（作为背景，自定义玩法是核心）."""
-    bias_scene, bias_pos, bias_extra = [], [], []
-    for tag in (xp or []):
-        b = XP_BIAS.get(tag)
-        if b:
-            bias_scene += b.get("scene", [])
-            bias_pos += b.get("pos", [])
-            bias_extra += b.get("extra", [])
-    scene_name = random.choice(bias_scene or SCENES)
-    pos = random.choice(bias_pos or POSITIONS)
-    extra = random.choice(bias_extra or EXTRAS)
-    return scene_name, pos, extra
-
-
-def _parse_scene_target(target):
-    """解析 /发骚 的 target → (uid, full, keywords)。最长前缀匹配昵称，剩余为关键词."""
-    tokens = target.split()
-    # 档案本地匹配（零 API，可多次尝试）
-    for i in range(len(tokens), 0, -1):
-        name_part = " ".join(tokens[:i])
-        uid, _ = _find_in_profiles(name_part)
-        if uid:
-            return uid, get_full_name(uid), tokens[i:]
-    # 消息里匹配（一次 API）
-    msgs = get_messages_all(_ACTIVE_CID)
-    for i in range(len(tokens), 0, -1):
-        name_part = " ".join(tokens[:i])
-        uid2, full2 = _find_user_in_msgs(name_part, msgs)
-        if uid2:
-            return uid2, full2, tokens[i:]
-    # 匹配不到，整个当昵称（无 uid，纯展示）
-    return None, target, tokens
-
-
-def scene(cmd: str) -> str:
-    """涩涩骰子：生成 人物×场景×体位×附加玩法（支持自定义关键词 + 按 XP 定制）."""
-    target = ""
-    for prefix in ["/发骚", "/体位骰", "/场景骰", "/涩涩骰"]:
-        if cmd.startswith(prefix):
-            target = cmd[len(prefix):].strip()
-            break
-    selected_uid = None
-    full = ""
-    keywords = []
-    if target:
-        selected_uid, full, keywords = _parse_scene_target(target)
-    else:
-        selected_uid = _random_member_uid()
-        full = get_full_name(selected_uid) if selected_uid else "姐姐"
-    if selected_uid:
-        _add_heat(_ACTIVE_CID, selected_uid, HEAT_SCENE_PICK)
-    glabel = _gender_label(selected_uid) if selected_uid else "未知"
-    # 读取目标 XP + 资料（签名/简介/画像，供增加上下文）
-    xp = []
-    profile_ctx = []
-    if selected_uid:
-        p = get_profile(selected_uid)
-        if p:
-            xp = p.get("xp") or []
-            if p.get("signature"):
-                profile_ctx.append("签名：" + str(p["signature"]))
-            if p.get("bio"):
-                profile_ctx.append("简介：" + str(p["bio"])[:150])
-            if p.get("register_summary"):
-                profile_ctx.append("画像：" + str(p["register_summary"])[:150])
-    # 组装：昵称后面只要有内容，整体就是自定义玩法；否则按 XP/随机
-    custom = " ".join(keywords)
-    scene_name, pos, extra = _pick_combo_by_xp(xp)
-    # 生成 prompt 用「去括号」昵称：括号里的签名（如「裳姐姐的骚贱小母狗」）语义太强，
-    # LLM 会把「裳姐姐」当成独立角色引入，导致内容串角色。展示（combo）仍用完整昵称。
-    gen_name = _strip_parenthesis(full)
-    if custom:
-        combo = full + " × 【自定义】" + custom
-        # 自定义：只给主角 + 用户描述，不塞随机场景/体位/附加（只润色不加料）
-        ai_input = "主角：" + gen_name + "（性别：" + glabel + "）\n用户描述（务必据此描写润色，不要增加其他人物/场景/道具/体位）：" + custom
-    else:
-        combo = full + " × " + scene_name + " × " + pos + " × " + extra
-        ai_input = "主角：" + gen_name + "（性别：" + glabel + "）\n场景：" + scene_name + "\n体位：" + pos + "\n附加：" + extra
-    if xp:
-        ai_input += "\n主角XP：" + "、".join(xp)
-    if profile_ctx and not custom:
-        ai_input += "\n主角资料（贴合人设描写，只描写主角本人，不增加其他人物）：\n" + "\n".join(profile_ctx)
-    try:
-        text = generate_scene(ai_input)
-    except Exception:
-        text = ""
-    text = (text or "").strip()
-    # 记录上一段上下文（供 /继续 续写）
-    _set_last_action(_ACTIVE_CID, {
-        "type": "scene",
-        "uid": selected_uid,
-        "full": full,
-        "combo": combo,
-        "output": text,
-    })
-    # 设置发骚状态（active + history），供 /继续 续写和指令屏蔽
-    _set_fasao_state(_ACTIVE_CID, {
-        "active": True,
-        "uid": selected_uid,
-        "full": full,
-        "combo": combo,
-        "history": [text] if text else [],
-        "last_ts": time.time(),
-    })
-    if text:
-        return "🎲 " + combo + "\n" + text
-    return "🎲 " + combo
-
-
-def _set_last_action(cid: str, action: dict) -> None:
-    """记录上一段动作上下文（供 /继续 续写）."""
-    try:
-        state_store.group_set(cid, "last_action", action)
-    except Exception:
-        pass
-
-
-def _get_last_action(cid: str):
-    """读取上一段动作上下文."""
-    try:
-        return state_store.group_get(cid, "last_action")
-    except Exception:
-        return None
-
-
 def is_continue_cmd(cmd: str) -> bool:
     """识别续写指令（继续/续写/接着/再来 等同义词都触发）."""
     c = cmd.strip().lstrip("/").strip()
@@ -2075,53 +1433,6 @@ def continue_last(cid: str, cmd: str = "", sender_uid: str = "") -> str:
 
 # ===== 发骚状态机（多轮互动 + 屏蔽 + 上下文） =====
 
-def _get_fasao_state(cid: str) -> dict:
-    """读取发骚状态."""
-    return state_store.group_get(cid, "fasao", {}) or {}
-
-
-def _set_fasao_state(cid: str, fs: dict) -> None:
-    """写入发骚状态."""
-    state_store.group_set(cid, "fasao", fs)
-
-
-def is_fasao_end_cmd(cmd: str) -> bool:
-    """识别发骚结束：/发骚结束、停止、停下、结束 等."""
-    return cmd.startswith("/发骚结束") or _is_stop_word(cmd)
-
-
-FASAO_TIMEOUT = 15 * 60  # 发骚 active 超过 15 分钟无互动自动结束（防卡死）
-
-
-def _check_fasao_timeout(cid: str):
-    """发骚超时自动结束：active 超过 FASAO_TIMEOUT 自动结束，返回要发的消息或 None。"""
-    fs = _get_fasao_state(cid)
-    if not fs.get("active"):
-        return None
-    last_ts = fs.get("last_ts") or 0
-    if last_ts and time.time() - last_ts > FASAO_TIMEOUT:
-        log("⏱️ [" + cid[:8] + "] 发骚超时自动结束")
-        return end_fasao(cid)
-    return None
-
-
-def end_fasao(cid: str) -> str:
-    """结束发骚，返回收尾小结."""
-    fs = _get_fasao_state(cid)
-    full = fs.get("full", "")
-    history = fs.get("history") or []
-    end_text = ""
-    if history:
-        try:
-            end_text = generate_scene_end(_strip_parenthesis(full), history)
-        except Exception:
-            end_text = ""
-    end_text = (end_text or "").strip()
-    _set_fasao_state(cid, {"active": False})
-    if end_text:
-        return "🎲 发骚结束啦～\n" + end_text
-    return "🎲 发骚结束啦～"
-
 
 def is_rewrite_cmd(cmd: str) -> str:
     """识别重新生成指令：/重写 /重新生成 /重来 /重新写。返回调整方向（空串=无方向），None=不是."""
@@ -2162,23 +1473,6 @@ def rewrite_last(cid: str, cmd: str = "") -> str:
 
 # ===== 调教功能 =====
 
-def _get_dj_state(cid: str) -> dict:
-    """读取调教状态."""
-    return state_store.group_get(cid, "diaojiao", {}) or {}
-
-
-def _set_dj_state(cid: str, dj: dict) -> None:
-    """写入调教状态."""
-    state_store.group_set(cid, "diaojiao", dj)
-
-
-def is_diaojiao_cmd(cmd: str) -> str:
-    """识别 /调教 指令，返回 目标+命令 文本（None 表示不是）."""
-    for prefix in ["/调教", "/调教开始"]:
-        if cmd.startswith(prefix):
-            return cmd[len(prefix):].strip()
-    return None
-
 
 def is_dj_command_cmd(cmd: str) -> str:
     """识别调教命令：/命令 xxx 或 /xxx（直接斜杠，排除已知系统指令）。返回命令文本或 None."""
@@ -2208,118 +1502,10 @@ def is_dj_command_cmd(cmd: str) -> str:
     return body
 
 
-def is_dj_end_cmd(cmd: str) -> bool:
-    """识别调教结束：/调教结束、停止、停下、结束 等."""
-    return cmd.startswith("/调教结束") or _is_stop_word(cmd)
-
-
-def _dj_target_text(uid: str) -> str:
-    """调教目标资料文本（档案优先，零API）."""
-    profile = get_profile(uid)
-    if profile:
-        return _archive_text_from_profile(profile)
-    return _member_profile_text(uid, get_full_name(uid))
-
-
-def _dj_end_text(target_uid: str, dj: dict) -> str:
-    """调教收尾小结文本."""
-    try:
-        text = generate_diaojiao_end(_dj_target_text(target_uid), dj.get("round", 0))
-        return (text or "").strip()
-    except Exception:
-        return ""
-
-
 # 调教参与提醒（每轮命令后附带，群友可 /命令 xxx 或直接 /xxx 参与）
-DJ_PARTICIPATE_HINT = "想参与的姐妹也来玩呀～发 /命令 xxx 或直接 /xxx 都行（加不加「命令」都可以）～30秒没人我就自己继续啦～"
-
-
-def start_diaojiao(cid: str, cmd: str, sender_uid: str) -> str:
-    """发起调教，返回第一轮命令消息."""
-    rest = is_diaojiao_cmd(cmd)
-    if not rest:
-        return "格式：/调教 目标 命令（例如 /调教 糯糯 学狗叫）"
-    target_uid, full, keywords = _parse_scene_target(rest)
-    if not target_uid:
-        return "没找到调教目标哦～换个人试试？"
-    command = " ".join(keywords)
-    if not command:
-        # 没指定命令 → 根据发起人 + 目标 XP 自编
-        sender_xp = (get_profile(sender_uid) or {}).get("xp") or []
-        command = "自编一条命令（结合发起人的性癖：" + ("、".join(sender_xp) if sender_xp else "未知") + "，目标XP见目标资料）"
-    _set_dj_state(cid, {
-        "target_uid": target_uid,
-        "active": True,
-        "phase": "等回应",
-        "round": 1,
-        "last_activity": time.time(),
-    })
-    try:
-        text = generate_diaojiao(_dj_target_text(target_uid), command)
-    except Exception:
-        text = ""
-    text = (text or "").strip()
-    if not text:
-        text = full + "，小小糯命令你：" + command + "～"
-    return "🔗 调教开始！目标：" + full + "～\n" + text + "\n\n" + DJ_PARTICIPATE_HINT
-
-
-def _check_diaojiao(cid: str, pending: list) -> str:
-    """调教状态流转，返回要发的消息（无则 None）."""
-    dj = _get_dj_state(cid)
-    if not dj.get("active"):
-        return None
-    target_uid = dj.get("target_uid")
-    now = time.time()
-    # 5分钟超时结束
-    if now - dj.get("last_activity", now) > 300:
-        end_text = _dj_end_text(target_uid, dj)
-        _set_dj_state(cid, {"active": False})
-        msg = "⏱️ 调教结束啦（5分钟没动静）～"
-        if end_text:
-            msg += "\n" + end_text
-        return msg
-    phase = dj.get("phase")
-    if phase == "等回应":
-        # 检测目标回应（非指令消息）
-        for m in pending:
-            if m.get("sent_by") == target_uid:
-                t = (m.get("content") or {}).get("text", "").strip()
-                if t and not t.startswith("/"):
-                    dj["phase"] = "等命令"
-                    dj["ask_at"] = now
-                    dj["last_activity"] = now
-                    dj["round"] = dj.get("round", 0) + 1
-                    _set_dj_state(cid, dj)
-                    _add_heat(cid, target_uid, HEAT_DIAOJIAO_ROUND)  # 被调教一轮
-                    return "目标回应啦～谁想发下一条命令？发 /命令 xxx 或直接 /xxx 都行（目标自己也能发哦～）30秒没人发我就自己来～"
-        return None
-    if phase == "等命令":
-        # 30秒冷场 → 催一句 + 自编命令
-        if now - dj.get("ask_at", now) > 30:
-            dj["phase"] = "等回应"
-            dj["last_activity"] = now
-            dj["round"] = dj.get("round", 0) + 1
-            _set_dj_state(cid, dj)
-            try:
-                text = generate_diaojiao(_dj_target_text(target_uid), "自编一条新命令")
-            except Exception:
-                text = ""
-            text = (text or "").strip()
-            return "30秒没人发命令呀～那我继续啦～\n" + text + "\n\n" + DJ_PARTICIPATE_HINT
-        return None
-    return None
 
 
 # ===== 公演功能 =====
-
-def is_perf_start_cmd(cmd: str) -> bool:
-    return cmd.startswith("/公演开始")
-
-
-def is_perf_end_cmd(cmd: str) -> bool:
-    """识别公演结束：/公演结束、停止、停下、结束 等."""
-    return cmd.startswith("/公演结束") or _is_stop_word(cmd)
 
 
 def is_review_cmd(cmd: str):
@@ -2333,18 +1519,7 @@ def is_review_cmd(cmd: str):
     return None
 
 
-def _get_perf_state(cid: str) -> dict:
-    """读取公演状态。"""
-    return state_store.group_get(cid, "perf", {}) or {}
-
-
-def _set_perf_state(cid: str, perf: dict) -> None:
-    """写入公演状态。"""
-    state_store.group_set(cid, "perf", perf)
-
-
 # ============ 投票功能（/投票）============
-VOTE_DEFAULT_SECONDS = 2 * 60  # 默认 2 分钟自动结束
 
 # 恶魔吐槽配置（自主毒舌，对事也对人）
 DEVIL_BASE_PROB = 0.03       # 普通闲聊基础概率
@@ -2364,208 +1539,7 @@ DEVIL_COLD_QUIET_HOUR = 8        # 深夜静默：0-8 点不触发冷场吐槽
 DEVIL_HOT_WINDOW = 3 * 60        # 热闹窗口：3 分钟内发言算"同时活跃"
 
 
-def _get_vote_state(cid: str) -> dict:
-    """读取投票状态。"""
-    return state_store.group_get(cid, "vote", {}) or {}
-
-
-def _set_vote_state(cid: str, vote: dict) -> None:
-    """写入投票状态。"""
-    state_store.group_set(cid, "vote", vote)
-
-
-def is_vote_start_cmd(cmd: str) -> bool:
-    return cmd.startswith("/投票")
-
-
-def is_vote_end_cmd(cmd: str) -> bool:
-    return cmd.startswith("/投票结束") or _is_stop_word(cmd)
-
-
-def is_vote_choice_cmd(cmd: str):
-    """识别选择指令（/选 N 或 /N），返回归一化数字或 None. 投票与剧情共用."""
-    c = cmd.strip().lstrip("/").strip()
-    if not c:
-        return None
-    if c.startswith("选"):
-        return _normalize_choice(c[1:].strip())
-    return _normalize_choice(c)
-
-
-def _extract_mentioned_members(text: str, cid: str) -> list:
-    """从自然语言提取点名的群成员（按用户顺序），返回简化昵称列表."""
-    cleaned = text
-    for sep in ["、", "，", ","]:
-        cleaned = cleaned.replace(sep, " ")
-    tokens = cleaned.split()
-    profiles = load_profiles()
-    mentioned = []
-    for tok in tokens:
-        if len(tok) < 2:
-            continue
-        uid = None
-        for u, p in profiles.items():
-            name = p.get("name", "")
-            if name == tok or _simplify(name) == tok:
-                uid = u
-                break
-        if not uid:
-            for u, p in profiles.items():
-                simp = _simplify(p.get("name", ""))
-                if simp and len(simp) >= 2 and tok.startswith(simp):
-                    uid = u
-                    break
-        if uid:
-            label = get_name(uid) or _simplify(get_full_name(uid))
-            if label and label not in mentioned:
-                mentioned.append(label)
-    return mentioned
-
-
-def _extract_vote_title(text: str, mentioned: list) -> str:
-    """去掉点名成员后的剩余文本作为标题（简单清理）."""
-    title = text
-    for name in mentioned:
-        title = title.replace(name, " ")
-    for w in ["、", "，", ",", " ", "？", "?", "！", "!", "呢", "呀", "啊", "嘛", "～", "~"]:
-        title = title.replace(w, "")
-    title = title.strip()
-    return title or "投票"
-
-
-def _vote_members_text(cid: str) -> str:
-    """当前群发言成员名单（供 AI 生成"选人"类选项）."""
-    msgs = get_messages_all(cid, max_count=200)
-    uids = []
-    for m in msgs:
-        uid = m.get("sent_by", "")
-        if uid and not is_self(uid) and uid not in uids:
-            uids.append(uid)
-    names = [get_name(uid) for uid in uids if get_name(uid)]
-    return "、".join(names[:30])
-
-
-def start_vote(cid: str, cmd: str, sender_uid: str) -> str:
-    """发起投票：解析三种方式，返回投票消息."""
-    rest = cmd[len("/投票"):].strip() if cmd.startswith("/投票") else cmd
-    if not rest:
-        return "格式：/投票 主题 | 选项1 | 选项2（或 /投票 主题 让我生成选项，可加 5分钟 定时）"
-    rest, deadline_secs = _extract_deadline_seconds(rest)
-    title = rest
-    options = []
-    if "|" in rest:
-        parts = [p.strip() for p in rest.split("|") if p.strip()]
-        title = parts[0]
-        options = parts[1:]
-    else:
-        mentioned = _extract_mentioned_members(rest, cid)
-        if len(mentioned) >= 2:
-            title = _extract_vote_title(rest, mentioned)
-            options = mentioned
-        else:
-            try:
-                options = generate_vote_options(rest, _vote_members_text(cid))
-            except Exception:
-                options = []
-            if len(options) < 2:
-                return "没想好选项呢，你自己列一下吧：/投票 主题 | 选项1 | 选项2"
-    options = _dedupe_options(options)[:6]
-    if len(options) < 2:
-        return "选项太少啦，至少 2 个哦～格式 /投票 主题 | 选项1 | 选项2"
-    _set_vote_state(cid, {
-        "active": True,
-        "title": title,
-        "options": options,
-        "votes": {},
-        "starter": sender_uid,
-        "deadline": time.time() + (deadline_secs or VOTE_DEFAULT_SECONDS),
-        "last_remind": time.time(),
-    })
-    lines = ["📊 投票：" + title]
-    for i, opt in enumerate(options, 1):
-        lines.append("【" + str(i) + "】" + opt)
-    if deadline_secs:
-        if deadline_secs >= 60:
-            footer = "（发 /选 X 或 /X 投票（X=序号），可改票，" + str(deadline_secs // 60) + "分钟倒计时～）"
-        else:
-            footer = "（发 /选 X 或 /X 投票（X=序号），可改票，" + str(deadline_secs) + "秒倒计时～）"
-    else:
-        footer = "（发 /选 X 或 /X 投票（X=序号），可改票，2分钟倒计时，/投票结束 可提前结束～）"
-    lines.append(footer)
-    return "\n".join(lines)
-
-
-def _record_vote(cid: str, uid: str, choice: str) -> None:
-    """记录投票（以最后一次为准），静默不回复."""
-    vote = _get_vote_state(cid)
-    if not vote.get("active"):
-        return
-    votes = vote.get("votes") or {}
-    votes[uid] = choice
-    vote["votes"] = votes
-    _set_vote_state(cid, vote)
-
-
-def _finish_vote(cid: str) -> str:
-    """结束投票：统计 + 结算加分 + 清空，返回结果消息."""
-    vote = _get_vote_state(cid)
-    if not vote.get("active"):
-        return ""
-    title = vote.get("title", "投票")
-    options = vote.get("options") or []
-    votes = vote.get("votes") or {}
-    counts = {}
-    for v in votes.values():
-        counts[v] = counts.get(v, 0) + 1
-    total = len(votes)
-    lines = ["📊 投票结果：" + title]
-    for i, opt in enumerate(options, 1):
-        key = str(i)
-        n = counts.get(key, 0)
-        pct = (n * 100 // total) if total else 0
-        voters = [get_name(uid) for uid, v in votes.items() if v == key]
-        voter_str = "、".join([x for x in voters if x]) if voters else "无"
-        lines.append("【" + str(i) + "】" + opt + "　" + str(n) + "票(" + str(pct) + "%)　" + voter_str)
-    starter = vote.get("starter", "")
-    if starter and not is_self(starter):
-        _add_heat(cid, starter, HEAT_VOTE_STARTER)
-    for uid in votes.keys():
-        if uid and not is_self(uid) and uid != starter:
-            _add_heat(cid, uid, HEAT_VOTE_VOTER)
-    _set_vote_state(cid, {})
-    lines.append("🎉 结算：发起人 +8，投票的人各 +5")
-    return "\n".join(lines)
-
-
-def _check_vote(cid: str) -> str:
-    """投票定时检查：每 30 秒提醒剩余时间，截止到 → 自动结束."""
-    vote = _get_vote_state(cid)
-    if not vote.get("active"):
-        return ""
-    now = time.time()
-    remaining = vote.get("deadline", 0) - now
-    if remaining <= 0:
-        return _finish_vote(cid)
-    if now - vote.get("last_remind", 0) >= 30:
-        vote["last_remind"] = now
-        _set_vote_state(cid, vote)
-        return "⏰ 还有 " + str(int(remaining)) + " 秒，想投的快 /选 X 或 /X 哦～"
-    return ""
-
-
 # ============ 剧情游戏（/剧情）============
-STORY_MAX_ROUND = 6
-STORY_VOTE_SECONDS = 60
-
-
-def _get_story_state(cid: str) -> dict:
-    """读取剧情状态。"""
-    return state_store.group_get(cid, "story", {}) or {}
-
-
-def _set_story_state(cid: str, story: dict) -> None:
-    """写入剧情状态。"""
-    state_store.group_set(cid, "story", story)
 
 
 def _active_play_hint(cid: str) -> str:
@@ -2579,324 +1553,6 @@ def _active_play_hint(cid: str) -> str:
     if _get_story_state(cid).get("active"):
         return "🎬 剧情进行中哦～暂无法响应其他指令，想投票发 /选 X，想结束发 /剧情结束～"
     return None
-
-
-def is_story_start_cmd(cmd: str) -> bool:
-    return cmd.startswith("/剧情开始") or cmd.strip() == "/剧情"
-
-
-def is_story_end_cmd(cmd: str) -> bool:
-    return cmd.startswith("/剧情结束") or _is_stop_word(cmd)
-
-
-def start_story(cid: str, cmd: str, sender_uid: str) -> str:
-    """发起剧情游戏：解析主角+自定义剧情，生成开局，设置状态，返回开局消息."""
-    rest = ""
-    if cmd.startswith("/剧情开始"):
-        rest = cmd[len("/剧情开始"):].strip()
-    protagonist_uid = None
-    protagonist = ""
-    custom = ""
-    if rest:
-        tokens = rest.split()
-        # 档案本地匹配（零 API，可多次尝试）
-        for i in range(len(tokens), 0, -1):
-            name_part = " ".join(tokens[:i])
-            uid, _ = _find_in_profiles(name_part)
-            if uid and not is_self(uid):
-                protagonist_uid = uid
-                protagonist = get_full_name(uid)
-                custom = " ".join(tokens[i:])
-                break
-        # 消息里匹配（一次 API）
-        if not protagonist_uid:
-            msgs = get_messages_all(cid, max_count=200)
-            for i in range(len(tokens), 0, -1):
-                name_part = " ".join(tokens[:i])
-                uid2, full2 = _find_user_in_msgs(name_part, msgs)
-                if uid2 and not is_self(uid2):
-                    protagonist_uid = uid2
-                    protagonist = full2
-                    custom = " ".join(tokens[i:])
-                    break
-        # 匹配不到 → 整个当自定义剧情，主角随机
-        if not protagonist_uid:
-            custom = rest
-    # 未指定主角 → 随机抽一个（排除发起者）
-    if not protagonist_uid:
-        protagonist_uid = _random_member_uid(exclude={sender_uid})
-        protagonist = get_full_name(protagonist_uid) if protagonist_uid else ""
-    if not protagonist_uid:
-        return "群里还没有可参与的人呢，先聊几句再来开剧情～"
-    opening = generate_story_start(protagonist, custom)
-    opening = (opening or "").strip()
-    _set_story_state(cid, {
-        "active": True,
-        "phase": "等投票",
-        "round": 1,
-        "max_round": STORY_MAX_ROUND,
-        "protagonist_uid": protagonist_uid,
-        "protagonist": protagonist,
-        "custom": custom,
-        "votes": {},
-        "vote_deadline": time.time() + STORY_VOTE_SECONDS,
-        "remind_30": False,
-        "remind_10": False,
-        "history": [opening],
-    })
-    header = "🎬 剧情开始！女主：" + protagonist
-    footer = "（" + str(STORY_VOTE_SECONDS) + "秒内 /选 1/2/3 或 /1/2/3 投票，可改票～）"
-    return header + "\n" + opening + "\n" + footer
-
-
-def _record_story_vote(cid: str, uid: str, choice: str) -> None:
-    """记录投票（以最后一次为准），静默不回复."""
-    story = _get_story_state(cid)
-    if not story.get("active"):
-        return
-    votes = story.get("votes") or {}
-    votes[uid] = choice
-    story["votes"] = votes
-    _set_story_state(cid, story)
-
-
-def _story_vote_result(cid: str) -> str:
-    """统计投票，返回本轮选中选项(1/2/3)。平票随机、无人投随机兜底."""
-    story = _get_story_state(cid)
-    votes = story.get("votes") or {}
-    if not votes:
-        return random.choice(["1", "2", "3"])
-    counts = {}
-    for v in votes.values():
-        key = "1" if v in ("1", "A") else ("2" if v in ("2", "B") else "3")
-        counts[key] = counts.get(key, 0) + 1
-    max_n = max(counts.values())
-    top = [k for k, n in counts.items() if n == max_n]
-    return random.choice(top)
-
-
-def _check_story(cid: str) -> str:
-    """剧情状态流转：提醒投票 / 推进剧情 / 结局。返回要发送的文本（空=无需发送）."""
-    story = _get_story_state(cid)
-    if not story.get("active") or story.get("phase") != "等投票":
-        return ""
-    now = time.time()
-    remaining = story.get("vote_deadline", 0) - now
-    if 10 < remaining <= 30 and not story.get("remind_30"):
-        story["remind_30"] = True
-        _set_story_state(cid, story)
-        return "⏰ 还有 30 秒，想投的快 /选 1/2/3 哦～"
-    if 0 < remaining <= 10 and not story.get("remind_10"):
-        story["remind_10"] = True
-        _set_story_state(cid, story)
-        return "⏰ 还有 10 秒，最后机会啦～"
-    if remaining <= 0:
-        return _advance_story(cid)
-    return ""
-
-
-def _finish_story(cid: str) -> str:
-    """生成结局 + 结算 + 清空状态，返回结局消息."""
-    story = _get_story_state(cid)
-    if not story.get("active"):
-        return ""
-    history = story.get("history") or []
-    history_text = "\n\n".join(history) if history else ""
-    ending = generate_story_end(history_text)
-    ending = (ending or "").strip()
-    votes = story.get("votes") or {}
-    protagonist_uid = story.get("protagonist_uid", "")
-    protagonist = story.get("protagonist", "")
-    for uid in votes.keys():
-        if uid and not is_self(uid):
-            _add_heat(cid, uid, HEAT_STORY_VOTER)
-    if protagonist_uid and not is_self(protagonist_uid):
-        _add_heat(cid, protagonist_uid, HEAT_STORY_PROTAGONIST)
-    _set_story_state(cid, {})
-    lines = ["🎬 剧情结束！女主：" + protagonist]
-    if ending:
-        lines.append(ending)
-    if votes:
-        lines.append("🎉 结算：参与投票的各 +8，女主 +15")
-    return "\n".join(lines)
-
-
-def _advance_story(cid: str) -> str:
-    """推进剧情：统计投票，生成下一段或结局。返回要发送的文本."""
-    story = _get_story_state(cid)
-    if not story.get("active"):
-        return ""
-    round_no = story.get("round", 1)
-    max_round = story.get("max_round", STORY_MAX_ROUND)
-    history = story.get("history") or []
-    choice = _story_vote_result(cid)
-    choice_label = "选项" + choice
-    history_text = "\n\n".join(history) if history else ""
-    if round_no >= max_round:
-        return _finish_story(cid)
-    # 推进：生成下一段（结尾必须带【1】【2】【3】选项，缺了就重试）
-    next_part = generate_story_step(history_text, choice_label)
-    next_part = (next_part or "").strip()
-    for _ in range(2):
-        if "【1】" in next_part and "【2】" in next_part and "【3】" in next_part:
-            break
-        retry = generate_story_step(history_text, choice_label)
-        retry = (retry or "").strip()
-        if retry:
-            next_part = retry
-    story["history"] = history + [next_part]
-    story["round"] = round_no + 1
-    story["votes"] = {}
-    story["vote_deadline"] = time.time() + STORY_VOTE_SECONDS
-    story["remind_30"] = False
-    story["remind_10"] = False
-    _set_story_state(cid, story)
-    footer = "（" + str(STORY_VOTE_SECONDS) + "秒内 /选 1/2/3 或 /1/2/3 投票，可改票～）"
-    return next_part + "\n" + footer
-
-
-def _get_perf_content(cid: str, start_id: str) -> str:
-    """获取公演内容（旧→新）：从 /公演开始 之后到 /公演结束，只保留用户原始对话，跳过指令与 bot 消息."""
-    msgs = get_messages_all(cid, max_count=1000)  # 旧→新
-    lines = []
-    start_i = 0
-    for i, m in enumerate(msgs):
-        if m.get("message_id") == start_id:
-            start_i = i  # 从 /公演开始 本身开始（不回溯预热）
-            break
-    for m in msgs[start_i:]:
-        uid = m.get("sent_by", "")
-        if is_self(uid):
-            continue  # 跳过 bot 消息（小小糯的丰富/总结），只保留用户原始对话
-        text = (m.get("content") or {}).get("text", "").strip()
-        if not text or "加入了群聊" in text:
-            continue
-        if text.startswith("/"):
-            if text.startswith("/公演结束"):
-                break  # 到公演结束停止，不纳入结束后闲聊
-            continue  # 跳过指令（/公演开始、/继续、/命令 等）
-        lines.append(get_name(uid) + ": " + text)
-    return "\n".join(lines)
-
-
-def _get_perf_content_full(cid: str, start_id: str) -> str:
-    """获取公演完整时间线（旧→新）：用户原始对话 + 小小糯丰富（标记【小小糯参考】），供小说择优整合."""
-    msgs = get_messages_all(cid, max_count=1000)
-    lines = []
-    start_i = 0
-    for i, m in enumerate(msgs):
-        if m.get("message_id") == start_id:
-            start_i = i
-            break
-    for m in msgs[start_i:]:
-        uid = m.get("sent_by", "")
-        text = (m.get("content") or {}).get("text", "").strip()
-        if not text or "加入了群聊" in text:
-            continue
-        if is_self(uid):
-            # 小小糯（bot）：去掉 🤖，排除非剧情（开场/排行/午安），合并多行为单行
-            t = text.replace("🤖", "").strip()
-            if any(kw in t for kw in ("🎬", "🔥", "排行", "午安", "公演开始")):
-                continue
-            if len(t) < 30:
-                continue
-            t = " ".join(t.split())  # 合并内部换行为单行，避免被当成多条对话
-            lines.append("【小小糯参考】" + t)
-            continue
-        if text.startswith("/"):
-            if text.startswith("/公演结束"):
-                break
-            continue
-        lines.append(get_name(uid) + ": " + text)
-    return "\n".join(lines)
-
-
-def _perf_heat_target(cid: str) -> str:
-    """识别公演里的被调教者（M方），返回 uid 或空."""
-    perf = _get_perf_state(cid)
-    content = _get_perf_content(cid, perf.get("start_id", ""))
-    if not content:
-        return ""
-    # M方特征词（第一人称自我发情/认主/求饶，区别于S方的第二人称命令羞辱）
-    m_kws = ["我发情", "我想要", "我湿", "我是", "我在", "汪汪", "求", "上头",
-             "认主", "饶", "迫不及待", "干自己"]
-    scores = {}
-    for line in content.split("\n"):
-        if ":" not in line:
-            continue
-        name = line.split(":", 1)[0].strip()
-        text = line.split(":", 1)[1]
-        hit = sum(1 for kw in m_kws if kw in text)
-        if hit:
-            scores[name] = scores.get(name, 0) + hit
-    if not scores:
-        return ""
-    # 命中最多者 = M方；跳过糯糯（主持）和小小糯
-    for name, _ in sorted(scores.items(), key=lambda kv: -kv[1]):
-        uid = _find_uid_by_name(name)
-        if uid and not is_self(uid) and uid != OWNER_UID:
-            return uid
-    return ""
-
-
-def _perf_m_name(content: str) -> str:
-    """从公演内容识别被调教方（M）的昵称（基于第一人称发情/求饶特征词，不拉消息）."""
-    m_kws = ["我发情", "我想要", "我湿", "我是", "我在", "汪汪", "求", "上头",
-             "认主", "饶", "迫不及待", "干自己"]
-    scores = {}
-    for line in content.split("\n"):
-        if ":" not in line:
-            continue
-        name = line.split(":", 1)[0].strip()
-        text = line.split(":", 1)[1]
-        hit = sum(1 for kw in m_kws if kw in text)
-        if hit:
-            scores[name] = scores.get(name, 0) + hit
-    if not scores:
-        return ""
-    return sorted(scores.items(), key=lambda kv: -kv[1])[0][0]
-
-
-def _extract_novel_title(novel: str) -> str:
-    """提取小说标题（第一个 # 行）."""
-    for line in novel.split("\n"):
-        line = line.strip()
-        if line.startswith("# "):
-            return line[2:].strip()
-    return "公演小说"
-
-
-def _novel_filename(novel: str) -> str:
-    """生成小说文件名：标题 + 生成时间."""
-    title = _extract_novel_title(novel)
-    for ch in '/\\:*?"<>|':
-        title = title.replace(ch, "")
-    title = title.strip() or "公演小说"
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return title + "_" + ts + ".md"
-
-
-def _novel_save_path(cid: str, novel: str) -> str:
-    """返回小说完整保存路径（novels/<群名>/<标题>_<时间>.md），自动建目录."""
-    fname = _novel_filename(novel)
-    gname = ""
-    cache = _group_name_cache.get(cid, {"name": "", "ts": 0.0})
-    if time.time() - cache["ts"] < 300 and cache["name"]:
-        gname = cache["name"]
-    else:
-        try:
-            gname = get_chatroom_name(cid) or ""
-        except Exception:
-            gname = ""
-        cache["name"] = gname
-        cache["ts"] = time.time()
-        _group_name_cache[cid] = cache
-    for ch in '/\\:*?"<>|':
-        gname = gname.replace(ch, "")
-    gname = gname.strip() or cid[:8]
-    d = ROOT / "novels" / gname
-    d.mkdir(parents=True, exist_ok=True)
-    return str(d / fname)
 
 
 def split_novel(text: str, max_lines: int = 10, max_bytes: int = 1000):
@@ -2984,30 +1640,6 @@ def summarize_chat(cmd: str) -> str:
 
 # ===== 公演 handler =====
 
-async def _perf_send(sender, text: str, cid: str, dry: bool):
-    """发送公演消息（带 🤖 前缀）."""
-    text = (text or "").strip()
-    if not text:
-        return
-    if dry:
-        log("[dry] " + text[:50])
-        return
-    ok = await sender.send("🤖 " + text, cid)
-    log("✅" if ok else "❌")
-
-
-async def _handle_perf_start(sender, cid: str, start_id: str, dry: bool):
-    perf = {
-        "active": True,
-        "start_id": start_id,
-        "last_interact_id": start_id,
-        "last_interact_ts": time.time(),
-        "interact_seq": 0,
-        "review_status": "none",
-    }
-    _set_perf_state(cid, perf)
-    await _perf_send(sender, "🎬 公演开始啦～姐姐们请开始表演，小小糯会实时丰富剧情、点评、羞辱哦～（结束发 /公演结束）", cid, dry)
-
 
 async def _scheduled_pushes(sender, dry: bool) -> None:
     """定时问候（早/中/晚）+ 记忆汇报：用主 sender 发（页面常驻，秒发）。
@@ -3067,72 +1699,6 @@ async def _scheduled_pushes(sender, dry: bool) -> None:
                 save_state(st)
 
 
-async def _perf_end_bg(sender, cid: str, dry: bool) -> None:
-    """后台跑公演收尾 + 小说生成（不堵主循环），异常只记日志."""
-    try:
-        await _handle_perf_end(sender, cid, dry)
-        log("🎬 [" + cid[:8] + "] 公演收尾（后台）完成")
-    except Exception as e:
-        log("🎬 [" + cid[:8] + "] 公演收尾（后台）异常: " + str(e)[:100])
-
-
-async def _handle_perf_end(sender, cid: str, dry: bool):
-    perf = _get_perf_state(cid)
-    start_id = perf.get("start_id", "")
-    content = await asyncio.to_thread(_get_perf_content, cid, start_id)
-    if not content:
-        perf["active"] = False
-        _set_perf_state(cid, perf)
-        await _perf_send(sender, "公演内容为空，没法生成小说啦～", cid, dry)
-        return
-
-    # 1. 点评整个公演
-    ending = await asyncio.to_thread(generate_perf_ending, content)
-    await _perf_send(sender, "🎬 公演结束！小小糯点评：\n" + ending, cid, dry)
-
-    # 1.5 等待参与者补充收尾（20秒，避免漏掉公演结束后的补充台词）
-    await _perf_send(sender, "📝 想补充收尾的姐妹还有 20 秒哦～20 秒后我开始生成小说～", cid, dry)
-    await asyncio.sleep(20)
-    content = await asyncio.to_thread(_get_perf_content, cid, start_id)
-
-    # 2. 提示生成中
-    await _perf_send(sender, "📝 小说正在生成中，等糯糯姐审核后发送哦～", cid, dry)
-
-    # 3. 生成小说（带角色标注，帮助 AI 识别 M 方）
-    m_name = await asyncio.to_thread(_perf_m_name, content)
-    novel_content = content
-    if m_name:
-        novel_content = "【被调教方（M）】：" + m_name + "\n\n" + content
-    try:
-        novel = (await asyncio.to_thread(generate_perf_novel_chunked, novel_content)).strip().replace("🤖", "")
-    except Exception:
-        novel = ""
-    if not novel:
-        perf["active"] = False
-        _set_perf_state(cid, perf)
-        await _perf_send(sender, "小说生成失败了，可以重新 /公演结束 再试哦～", cid, dry)
-        return
-
-    # 4. 保存
-    path = _novel_save_path(cid, novel)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(novel)
-
-    perf.update({
-        "active": False,
-        "novel_path": path,
-        "novel_title": _extract_novel_title(novel),
-        "review_status": "pending",
-        "review_notified_ts": time.time(),
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    })
-    _set_perf_state(cid, perf)
-    await _perf_send(sender, "小说《" + perf["novel_title"] + "》已生成～请糯糯姐审核：/同意 发送｜/退回 重写｜/忽略 不再提醒", cid, dry)
-    # 事件驱动：直连微信提醒糯糯审核（不等定时任务）
-    send_weixin("📝【小小糯】公演小说《" + perf["novel_title"] + "》已生成，待审核～\n文件：" + path +
-                "\n请在群里回复：/同意 发送｜/退回 重写｜/忽略 不再提醒")
-
-
 async def _handle_review(sender, cid: str, action: str, dry: bool):
     perf = _get_perf_state(cid)
     if action == "ignore":
@@ -3180,58 +1746,6 @@ async def _handle_review(sender, cid: str, action: str, dry: bool):
             await _perf_send(sender, decorated, cid, dry)
             await asyncio.sleep(1.5)
         await _perf_send(sender, "（完）", cid, dry)
-
-
-def _check_perf_interact(cid: str, msgs: list) -> str:
-    """公演进行中判断是否触发互动（只保留"丰富"）。触发条件：有新消息且距上次≥10分钟."""
-    perf = _get_perf_state(cid)
-    last_id = perf.get("last_interact_id", "")
-    new_msgs = []
-    found = False
-    for m in msgs:  # 旧→新
-        if not found:
-            if m.get("message_id") == last_id:
-                found = True
-            continue
-        uid = m.get("sent_by", "")
-        if is_self(uid):
-            continue
-        text = (m.get("content") or {}).get("text", "").strip()
-        if text and "加入了群聊" not in text:
-            new_msgs.append(m)
-    if not new_msgs:
-        return ""
-
-    # 触发条件：距上次互动 ≥ 10 分钟（600秒），且期间有新消息
-    now = time.time()
-    elapsed = now - perf.get("last_interact_ts", 0)
-    if elapsed < 600:
-        return ""
-
-    perf["last_interact_id"] = msgs[-1]["message_id"]
-    perf["last_interact_ts"] = now
-    seq = perf.get("interact_seq", 0)
-    perf["interact_seq"] = seq + 1
-    _set_perf_state(cid, perf)
-
-    # 增量喂料：本轮新增消息为主 + 前文一小段衔接
-    new_text = "\n".join(
-        get_name(m.get("sent_by", "")) + ": " + (m.get("content") or {}).get("text", "").strip()
-        for m in new_msgs
-    )
-    content = _get_perf_content(cid, perf.get("start_id", ""))
-    context = content[-200:] if content else ""
-    tail = context + "\n\n【本轮新发生的内容】\n" + new_text
-
-    # 记忆去重：把上一轮互动文本写进 prompt，要求避开
-    prev_text = perf.get("last_interact_text", "")
-    if prev_text:
-        tail += "\n\n【上一轮小小糯已经说过的内容（务必避开重复）】\n" + prev_text
-
-    reply = generate_perf_enrich(tail)
-    perf["last_interact_text"] = reply
-    _set_perf_state(cid, perf)
-    return reply
 
 
 FAST_INTERVAL = 0.8  # 最快轮询间隔（秒）

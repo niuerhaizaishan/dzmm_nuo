@@ -11,8 +11,6 @@
 import re
 import unicodedata
 
-# 繁→简转换器懒加载；opencc 不可用时为 False（跳过转换，不影响其它归一化）
-_OPENCC_T2S = None
 
 __all__ = [
     "_get_opencc", "_normalize_cn", "_simplify", "_strip_parenthesis",

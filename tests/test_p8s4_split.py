@@ -100,6 +100,34 @@ def test_no_function_is_defined_in_both_bot_and_runtime():
     assert clash == {}, "两边都定义了同一个函数: {}".format(clash)
 
 
+def test_no_module_level_name_is_defined_twice():
+    """同一个模块级名字不得在同一个文件里定义两次。
+
+    这条是**真实事故**的守卫：写 slice header 时把常量又抄了一份，
+    同时 `consts=[...]` 还从 bot.py 搬了一份进来 —— 同一个常量定义两次。
+    文本相同时完全看不出来（后者覆盖前者，值也对），
+    但 `DJ_PARTICIPATE_HINT` 我抄漏了后半句，只有审计的逐字比对才抓出来。
+
+    定义两次的真实危害：**改了一边不生效**，而且看不出该改哪边。
+    """
+    bad = {}
+    for p in sorted(RUNTIME_DIR.glob("*.py")):
+        tree = ast.parse(p.read_text(encoding="utf-8"))
+        seen = {}
+        for n in tree.body:
+            names = []
+            if isinstance(n, ast.Assign):
+                names = [t.id for t in n.targets if isinstance(t, ast.Name)]
+            elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+                names = [n.target.id]
+            for nm in names:
+                seen.setdefault(nm, []).append(n.lineno)
+        dup = {k: v for k, v in seen.items() if len(v) > 1}
+        if dup:
+            bad[p.name] = dup
+    assert bad == {}, "模块级名字被定义了两次: {}".format(bad)
+
+
 def test_no_import_bot_in_runtime_package():
     """整包普查：runtime/ 里一处都不该 import bot。
 
