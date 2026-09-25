@@ -201,22 +201,22 @@ def test_join_msg_matches_human_wording_only():
     assert bot._is_join_msg(bot_join) is False      # ← 靠措辞巧合
 
 
-def test_detect_joins_does_not_exclude_bot_by_uid():
-    """`_detect_joins` 只按 NUO_UID 排除，**排除不掉 Bot**（Bot id 不同）。
+def test_detect_joins_excludes_bot_when_configured(monkeypatch):
+    """**P4.2 已修**：配置了 BOT_UID 后，Bot 的入群消息不再被当成新成员。
 
-    Bot 现在靠措辞不匹配躲过筛查；一旦平台统一措辞就会误筛查。
+    修复前 `_detect_joins` 只按 NUO_UID 排除，Bot id 不同 → 排除不掉。
     """
+    bot_id = "eee88c3d-af91-4ecc-96df-d87eb9a358db"
+    monkeypatch.setattr(bot, "BOT_UID", bot_id)
     pending = [
         {"sent_by": bot.NUO_UID, "content": {"text": "小小糯 加入了群聊"}},
-        {"sent_by": "eee88c3d-af91-4ecc-96df-d87eb9a358db",
-         "content": {"text": "机器人 小小糯 加入了群聊"}},   # 假设平台统一措辞
+        {"sent_by": bot_id, "content": {"text": "机器人 小小糯 加入了群聊"}},
         {"sent_by": "real-user-uid", "content": {"text": "真人 加入了群聊"}},
     ]
     joins = bot._detect_joins(pending)
     assert "real-user-uid" in joins
     assert bot.NUO_UID not in joins
-    # ⚠️ 现状：Bot 会被当成新成员 → 这是 P3/P4 要修的
-    assert "eee88c3d-af91-4ecc-96df-d87eb9a358db" in joins
+    assert bot_id not in joins          # ← P4.2 修复点
 
 
 if __name__ == "__main__":

@@ -47,7 +47,45 @@ PUSH_CIDS = [
 ]
 _ACTIVE_CID = GROUPS[0]  # 当前处理的群，主循环每次迭代设置
 PRIMARY_CID = "bd7fe6a4-0065-4551-ad3d-94116dba8f9c"  # 常驻群（妹子认证群，page 常驻不 goto）
-NUO_UID = "503e3cb9-ee6f-4e17-be51-e4ca399b4515"  # 小小糯～（agent 账号）
+NUO_UID = "503e3cb9-ee6f-4e17-be51-e4ca399b4515"  # 侧车账号（登录态持有者）
+
+# ---------------------------------------------------------------- 自身身份（P4.2）
+# 从 P4 起，「我自己」有**两个**身份，必须分清：
+#   NUO_UID  —— 侧车账号：私聊 / 图片 / 分享 / 其他群，以及历史数据里的旧发言
+#   BOT_UID  —— 官方 Bot：群文本发送（P4.1 的 RoutingSender）
+# 回声过滤与「排除自己」必须同时认这两个。否则 Bot 的发言会被当成群友 ——
+# 轻则统计污染，重则自触发循环。
+BOT_UID = (os.environ.get("DZMM_BOT_ID") or "").strip()
+BOT_NAME = (os.environ.get("DZMM_BOT_NAME") or "小小糯").strip()
+BOT_NAME_SHORT = (os.environ.get("DZMM_BOT_SHORT") or "小小糯").strip()
+
+
+def self_uids() -> set:
+    """全部「我自己」的 uid。"""
+    ids = {NUO_UID}
+    if BOT_UID:
+        ids.add(BOT_UID)
+    return ids
+
+
+def is_self(uid) -> bool:
+    """这条消息是不是我自己发的（侧车账号或官方 Bot）。"""
+    if not uid:
+        return False
+    return uid == NUO_UID or (bool(BOT_UID) and uid == BOT_UID)
+
+
+def self_names() -> set:
+    """判定「@的是我」用的名字集合。
+
+    账号名查成员表；Bot 名**读配置**（Bot API 没有成员接口，查不到）。
+    """
+    names = {get_full_name(NUO_UID), get_name(NUO_UID)}
+    if BOT_UID:
+        names.add(BOT_NAME)
+        names.add(BOT_NAME_SHORT)
+    return {n for n in names if n}
+
 OWNER_UID = "a56cbd67-3a1e-439a-8beb-d1557dbeff79"  # 糯糯～（群主，可代注册）
 
 # 涩涩骰子词库
@@ -450,7 +488,7 @@ class Sender:
             msgs = await asyncio.to_thread(get_messages, cid, 5)
             probe = (text.split("\n")[0] or text)[:20].strip()
             for m in msgs:
-                if m.get("sent_by") != NUO_UID:
+                if not is_self(m.get("sent_by")):
                     continue
                 mt = (m.get("content") or {}).get("text", "")
                 if probe and probe in mt:
@@ -565,9 +603,7 @@ def is_at_me(text: str) -> bool:
     """判断消息是否 @ 了小小糯（agent）."""
     if "@" not in text:
         return False
-    full = get_full_name(NUO_UID)  # 小小糯～
-    simple = get_name(NUO_UID)  # 小小糯
-    for name in {full, simple}:
+    for name in self_names():
         if name and ("@" + name) in text:
             return True
     return False
@@ -575,7 +611,7 @@ def is_at_me(text: str) -> bool:
 
 def _strip_at(text: str) -> str:
     """去掉 @小小糯 前缀，返回纯提问。"""
-    for name in {get_full_name(NUO_UID), get_name(NUO_UID)}:
+    for name in self_names():
         if name:
             text = text.replace("@" + name, "", 1)
     return text.strip()
@@ -783,7 +819,7 @@ def _detect_perf_query(at_msg: str):
         return None
     today = ("今天" in at_msg) and ("最近" not in at_msg)
     name = at_msg
-    for n in {get_full_name(NUO_UID), get_name(NUO_UID)}:
+    for n in self_names():
         if n:
             name = name.replace("@" + n, "")
     for t in triggers:
@@ -1007,7 +1043,7 @@ def rank_summary() -> str:
     climax = group_state.get("heat_climax") or {}
     today_climax = group_state.get("heat_climax_today") or {}
     uids = set(heat) | set(counts) | set(climax)
-    uids.discard(NUO_UID)
+    uids.difference_update(self_uids())
     if not uids:
         return ""
     _load_member_names()
@@ -1033,7 +1069,7 @@ def rank_summary() -> str:
 
 def _add_heat(cid: str, uid: str, delta: int) -> None:
     """给某人加发情值（持久化，排除小小糯）."""
-    if not uid or uid == NUO_UID or delta <= 0:
+    if not uid or is_self(uid) or delta <= 0:
         return
     state = load_state()
     group_state = state.get(cid) or {}
@@ -1171,7 +1207,7 @@ def _judge_pending(cid: str) -> str:
     heat = group_state.get("heat_value") or {}
     for name, d in delta.items():
         uid = _find_uid_by_name(name)
-        if uid and uid != NUO_UID:
+        if uid and not is_self(uid):
             heat[uid] = heat.get(uid, 0) + d
     group_state["heat_value"] = heat
     group_state["heat_pending"] = {}
@@ -2649,7 +2685,7 @@ def is_scene_cmd(cmd: str) -> bool:
 def _random_member_uid(exclude: set = None):
     """随机选当前群一个发言成员（排除 agent 自己和 exclude 里的 uid）."""
     msgs = get_messages_all(_ACTIVE_CID, max_count=200)
-    uids = [m.get("sent_by", "") for m in msgs if m.get("sent_by") and m.get("sent_by") != NUO_UID]
+    uids = [m.get("sent_by", "") for m in msgs if m.get("sent_by") and not is_self(m.get("sent_by"))]
     if exclude:
         uids = [u for u in uids if u not in exclude]
     if not uids:
@@ -2683,7 +2719,7 @@ def _maybe_devil_roast(cid: str, msgs: list, group_state: dict) -> str:
     ctx = []
     for m in msgs[-12:]:
         uid = m.get("sent_by", "")
-        if uid == NUO_UID:
+        if is_self(uid):
             continue
         text = (m.get("content") or {}).get("text", "").strip()
         if text and "加入了群聊" not in text:
@@ -3421,7 +3457,7 @@ def _vote_members_text(cid: str) -> str:
     uids = []
     for m in msgs:
         uid = m.get("sent_by", "")
-        if uid and uid != NUO_UID and uid not in uids:
+        if uid and not is_self(uid) and uid not in uids:
             uids.append(uid)
     names = [get_name(uid) for uid in uids if get_name(uid)]
     return "、".join(names[:30])
@@ -3518,10 +3554,10 @@ def _finish_vote(cid: str) -> str:
         voter_str = "、".join([x for x in voters if x]) if voters else "无"
         lines.append("【" + str(i) + "】" + opt + "　" + str(n) + "票(" + str(pct) + "%)　" + voter_str)
     starter = vote.get("starter", "")
-    if starter and starter != NUO_UID:
+    if starter and not is_self(starter):
         _add_heat(cid, starter, 8)
     for uid in votes.keys():
-        if uid and uid != NUO_UID and uid != starter:
+        if uid and not is_self(uid) and uid != starter:
             _add_heat(cid, uid, 5)
     _set_vote_state(cid, {})
     lines.append("🎉 结算：发起人 +8，投票的人各 +5")
@@ -3597,7 +3633,7 @@ def start_story(cid: str, cmd: str, sender_uid: str) -> str:
         for i in range(len(tokens), 0, -1):
             name_part = " ".join(tokens[:i])
             uid, _ = _find_in_profiles(name_part)
-            if uid and uid != NUO_UID:
+            if uid and not is_self(uid):
                 protagonist_uid = uid
                 protagonist = get_full_name(uid)
                 custom = " ".join(tokens[i:])
@@ -3608,7 +3644,7 @@ def start_story(cid: str, cmd: str, sender_uid: str) -> str:
             for i in range(len(tokens), 0, -1):
                 name_part = " ".join(tokens[:i])
                 uid2, full2 = _find_user_in_msgs(name_part, msgs)
-                if uid2 and uid2 != NUO_UID:
+                if uid2 and not is_self(uid2):
                     protagonist_uid = uid2
                     protagonist = full2
                     custom = " ".join(tokens[i:])
@@ -3702,9 +3738,9 @@ def _finish_story(cid: str) -> str:
     protagonist_uid = story.get("protagonist_uid", "")
     protagonist = story.get("protagonist", "")
     for uid in votes.keys():
-        if uid and uid != NUO_UID:
+        if uid and not is_self(uid):
             _add_heat(cid, uid, 8)
-    if protagonist_uid and protagonist_uid != NUO_UID:
+    if protagonist_uid and not is_self(protagonist_uid):
         _add_heat(cid, protagonist_uid, 15)
     _set_story_state(cid, {})
     lines = ["🎬 剧情结束！女主：" + protagonist]
@@ -3760,7 +3796,7 @@ def _get_perf_content(cid: str, start_id: str) -> str:
             break
     for m in msgs[start_i:]:
         uid = m.get("sent_by", "")
-        if uid == NUO_UID:
+        if is_self(uid):
             continue  # 跳过 bot 消息（小小糯的丰富/总结），只保留用户原始对话
         text = (m.get("content") or {}).get("text", "").strip()
         if not text or "加入了群聊" in text:
@@ -3787,7 +3823,7 @@ def _get_perf_content_full(cid: str, start_id: str) -> str:
         text = (m.get("content") or {}).get("text", "").strip()
         if not text or "加入了群聊" in text:
             continue
-        if uid == NUO_UID:
+        if is_self(uid):
             # 小小糯（bot）：去掉 🤖，排除非剧情（开场/排行/午安），合并多行为单行
             t = text.replace("🤖", "").strip()
             if any(kw in t for kw in ("🎬", "🔥", "排行", "午安", "公演开始")):
@@ -3828,7 +3864,7 @@ def _perf_heat_target(cid: str) -> str:
     # 命中最多者 = M方；跳过糯糯（主持）和小小糯
     for name, _ in sorted(scores.items(), key=lambda kv: -kv[1]):
         uid = _find_uid_by_name(name)
-        if uid and uid != NUO_UID and uid != OWNER_UID:
+        if uid and not is_self(uid) and uid != OWNER_UID:
             return uid
     return ""
 
@@ -3947,7 +3983,7 @@ def summarize_chat(cmd: str) -> str:
     lines = []
     for m in msgs:
         # 过滤 agent 自己的消息，避免自我引用循环
-        if m.get("sent_by") == NUO_UID:
+        if is_self(m.get("sent_by")):
             continue
         # 解析时间
         try:
@@ -4188,7 +4224,7 @@ def _check_perf_interact(cid: str, msgs: list) -> str:
                 found = True
             continue
         uid = m.get("sent_by", "")
-        if uid == NUO_UID:
+        if is_self(uid):
             continue
         text = (m.get("content") or {}).get("text", "").strip()
         if text and "加入了群聊" not in text:
@@ -4373,7 +4409,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
             _pmsgs = subscriber.drain_private()
             for _pcid, _plist in _pmsgs.items():
                 for _m in _plist:
-                    if _m.get("sent_by") == NUO_UID:
+                    if is_self(_m.get("sent_by")):
                         continue
                     _ptext = ((_m.get("content") or {}).get("text") or "").strip()
                     if _ptext == "/看骰":
@@ -4454,7 +4490,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                         continue
 
                     # 本轮是否有真正的用户新消息（非 agent）
-                    had_new = any(m.get("sent_by") != NUO_UID for m in pending)
+                    had_new = any(not is_self(m.get("sent_by")) for m in pending)
 
                     # 发言统计（活跃度 + 待评定发情缓冲 + 最近发言时间，每群独立持久化）
                     counts = group_state.get("msg_count") or {}
@@ -4465,7 +4501,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                     for m in pending:
                         uid = m.get("sent_by", "")
                         text = (m.get("content") or {}).get("text", "").strip()
-                        if uid and uid != NUO_UID and text and "加入了群聊" not in text and not text.startswith("/"):
+                        if uid and not is_self(uid) and text and "加入了群聊" not in text and not text.startswith("/"):
                             if last_speak.get(uid):  # 先把「现在这条之前」的发言时间存下来
                                 prev_speak[uid] = last_speak[uid]
                             counts[uid] = counts.get(uid, 0) + 1
@@ -4522,7 +4558,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                     at_sender = ""
                     room_hit = None  # (uid, 原文) 需要管家回应的房间消息
                     for m in pending:
-                        if m.get("sent_by") == NUO_UID:
+                        if is_self(m.get("sent_by")):
                             continue  # 跳过 bot 自己的消息，避免 self-echo
                         t = (m.get("content") or {}).get("text", "").strip()
                         if t.startswith("/"):
@@ -4875,7 +4911,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                     ctx = []
                                     for m in msgs[-4:]:
                                         muid = m.get("sent_by", "")
-                                        if muid == NUO_UID:
+                                        if is_self(muid):
                                             continue
                                         mtxt = (m.get("content") or {}).get("text", "").strip()
                                         if mtxt:
@@ -4963,7 +4999,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                             ctx = []
                             for m in msgs[-5:]:
                                 muid = m.get("sent_by", "")
-                                if muid == NUO_UID:
+                                if is_self(muid):
                                     continue
                                 mtxt = (m.get("content") or {}).get("text", "").strip()
                                 if mtxt:
@@ -5074,7 +5110,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                     hot_speaker = any(
                         (group_state.get("heat_value") or {}).get(m.get("sent_by", ""), 0) >= 80
                         for m in pending
-                        if m.get("sent_by") and m.get("sent_by") != NUO_UID
+                        if m.get("sent_by") and not is_self(m.get("sent_by"))
                         and (m.get("content") or {}).get("text", "").strip()
                         and "加入了群聊" not in (m.get("content") or {}).get("text", "")
                     )
@@ -5240,7 +5276,7 @@ def _room_owner(cid: str, uid: str) -> bool:
 def _is_room_trigger(cid: str, uid: str, text: str) -> bool:
     """房间群：这条消息要不要管家回应（被点名 / 主人指令 / 客人点单）."""
     cfg = ROOMS.get(cid)
-    if not cfg or not text or uid == NUO_UID:
+    if not cfg or not text or is_self(uid):
         return False
     t = text.strip()
     if not t or t.startswith("/"):
@@ -5674,7 +5710,7 @@ def _recap_mentions(msgs: list, uid: str):
         return (0, [], "")
     hits, who, sample = 0, [], ""
     for m in msgs:
-        if m.get("sent_by") in (uid, NUO_UID):
+        if is_self(m.get("sent_by")) or m.get("sent_by") == uid:
             continue
         t = (m.get("content") or {}).get("text", "")
         if not t or "加入了群聊" in t:
@@ -5697,7 +5733,7 @@ def _recap_transcript(msgs: list) -> tuple:
         t = ((m.get("content") or {}).get("text") or "").strip()
         if not t:
             continue
-        if u == NUO_UID:
+        if is_self(u):
             lines.append("小小糯: " + t[:100])
         else:
             lines.append(get_name(u) + ": " + t[:80])
@@ -6052,7 +6088,7 @@ def _detect_joins(pending: list) -> list:
     """检测 pending 里的新成员加入，返回新成员 uid 列表（去重，排除 bot）."""
     joins = []
     for m in pending:
-        if m.get("sent_by") == NUO_UID:
+        if is_self(m.get("sent_by")):
             continue
         if _is_join_msg(m):
             uid = m.get("sent_by", "")
@@ -6344,7 +6380,7 @@ async def greet_once(period: str) -> None:
             try:
                 msgs = await asyncio.to_thread(get_messages, cid, 5)
                 sent = any(
-                    m.get("sent_by") == NUO_UID
+                    is_self(m.get("sent_by"))
                     and greeting[:8] in (m.get("content") or {}).get("text", "")
                     for m in msgs
                 )
