@@ -60,11 +60,11 @@ services:
       # 声明"这条端口发布到了回环之外"。dashboard 见到 on 却没有令牌会**拒绝启动**
       # （fail closed）—— 免得"忘了设令牌"变成一次静默裸奔。
       DZMM_ADMIN_PUBLIC: "${DZMM_ADMIN_PUBLIC:-on}"
-      # 令牌（发布到公网时必填）。用 ?token= / X-Admin-Token 头 / cookie 三选一；
-      # 首次带 ?token= 访问会种一个 HttpOnly cookie，之后站内点击不再需要带。
+      # 登录账号密码（发布到公网时必填）。密码 <8 位会被拒绝启动。
       # 刻意用 `${...:-}` 而不是 `${...:?}`：`:?` 会让**整个 compose** 起不来
       # （连 bot 容器一起），blast radius 太大。缺失时只让 dashboard 自己拒绝启动。
-      DZMM_ADMIN_TOKEN: "${DZMM_ADMIN_TOKEN:-}"
+      DZMM_ADMIN_USER: "${DZMM_ADMIN_USER:-admin}"
+      DZMM_ADMIN_PASSWORD: "${DZMM_ADMIN_PASSWORD:-}"
     ports:
       # 面板对外可达 —— 所以**必须**同时具备：
       #   1) .env 里的 DZMM_ADMIN_TOKEN（没有令牌 dashboard 直接不启动）

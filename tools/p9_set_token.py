@@ -16,8 +16,10 @@ def main() -> int:
     if not ENV.exists():
         print("找不到 {}".format(ENV))
         return 1
-    raw = ENV.read_bytes().decode("utf-8")
-    eol = "\r\n" if "\r\n" in raw else "\n"
+    # 一律用 LF 写：CRLF 与 LF 混用会让 shell 读到的值和 docker compose
+    # 读到的值不同（compose 会去掉值尾部的 CR，cut 不会）—— 这个坑踩过一次。
+    raw = ENV.read_bytes().decode("utf-8").replace("\r\n", "\n")
+    eol = "\n"
     lines = raw.split(eol)
 
     for ln in lines:

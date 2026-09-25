@@ -14,39 +14,64 @@
    INSERT/UPDATE/DELETE/DROP（`tests/test_admin_dashboard.py` 会扫源码）。
    "运维后台写坏了线上数据"是这类工具最典型的翻车方式，从结构上掐掉。
 
-2. **对外的边界在 compose 的端口映射上，不在容器内。**
-   容器内监听 `0.0.0.0:8090`（默认），而 `docker-compose.prod.yml` 里发布的是
-   `127.0.0.1:8090:8090` —— **只有宿主机回环能连**，公网碰不到。
-   访问方式是 SSH 隧道：
-       ssh -L 8090:127.0.0.1:8090 root@47.237.152.187
-   然后本地浏览器开 http://127.0.0.1:8090。
+2. **对外的边界由"登录 + 安全组白名单"两层组成。**
+   容器内监听 `0.0.0.0:8090`（默认），`docker-compose.prod.yml` 把它发布到宿主机
+   （`${DZMM_ADMIN_BIND:-0.0.0.0}:8090:8090`），所以**默认是对外可达的**。
+   因此必须同时具备：
+
+   a. **账号密码登录**（`DZMM_ADMIN_USER` / `DZMM_ADMIN_PASSWORD`）。
+      声明对外发布却没有设密码 -> 本进程**拒绝启动**（fail closed）。
+   b. **安全组只放行你自己的出口 IP** —— 这一条**不能省**，理由见第 3 条。
 
    ⚠️ 为什么容器内**不能**绑 127.0.0.1：docker 的端口发布是由 `docker-proxy`
    从**容器 IP**（不是回环）转发进来的，容器内绑回环会让发布出来的端口
    根本连不上 —— 第一次部署就是这么失败的（宿主机 curl 返回 000，
    而 `ss` 显示 docker-proxy 明明在 127.0.0.1:8090 上听着）。
-   **真正的安全边界是那条映射**：绝不要把它改成 `8090:8090`。
-   这台机器上 noVNC（6080）与 x11vnc（5900）目前仍是 0.0.0.0（P0-b 待办），
-   在那种前提下再对外开一个后台端口是不负责任的。
 
-3. **跑在容器内，不新增容器。**
+   想彻底不开公网口：`.env` 里设 `DZMM_ADMIN_BIND=127.0.0.1`，改用 SSH 隧道
+   （`ssh -L 8090:127.0.0.1:8090 root@host`）。
+
+3. **这是 HTTP，不是 HTTPS —— 密码在链路上是明文的。**
+   所以安全组白名单不是"锦上添花"，而是**让明文密码可以接受的前提**：
+   只放行你自己的 IP，能截到密码的顶多是你自己那段接入网。
+   （实测过：8090 在"只有密码、没有白名单"的情况下是**整个世界可连**的 ——
+   用境外节点探测，拿到了登录页。）要真正上 HTTPS 需要给机器配域名 + 证书。
+
+4. **跑在容器内，不新增容器。**
    容器内是 Python 3.11 且已有拆好的 `runtime/*`，能直接复用 bot 同款代码读状态，
    不会出现"后台照着 schema 抄一遍、然后漂移"的问题。宿主机只有 Python 3.6，
    而且 1.8G 内存已经被否决过一次"双容器"方案。
+
+### 认证：为什么不是 URL 令牌
+
+原来用 `?token=`，已换成正式登录。令牌的问题都是实际会遇到的：
+会留在浏览器历史和链路日志里、**没法登出**、没有失败计数（可以无限试）、
+而且它只是"持票入场"，不是"谁进来了"。
+
+- 账号密码从环境变量读（`.env`，root 600），**不落盘任何凭据**
+- 会话只存在**本进程内存**里：随机 32 字节 sid，`HttpOnly` + `SameSite=Strict`，
+  12 小时过期；**重启即全部登出**（这正是想要的行为）
+- 校验用 `hmac.compare_digest`，且账号与密码**都算完再比** ——
+  否则"账号对不对"会从耗时上泄漏出去（用户名枚举）
+- 连续失败 5 次开始锁定，5 分钟起逐次翻倍，上限 1 小时；失败与锁定都打日志
+- 唯一允许的非 GET 路径是 `POST /login`：它只动内存会话表与 Cookie，
+  **不碰数据库也不碰文件** —— 面板的"只读"性质没被破坏
 
 ### 开关
 
 - `DZMM_ADMIN=off`  不启动（entrypoint 读这个）
 - `DZMM_ADMIN_PORT` 默认 8090；`DZMM_ADMIN_HOST` 默认 `0.0.0.0`（见上面第 2 条）
-- `DZMM_ADMIN_PUBLIC=on` 声明"这条端口发布到了回环之外"（即能被别人连到）
-- `DZMM_ADMIN_TOKEN` 令牌。**`PUBLIC=on` 而没有令牌时，本进程拒绝启动** ——
-  这样"忘了设令牌就把面板挂到公网"是一个启动失败，而不是一次静默裸奔。
+- `DZMM_ADMIN_USER` 默认 `admin`
+- `DZMM_ADMIN_PASSWORD` 登录密码（<8 位会被拒绝启动）
+- `DZMM_ADMIN_PUBLIC=on` 声明"这条端口发布到了回环之外"
+- `DZMM_ADMIN_BIND`（compose 用）发布到宿主机的地址，默认 `0.0.0.0`
 """
 import html
 import hmac
 import json
 import os
 import re
+import secrets
 import socket
 import sqlite3
 import sys
@@ -69,7 +94,6 @@ VERSION = "P9-3"
 # 真正的安全边界是 compose 里的端口映射 —— 见下面 DZMM_ADMIN_PUBLIC 的说明。
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8090
-COOKIE_NAME = "dzmm_admin_token"
 
 BOT_LOG = ROOT / "bot.log"
 HEALTH_LOG = ROOT / "check_health.log"
@@ -668,53 +692,178 @@ def render_html(data):
             "<header><h1>小小糯 运维后台</h1>"
             "<span class='dim'>{}</span>"
             "<span class='dim'>只读</span>"
-            "<span style='margin-left:auto'><a href='/api/summary' "
-            "style='color:#7aa2f7'>JSON</a> · <a href='/' style='color:#7aa2f7'>刷新</a>"
+            "<span style='margin-left:auto'>"
+            "<a href='/api/summary' style='color:#7aa2f7'>JSON</a> · "
+            "<a href='/' style='color:#7aa2f7'>刷新</a> · "
+            "<a href='/logout' style='color:#7aa2f7'>退出</a>"
             "</span></header><main>{}</main>"
-            "<footer>{} · 只绑 127.0.0.1，请用 SSH 隧道访问 · "
-            "ssh -L 8090:127.0.0.1:8090 root@&lt;host&gt;</footer>"
+            "<footer>{} · 只读面板 · 所有数据均来自本机文件，页面不接受任何写入</footer>"
             "</body></html>").format(_CSS, _e(data["generated_at"]), "".join(cards),
                                      _e(VERSION))
 
 
+def render_login(error="", notice="", locked_for=0, user=""):
+    """登录页。**不带任何数据** —— 没登录的人不该看到一个字节的面板内容。"""
+    if locked_for > 0:
+        msg = ('<div class="msg bad">尝试次数过多，请 {} 后再试。</div>'
+               .format(_ago(locked_for)))
+    elif error:
+        msg = '<div class="msg bad">{}</div>'.format(_e(error))
+    elif notice:
+        msg = '<div class="msg ok">{}</div>'.format(_e(notice))
+    else:
+        msg = ""
+    return ("<!doctype html><html lang='zh'><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>登录 · 小小糯 运维后台</title><style>{css}"
+            ".box{{max-width:330px;margin:12vh auto;background:#181c25;"
+            "border:1px solid #262c39;border-radius:9px;padding:20px}}"
+            "label{{display:block;color:#8b95a7;margin:10px 0 4px}}"
+            "input{{width:100%;box-sizing:border-box;background:#0f1218;color:#d8dee9;"
+            "border:1px solid #2b3140;border-radius:6px;padding:8px;font-size:14px}}"
+            "button{{width:100%;margin-top:16px;padding:9px;border:0;border-radius:6px;"
+            "background:#2f6feb;color:#fff;font-size:14px;cursor:pointer}}"
+            ".msg{{padding:8px 10px;border-radius:6px;margin-bottom:10px;font-size:12px}}"
+            ".msg.bad{{background:#4a1f27;color:#ff8b9a}}"
+            ".msg.ok{{background:#1f3d2b;color:#7ee2a8}}"
+            "h1{{font-size:15px;margin:0 0 4px}}.sub{{color:#6c7686;font-size:12px}}"
+            "</style></head><body><div class='box'>"
+            "<h1>小小糯 运维后台</h1>"
+            "<div class='sub'>只读面板 · 请登录</div>"
+            "{msg}"
+            "<form method='POST' action='/login' autocomplete='off'>"
+            "<label for='u'>账号</label>"
+            "<input id='u' name='username' value='{user}' autocomplete='username' autofocus>"
+            "<label for='p'>密码</label>"
+            "<input id='p' name='password' type='password' autocomplete='current-password'>"
+            "<button type='submit'>登录</button>"
+            "</form></div></body></html>").format(css=_CSS, msg=msg, user=_e(user))
+
+
 # ---------------------------------------------------------------- HTTP
 
-def _env_token():
-    return (os.environ.get("DZMM_ADMIN_TOKEN") or "").strip()
+
+# ---------------------------------------------------------------- 认证
+#
+# 原来是"URL 里带 ?token="，换成了正式登录。原因（都是实际问题）：
+#   * 令牌会留在浏览器历史 / 访问日志 / 别人转发给你的链接里 —— 没法登出；
+#   * 没有失败计数 -> 可以无限试；
+#   * 它只是"持票入场"，不是"谁进来了"。
+#
+# 仍然**不落盘任何凭据**：账号密码从环境变量读（`.env`，root 600），
+# 会话只存在本进程内存里 —— 重启即全部失效，这正好是我们想要的行为。
+
+SESSION_COOKIE = "dzmm_admin_sid"
+SESSION_TTL = 12 * 3600          # 12 小时
+LOCK_AFTER = 5                   # 连续失败几次开始锁
+LOCK_BASE = 300                  # 首次锁 5 分钟，之后翻倍
+LOCK_MAX = 3600                  # 上限 1 小时
+MAX_BODY = 4096                  # 登录表单体积上限
+
+_sessions = {}                   # sid -> 过期时间戳
+_fails = {}                      # ip -> [失败次数, 解锁时间戳]
+
+
+def _cfg_user():
+    return (os.environ.get("DZMM_ADMIN_USER") or "admin").strip()
+
+
+def _cfg_password():
+    return os.environ.get("DZMM_ADMIN_PASSWORD") or ""
+
+
+def _creds_configured():
+    return bool(_cfg_password())
 
 
 def _truthy(v):
     return (v or "").strip().lower() in ("on", "1", "yes", "true")
 
 
-def _token_from_cookie(handler):
+def _client_ip(handler):
+    return (handler.client_address[0] if handler.client_address else "?") or "?"
+
+
+def _prune():
+    now = time.time()
+    for sid in [s for s, exp in _sessions.items() if exp <= now]:
+        _sessions.pop(sid, None)
+    for ip in [i for i, (_, until) in _fails.items() if until and until <= now
+               and _fails[i][0] == 0]:
+        _fails.pop(ip, None)
+
+
+def lock_remaining(ip):
+    rec = _fails.get(ip)
+    if not rec:
+        return 0
+    return max(0, int(rec[1] - time.time()))
+
+
+def note_failure(ip):
+    """记一次失败并按次数加锁。返回剩余锁定时长（秒）。"""
+    rec = _fails.get(ip) or [0, 0.0]
+    rec[0] += 1
+    if rec[0] >= LOCK_AFTER:
+        over = rec[0] - LOCK_AFTER
+        wait = min(LOCK_BASE * (2 ** over), LOCK_MAX)
+        rec[1] = time.time() + wait
+    _fails[ip] = rec
+    # 上限保护：IP 数量不该无限增长（正常情况下安全组只放行一个 IP）
+    if len(_fails) > 512:
+        for k in sorted(_fails, key=lambda k: _fails[k][0])[:256]:
+            _fails.pop(k, None)
+    return lock_remaining(ip)
+
+
+def clear_failures(ip):
+    _fails.pop(ip, None)
+
+
+def new_session():
+    _prune()
+    sid = secrets.token_urlsafe(32)
+    _sessions[sid] = time.time() + SESSION_TTL
+    return sid
+
+
+def session_valid(sid):
+    if not sid:
+        return False
+    exp = _sessions.get(sid)
+    if exp is None:
+        return False
+    if exp <= time.time():
+        _sessions.pop(sid, None)
+        return False
+    return True
+
+
+def drop_session(sid):
+    _sessions.pop(sid, None)
+
+
+def check_credentials(user, password):
+    """账号密码校验。
+
+    两处都用 `hmac.compare_digest` 且**都算完再比**：
+    否则"账号对不对"会从耗时上泄漏出去（用户名枚举）。
+    """
+    want_user, want_pw = _cfg_user(), _cfg_password()
+    if not want_pw:
+        return False
+    u_ok = hmac.compare_digest(str(user or ""), want_user)
+    p_ok = hmac.compare_digest(str(password or ""), want_pw)
+    return bool(u_ok and p_ok)
+
+
+def _cookie_sid(handler):
     raw = handler.headers.get("Cookie") or ""
     for part in raw.split(";"):
         k, _, v = part.strip().partition("=")
-        if k == COOKIE_NAME and v:
+        if k == SESSION_COOKIE and v:
             return v
     return ""
-
-
-def _token_ok(handler, query):
-    """令牌校验。未配置令牌 = 只读面板当作"仅回环可达"（由启动闸门保证）。"""
-    want = _env_token()
-    if not want:
-        return True
-    got = (handler.headers.get("X-Admin-Token")
-           or (query.get("token") or [""])[0]
-           or _token_from_cookie(handler))
-    return hmac.compare_digest(str(got), want)
-
-
-def _token_just_supplied(handler, query):
-    """这次请求是不是**用查询串**带对了令牌 —— 是的话要种 cookie。
-
-    没有这一步，页面里那些站内链接（刷新 / JSON）不会带上令牌，点一下就 403。
-    """
-    want = _env_token()
-    return bool(want) and hmac.compare_digest(
-        str((query.get("token") or [""])[0]), want)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -727,33 +876,55 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        # 令牌可能出现在查询串里 —— 别让它顺着 Referer 漏给第三方
+        # 没有外链资源；顺手把 Referer 掐掉
         self.send_header("Referrer-Policy", "no-referrer")
+        # 纯自包含页面（无 CDN、无内联 JS），可以直接上严格 CSP
+        self.send_header("Content-Security-Policy",
+                         "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
         for k, v in extra_headers:
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(raw)
 
+    def _redirect(self, location, extra_headers=()):
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        for k, v in extra_headers:
+            self.send_header(k, v)
+        self.end_headers()
+
+    def _require_session(self):
+        """没登录就渲染登录页并返回 False。
+
+        未配置密码时**不要求登录** —— 那是"仅回环可达"模式（SSH 隧道用）。
+        它之所以安全，是因为启动闸门保证了：声称对外发布（PUBLIC=on）却没有密码时
+        进程根本不会起来。所以"不要求登录"只可能发生在回环 / 未对外声明的场景。
+        """
+        if not _creds_configured():
+            return True
+        ip = _client_ip(self)
+        if session_valid(_cookie_sid(self)):
+            return True
+        self._send(200, render_login(locked_for=lock_remaining(ip)),
+                   "text/html; charset=utf-8")
+        return False
+
     def do_HEAD(self):
         self.do_GET()
 
     def do_GET(self):
+        _prune()
         u = urlparse(self.path)
-        q = parse_qs(u.query)
-        if not _token_ok(self, q):
-            self._send(403, "forbidden（缺 DZMM_ADMIN_TOKEN 令牌）\n",
-                       "text/plain; charset=utf-8")
+        if u.path == "/logout":
+            drop_session(_cookie_sid(self))
+            self._redirect("/", (("Set-Cookie",
+                                  "{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"
+                                  .format(SESSION_COOKIE)),))
             return
-        headers = ()
-        if _token_just_supplied(self, q):
-            # HttpOnly：JS 读不到；SameSite=Lax：跨站请求不带。
-            # 不开 Secure —— 这套是 http 明文，开了 cookie 就发不出去（见 README 的说明）。
-            headers = (("Set-Cookie",
-                        "{}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000"
-                        .format(COOKIE_NAME, _env_token())),)
-        if u.path in ("/healthz", "/health"):
-            self._send(200, "ok\n", "text/plain; charset=utf-8", headers)
+        if not self._require_session():
             return
         try:
             data = collect()
@@ -763,19 +934,74 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/summary":
             self._send(200, json.dumps(data, ensure_ascii=False, default=str),
-                       "application/json; charset=utf-8", headers)
+                       "application/json; charset=utf-8")
+        elif u.path == "/healthz":
+            self._send(200, "ok\n", "text/plain; charset=utf-8")
         elif u.path in ("/", "/index.html"):
-            self._send(200, render_html(data), "text/html; charset=utf-8", headers)
+            self._send(200, render_html(data), "text/html; charset=utf-8")
         else:
             self._send(404, "not found\n", "text/plain; charset=utf-8")
 
-    def _refuse(self):
-        self._send(405, "read-only：只接受 GET/HEAD\n", "text/plain; charset=utf-8")
+    def do_POST(self):
+        """**唯一**允许的非 GET 路径是 /login。
 
-    do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _refuse
+        面板本身仍然一处写操作都没有：登录只动进程内存里的会话表和 Cookie，
+        既不碰数据库也不碰文件。`tests/test_admin_dashboard.py` 里
+        `test_only_login_accepts_post` 钉住这条。
+        """
+        _prune()
+        u = urlparse(self.path)
+        ip = _client_ip(self)
+        if u.path != "/login":
+            self._send(405, "read-only：只接受 GET/HEAD（登录用 POST /login）\n",
+                       "text/plain; charset=utf-8")
+            return
+
+        left = lock_remaining(ip)
+        if left > 0:
+            print("[admin] 登录被拒（锁定中 {}s）来源 {}".format(left, ip), flush=True)
+            self._send(429, render_login(locked_for=left), "text/html; charset=utf-8")
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except Exception:
+            length = 0
+        if length <= 0 or length > MAX_BODY:
+            self._send(400, render_login(error="请求格式不对"), "text/html; charset=utf-8")
+            return
+        raw = self.rfile.read(length).decode("utf-8", "replace")
+        form = parse_qs(raw)
+        user = (form.get("username") or [""])[0]
+        password = (form.get("password") or [""])[0]
+
+        if check_credentials(user, password):
+            clear_failures(ip)
+            sid = new_session()
+            print("[admin] 登录成功 来源 {}".format(ip), flush=True)
+            self._redirect("/", (("Set-Cookie",
+                                  "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}"
+                                  .format(SESSION_COOKIE, sid, SESSION_TTL)),))
+            return
+
+        wait = note_failure(ip)
+        print("[admin] 登录失败 来源 {} 账号={!r} 累计第 {} 次{}".format(
+            ip, user[:32], (_fails.get(ip) or [0])[0],
+            "，已锁定 {}s".format(wait) if wait else ""), flush=True)
+        self._send(401, render_login(error="账号或密码不对", locked_for=wait, user=user),
+                   "text/html; charset=utf-8")
+
+    def do_PUT(self):
+        self._refuse()
+
+    do_DELETE = do_PATCH = do_OPTIONS = do_PUT
+
+    def _refuse(self):
+        self._send(405, "read-only：只接受 GET/HEAD（登录用 POST /login）\n",
+                   "text/plain; charset=utf-8")
 
     def log_message(self, fmt, *args):
-        pass                                                    # 不刷日志
+        pass                                                    # 不刷访问日志
 
 
 _STARTED = time.time()
@@ -788,29 +1014,35 @@ def main(argv=None):
     host = os.environ.get("DZMM_ADMIN_HOST") or DEFAULT_HOST
     port = int(os.environ.get("DZMM_ADMIN_PORT") or DEFAULT_PORT)
     public = _truthy(os.environ.get("DZMM_ADMIN_PUBLIC"))
-    token = _env_token()
+    user, pw = _cfg_user(), _cfg_password()
 
-    # 失效关闭（fail closed）：声称"发布到回环之外"却没有令牌 -> 直接不启动。
-    # 这一条把"忘了设令牌就把只读面板挂到公网"变成一次**启动失败**，
+    # 失效关闭（fail closed）：声称"发布到回环之外"却没有账号密码 -> 直接不启动。
+    # 把"忘了设密码就把只读面板挂到公网"变成一次**启动失败**，
     # 而不是一次静默裸奔。容器日志里会留下这行，一眼能看见。
-    if public and not token:
+    if public and not pw:
         print("[admin] !! 拒绝启动：DZMM_ADMIN_PUBLIC=on（会对外可达）"
-              "但没有设置 DZMM_ADMIN_TOKEN。")
-        print("[admin]    要么在 .env 里给一个随机令牌，要么把端口映射改回 127.0.0.1。")
+              "但没有设置 DZMM_ADMIN_PASSWORD。")
+        print("[admin]    要么在 .env 里设账号密码，要么把端口映射改回 127.0.0.1。")
+        return 2
+    if pw and len(pw) < 8:
+        print("[admin] !! 拒绝启动：DZMM_ADMIN_PASSWORD 太短（<8 位），"
+              "对外可达的面板不能用弱密码。")
         return 2
 
     srv = ThreadingHTTPServer((host, port), Handler)
     srv.daemon_threads = True
-    print("[admin] 运维后台已启动 http://{}:{}  只读 / 令牌={}".format(
-        host, port, "开" if token else "关"))
+    print("[admin] 运维后台已启动 http://{}:{}  只读 / 登录={}".format(
+        host, port, "开（账号 {}）".format(user) if pw else "关（未设密码，视为仅回环）"))
     if public:
-        print("[admin] 对外发布：DZMM_ADMIN_PUBLIC=on（已经要求令牌，且应配合安全组"
-              "只放行你自己的出口 IP）。")
+        print("[admin] 对外发布：DZMM_ADMIN_PUBLIC=on。**必须**配合安全组只放行"
+              "你自己的出口 IP —— 这套是 http 明文，密码在链路上是可见的。")
     else:
         print("[admin] 对外边界 = compose 的端口映射（应为 127.0.0.1:{}:{}）。"
-              "不要在没设令牌的情况下改成对外映射。".format(port, port))
+              "不要在没设密码的情况下改成对外映射。".format(port, port))
     if host in ("127.0.0.1", "localhost", "::1"):
         print("[admin] ⚠️ 绑的是回环：compose 发布会连不上（docker-proxy 从容器 IP 转发）。")
+    print("[admin] 会话只存在内存里：重启即全部登出。连续登录失败 {} 次起锁定。"
+          .format(LOCK_AFTER))
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -5,11 +5,12 @@
 "只读"变成**结构性、可验证**的性质，而不是文档里的一句承诺：
 
   1. 每一处 `sqlite3.connect` 都必须带 `mode=ro`
-  2. HTTP 层只接受 GET/HEAD，其它方法一律 405
+  2. 只有 `POST /login` 允许非 GET —— 且它不碰数据库也不碰文件
   3. 它查询的列名必须真的存在于 `runtime/store.py` / `runtime/outbox.py`
      的建表语句里（后台照着自己的记忆抄 schema → 迟早漂移）
   4. 任何一段 section 抛异常都不该让整页变白
   5. 日志内容进 HTML 必须转义（日志里有用户昵称和消息文本）
+  6. 没登录时**一个字节的面板内容都不能给**；连续失败要锁定
 """
 import ast
 import importlib
@@ -17,7 +18,9 @@ import json
 import re
 import sys
 import threading
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -102,12 +105,12 @@ def test_scope_group_constant_comes_from_real_module():
 
 # ---------------------------------------------------------------- 结构：不新增暴露面
 
-def test_published_mapping_requires_token_and_public_flag():
-    """端口一旦发布到回环之外，compose 必须同时给出令牌与 PUBLIC 声明。
+def test_published_mapping_requires_login_and_public_flag():
+    """端口一旦发布到回环之外，compose 必须同时给出账号密码与 PUBLIC 声明。
 
-    这是"忘了设令牌就把面板挂到公网"的**结构性**防线：
-    `DZMM_ADMIN_PUBLIC=on` + 没令牌 -> dashboard 拒绝启动（fail closed），
-    而 compose 必须把 PUBLIC 传进去、令牌必须从 .env 取。
+    这是"忘了设密码就把面板挂到公网"的**结构性**防线：
+    `DZMM_ADMIN_PUBLIC=on` + 没密码 -> dashboard 拒绝启动（fail closed），
+    而 compose 必须把 PUBLIC 传进去、密码必须从 .env 取。
     """
     yml = (ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
     m = re.search(r'-\s*"\$\{DZMM_ADMIN_BIND:-([^}]*)\}:8090:8090"', yml)
@@ -116,25 +119,33 @@ def test_published_mapping_requires_token_and_public_flag():
     if default_bind not in ("127.0.0.1", "localhost", "::1"):
         assert 'DZMM_ADMIN_PUBLIC: "${DZMM_ADMIN_PUBLIC:-on}"' in yml, \
             "对外发布时必须声明 DZMM_ADMIN_PUBLIC=on"
-        assert 'DZMM_ADMIN_TOKEN: "${DZMM_ADMIN_TOKEN:-}"' in yml, \
-            "令牌必须来自 .env（留空以便 dashboard 自己 fail closed，而不是 compose 拒绝）"
-        assert "DZMM_ADMIN_TOKEN:?" not in yml, \
-            "不要用 ${VAR:?} —— 缺令牌会让整个 compose（含 bot 容器）起不来"
+        assert 'DZMM_ADMIN_PASSWORD: "${DZMM_ADMIN_PASSWORD:-}"' in yml, \
+            "密码必须来自 .env（留空以便 dashboard 自己 fail closed，而不是 compose 拒绝）"
+        assert "DZMM_ADMIN_PASSWORD:?" not in yml, \
+            "不要用 ${VAR:?} —— 缺密码会让整个 compose（含 bot 容器）起不来"
 
 
-def test_refuses_to_start_when_public_without_token(monkeypatch, capsys):
-    """**fail closed**：声称对外发布却没有令牌 -> 不启动。
+def test_refuses_to_start_when_public_without_password(monkeypatch, capsys):
+    """**fail closed**：声称对外发布却没有密码 -> 不启动。
 
-    把"忘了设令牌"从"静默裸奔"变成"启动失败 + 容器日志里一行醒目的拒绝"。
+    把"忘了设密码"从"静默裸奔"变成"启动失败 + 容器日志里一行醒目的拒绝"。
     """
     monkeypatch.setenv("DZMM_ADMIN_PUBLIC", "on")
-    monkeypatch.delenv("DZMM_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("DZMM_ADMIN_PASSWORD", raising=False)
     assert dash.main() == 2
     assert "拒绝启动" in capsys.readouterr().out
 
 
-def test_public_with_token_proceeds_past_the_gate(monkeypatch, capsys):
-    """有令牌时必须放行到"绑定端口"那一步。
+def test_refuses_to_start_with_a_weak_password(monkeypatch, capsys):
+    """对外可达的面板不接受 <8 位密码。"""
+    monkeypatch.setenv("DZMM_ADMIN_PUBLIC", "on")
+    monkeypatch.setenv("DZMM_ADMIN_PASSWORD", "短")
+    assert dash.main() == 2
+    assert "太短" in capsys.readouterr().out
+
+
+def test_public_with_password_proceeds_past_the_gate(monkeypatch, capsys):
+    """有密码时必须放行到"绑定端口"那一步。
 
     ⚠️ 不能靠"绑一个特权端口让它失败"来证明 —— **Windows 没有特权端口**，
     端口 1 会真的绑上，然后 `serve_forever()` 永不返回，测试直接挂死
@@ -142,7 +153,8 @@ def test_public_with_token_proceeds_past_the_gate(monkeypatch, capsys):
     它记录下绑定地址，然后在 serve_forever 里立刻抛 KeyboardInterrupt 退出。
     """
     monkeypatch.setenv("DZMM_ADMIN_PUBLIC", "on")
-    monkeypatch.setenv("DZMM_ADMIN_TOKEN", "t0ken")
+    monkeypatch.setenv("DZMM_ADMIN_USER", "nuo")
+    monkeypatch.setenv("DZMM_ADMIN_PASSWORD", "a-long-enough-pw")
     monkeypatch.setenv("DZMM_ADMIN_HOST", "127.0.0.1")
     monkeypatch.setenv("DZMM_ADMIN_PORT", "8123")
 
@@ -163,7 +175,8 @@ def test_public_with_token_proceeds_past_the_gate(monkeypatch, capsys):
     assert dash.main() == 0
     assert seen["addr"] == ("127.0.0.1", 8123)
     assert seen.get("closed") is True
-    assert "令牌=开" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "登录=开" in out and "nuo" in out
 
 
 def test_dashboard_binds_all_interfaces_inside_container():
@@ -183,81 +196,31 @@ def test_compose_passes_wildcard_bind_inside_container():
     assert m.group(1) == "0.0.0.0", "容器内绑定地址应是 0.0.0.0，当前 {!r}".format(m.group(1))
 
 
-def test_referrer_policy_header_present():
-    """令牌可能出现在查询串里，不能顺着 Referer 漏给第三方。"""
+def test_security_headers_present():
+    """没有外链资源，所以可以直接上严格 CSP；顺手把 Referer 掐掉。"""
     src = DASH_PY.read_text(encoding="utf-8")
     assert "Referrer-Policy" in src and "no-referrer" in src
+    assert "Content-Security-Policy" in src
+    assert "form-action 'self'" in src
 
 
 # ---------------------------------------------------------------- 行为：HTTP
 
+@pytest.fixture(autouse=True)
+def _clean_auth_state():
+    """每个用例前后都清掉会话表与失败计数 —— 它们是模块级可变状态。"""
+    dash._sessions.clear()
+    dash._fails.clear()
+    yield
+    dash._sessions.clear()
+    dash._fails.clear()
+
+
 @pytest.fixture
 def server(monkeypatch):
-    monkeypatch.delenv("DZMM_ADMIN_TOKEN", raising=False)
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), dash.Handler)
-    srv.daemon_threads = True
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    base = "http://127.0.0.1:{}".format(srv.server_address[1])
-    try:
-        yield base
-    finally:
-        srv.shutdown()
-        srv.server_close()
-
-
-def _req(base, path, method="GET", headers=None):
-    req = urllib.request.Request(base + path, method=method, headers=headers or {})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return r.status, r.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode("utf-8", "replace")
-
-
-def test_healthz(server):
-    st, body = _req(server, "/healthz")
-    assert st == 200 and body.strip() == "ok"
-
-
-def test_api_summary_shape(server):
-    st, body = _req(server, "/api/summary")
-    assert st == 200
-    d = json.loads(body)
-    assert set(d["sections"]) == {k for k, _, _ in dash.SECTIONS}
-    assert d["version"] == dash.VERSION
-
-
-def test_index_renders_html(server):
-    st, body = _req(server, "/")
-    assert st == 200
-    assert "<!doctype html>" in body
-    assert "运维后台" in body
-    assert "只读" in body
-
-
-def test_unknown_path_404(server):
-    st, _ = _req(server, "/whatever")
-    assert st == 404
-
-
-@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
-def test_write_methods_are_refused(server, method):
-    st, body = _req(server, "/api/summary", method=method)
-    assert st == 405
-    assert "read-only" in body
-
-
-def test_head_has_no_body(server):
-    st, body = _req(server, "/healthz", method="HEAD")
-    assert st == 200 and body == ""
-
-
-# ---------------------------------------------------------------- 行为：令牌
-
-@pytest.fixture
-def tokened_server(monkeypatch):
-    monkeypatch.setenv("DZMM_ADMIN_TOKEN", "s3cret")
+    """**不带登录**的服务（未设密码 = 视为仅回环可达）。"""
+    monkeypatch.setenv("DZMM_ADMIN_USER", "admin")
+    monkeypatch.delenv("DZMM_ADMIN_PASSWORD", raising=False)
     srv = ThreadingHTTPServer(("127.0.0.1", 0), dash.Handler)
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -269,61 +232,265 @@ def tokened_server(monkeypatch):
         srv.server_close()
 
 
-def test_token_required_when_configured(tokened_server):
-    st, body = _req(tokened_server, "/api/summary")
-    assert st == 403
-    assert "令牌" in body
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """不自动跟随 303。
 
-
-def test_token_wrong_is_refused(tokened_server):
-    st, _ = _req(tokened_server, "/api/summary?token=nope")
-    assert st == 403
-
-
-def test_token_via_query(tokened_server):
-    st, _ = _req(tokened_server, "/api/summary?token=s3cret")
-    assert st == 200
-
-
-def test_token_via_header(tokened_server):
-    st, _ = _req(tokened_server, "/api/summary", headers={"X-Admin-Token": "s3cret"})
-    assert st == 200
-
-
-def test_token_in_query_sets_a_cookie_so_links_keep_working(tokened_server):
-    """首次用 ?token= 访问要种 cookie。
-
-    没有这一步，页面里那些站内链接（刷新 / JSON）不带令牌，点一下就 403 ——
-    面板等于只有第一屏能用。
+    `urlopen` 默认会跟着 303 走，于是登录响应会变成"最终那个页面"的 200，
+    而 `Set-Cookie` 在中间响应里、拿不到 —— 第一版测试就是这么误判的。
     """
-    st, body = _req(tokened_server, "/api/summary?token=s3cret")
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _req(base, path, method="GET", headers=None, data=None):
+    body = None
+    if data is not None:
+        body = urllib.parse.urlencode(data).encode("utf-8")
+        headers = dict(headers or {})
+        headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+    req = urllib.request.Request(base + path, method=method,
+                                 headers=headers or {}, data=body)
+    try:
+        with _OPENER.open(req, timeout=10) as r:
+            return r.status, r.read().decode("utf-8", "replace"), dict(r.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace"), dict(e.headers)
+
+
+def test_healthz(server):
+    st, body, _ = _req(server, "/healthz")
+    assert st == 200 and body.strip() == "ok"
+
+
+def test_api_summary_shape(server):
+    st, body, _ = _req(server, "/api/summary")
     assert st == 200
-    # urllib 自动管理 cookie，但我们要确认 Set-Cookie 真的发出去了
-    req = urllib.request.Request(tokened_server + "/api/summary?token=s3cret")
-    with urllib.request.urlopen(req, timeout=10) as r:
-        setc = r.headers.get("Set-Cookie") or ""
-    assert dash.COOKIE_NAME in setc, setc
-    assert "HttpOnly" in setc, setc
-    assert "SameSite=Lax" in setc, setc
+    d = json.loads(body)
+    assert set(d["sections"]) == {k for k, _, _ in dash.SECTIONS}
+    assert d["version"] == dash.VERSION
 
 
-def test_cookie_alone_is_accepted(tokened_server):
-    """带对 cookie 就够，不必每次都把令牌放在地址栏。"""
-    st, _ = _req(tokened_server, "/api/summary",
-                 headers={"Cookie": "{}={}".format(dash.COOKIE_NAME, "s3cret")})
+def test_index_renders_html(server):
+    st, body, _ = _req(server, "/")
     assert st == 200
+    assert "<!doctype html>" in body
+    assert "运维后台" in body
+    assert "只读" in body
 
 
-def test_wrong_cookie_is_refused(tokened_server):
-    st, _ = _req(tokened_server, "/api/summary",
-                 headers={"Cookie": "{}={}".format(dash.COOKIE_NAME, "nope")})
-    assert st == 403
+def test_unknown_path_404(server):
+    st, _, _ = _req(server, "/whatever")
+    assert st == 404
 
 
-def test_healthz_also_requires_token_when_configured(tokened_server):
-    """探活也不能白给 —— 否则它就成了一条"这个面板在这儿"的免费情报。"""
-    st, _ = _req(tokened_server, "/healthz")
-    assert st == 403
+@pytest.mark.parametrize("method", ["PUT", "DELETE", "PATCH", "OPTIONS"])
+def test_write_methods_are_refused(server, method):
+    st, body, _ = _req(server, "/api/summary", method=method)
+    assert st == 405
+    assert "read-only" in body
+
+
+def test_post_outside_login_is_refused(server):
+    """POST 只对 /login 开门；别处一律 405（面板本身不接受写入）。"""
+    st, body, _ = _req(server, "/api/summary", method="POST", data={"x": "1"})
+    assert st == 405
+    assert "read-only" in body
+
+
+def test_head_has_no_body(server):
+    st, body, _ = _req(server, "/healthz", method="HEAD")
+    assert st == 200 and body == ""
+
+
+# ---------------------------------------------------------------- 行为：登录
+
+USER = "nuo"
+PW = "correct-horse-battery"
+
+
+@pytest.fixture
+def login_server(monkeypatch):
+    monkeypatch.setenv("DZMM_ADMIN_USER", USER)
+    monkeypatch.setenv("DZMM_ADMIN_PASSWORD", PW)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), dash.Handler)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = "http://127.0.0.1:{}".format(srv.server_address[1])
+    try:
+        yield base
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def _login(base, user=USER, password=PW):
+    st, body, hdrs = _req(base, "/login", method="POST",
+                          data={"username": user, "password": password})
+    return st, body, hdrs.get("Set-Cookie") or ""
+
+
+def _sid_from(setcookie):
+    for part in setcookie.split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == dash.SESSION_COOKIE:
+            return v
+    return ""
+
+
+def test_unauthenticated_gets_the_login_page_not_the_panel(login_server):
+    """没登录时**一个字节的面板内容都不能给** —— 连标题里的数据都不行。"""
+    st, body, _ = _req(login_server, "/")
+    assert st == 200
+    assert "<form method='POST' action='/login'" in body
+    assert "请登录" in body
+    # 面板的关键内容不该出现
+    for leak in ("启动自证行", "出站队列", "群状态", "生成时间", "JSON"):
+        assert leak not in body, leak
+
+
+def test_unauthenticated_api_is_also_login_page(login_server):
+    """连 JSON 接口也不能白给（否则等于绕过登录拿全部数据）。"""
+    st, body, _ = _req(login_server, "/api/summary")
+    assert st == 200
+    assert "请登录" in body
+    assert "sections" not in body
+
+
+def test_unauthenticated_healthz_is_login_page(login_server):
+    st, body, _ = _req(login_server, "/healthz")
+    assert "请登录" in body
+
+
+def test_wrong_password_is_401_and_no_cookie(login_server):
+    st, body, setcookie = _login(login_server, password="nope-nope-nope")
+    assert st == 401
+    assert "账号或密码不对" in body
+    assert setcookie == ""
+    assert dash.SESSION_COOKIE not in setcookie
+
+
+def test_wrong_username_is_401(login_server):
+    st, _, _ = _login(login_server, user="not-nuo")
+    assert st == 401
+
+
+def test_correct_login_sets_hardened_session_cookie(login_server):
+    st, _, setcookie = _login(login_server)
+    assert st == 303
+    assert dash.SESSION_COOKIE in setcookie
+    assert "HttpOnly" in setcookie
+    assert "SameSite=Strict" in setcookie
+    assert "Path=/" in setcookie
+    assert _sid_from(setcookie)
+
+
+def test_session_cookie_grants_access(login_server):
+    _, _, setcookie = _login(login_server)
+    sid = _sid_from(setcookie)
+    st, body, _ = _req(login_server, "/api/summary",
+                       headers={"Cookie": "{}={}".format(dash.SESSION_COOKIE, sid)})
+    assert st == 200
+    assert "sections" in body
+
+
+def test_forged_session_cookie_is_rejected(login_server):
+    st, body, _ = _req(login_server, "/api/summary",
+                       headers={"Cookie": "{}={}".format(dash.SESSION_COOKIE, "x" * 40)})
+    assert "请登录" in body
+
+
+def test_logout_invalidates_the_session(login_server):
+    _, _, setcookie = _login(login_server)
+    sid = _sid_from(setcookie)
+    cookie = {"Cookie": "{}={}".format(dash.SESSION_COOKIE, sid)}
+    st, _, hdrs = _req(login_server, "/logout", headers=cookie)
+    assert st == 303
+    assert "Max-Age=0" in (hdrs.get("Set-Cookie") or "")
+    st, body, _ = _req(login_server, "/api/summary", headers=cookie)
+    assert "请登录" in body
+
+
+def test_password_never_appears_in_any_response(login_server):
+    _, _, setcookie = _login(login_server)
+    sid = _sid_from(setcookie)
+    cookie = {"Cookie": "{}={}".format(dash.SESSION_COOKIE, sid)}
+    for path in ("/", "/api/summary", "/healthz", "/logout"):
+        for st, body, hdrs in (_req(login_server, path, headers=cookie),
+                               _req(login_server, path)):
+            assert PW not in body, path
+            assert PW not in json.dumps(hdrs), path
+
+
+def test_lockout_after_repeated_failures(login_server):
+    """连续失败要锁定 —— 公网上的登录页没有失败计数等于可以被无限试。"""
+    for i in range(dash.LOCK_AFTER):
+        st, _, _ = _login(login_server, password="bad-{}".format(i))
+        assert st == 401
+    # 第 LOCK_AFTER+1 次：即使密码正确也应被锁定挡住（429）
+    st, body, _ = _login(login_server)
+    assert st == 429
+    assert "次数过多" in body
+    assert dash.lock_remaining("127.0.0.1") > 0
+
+
+def test_successful_login_clears_failure_counter(login_server):
+    for i in range(dash.LOCK_AFTER - 1):
+        _login(login_server, password="bad-{}".format(i))
+    assert (dash._fails.get("127.0.0.1") or [0])[0] == dash.LOCK_AFTER - 1
+    st, _, _ = _login(login_server)
+    assert st == 303
+    assert dash._fails.get("127.0.0.1") is None
+
+
+def test_lockout_grows_exponentially_with_a_cap(monkeypatch):
+    monkeypatch.setattr(dash, "LOCK_BASE", 10)
+    monkeypatch.setattr(dash, "LOCK_MAX", 25)
+    waits = []
+    for _ in range(dash.LOCK_AFTER + 4):
+        waits.append(dash.note_failure("1.2.3.4"))
+    assert waits[:dash.LOCK_AFTER - 1] == [0] * (dash.LOCK_AFTER - 1)
+    assert waits[-1] <= dash.LOCK_MAX
+    assert max(waits) == dash.LOCK_MAX
+
+
+def test_session_expiry(monkeypatch):
+    monkeypatch.setattr(dash, "SESSION_TTL", -1)   # 立刻过期
+    sid = dash.new_session()
+    assert dash.session_valid(sid) is False
+
+
+def test_credentials_compare_uses_constant_time_compare():
+    """账号与密码都必须走 `hmac.compare_digest`，且**都算完再比**。
+
+    否则"账号对不对"可以从耗时上判断出来（用户名枚举）。
+    """
+    src = DASH_PY.read_text(encoding="utf-8")
+    m = re.search(r"def check_credentials.*?(?=\ndef |\nclass )", src, re.S)
+    assert m, "找不到 check_credentials"
+    body = m.group(0)
+    assert "u_ok = hmac.compare_digest" in body, body
+    assert "p_ok = hmac.compare_digest" in body, body
+    # 不能短路：不能出现 `if not u_ok: return` 之类的提前返回
+    assert "and p_ok" in body, body
+    assert re.search(r"if\s+not\s+u_ok\s*:", body) is None, body
+
+
+def test_check_credentials_handles_empty_config(monkeypatch):
+    monkeypatch.delenv("DZMM_ADMIN_PASSWORD", raising=False)
+    assert dash.check_credentials("admin", "") is False
+    assert dash.check_credentials("admin", "anything") is False
+
+
+def test_login_body_size_is_bounded(login_server):
+    """超大 body 要被挡住（别让登录口变成一个内存放大器）。"""
+    st, body, _ = _req(login_server, "/login", method="POST",
+                       data={"username": "a" * (dash.MAX_BODY + 100),
+                             "password": "b"})
+    assert st == 400
 
 
 # ---------------------------------------------------------------- 行为：降级
