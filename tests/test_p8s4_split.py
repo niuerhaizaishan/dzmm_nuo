@@ -6,9 +6,13 @@ bot.py 里留着一个旧定义、模块里有一个新定义 —— 到底跑�
 "改了没生效"的形式出现，届时极难定位。
 
 所以这里第一组测试盯的是**结构不变量**，第二组才是行为。
+
+⚠️ 结构检查全部是**自动推导**的，不维护"已搬走函数"清单 ——
+清单式守卫迟早会变成"随手往列表里加一行"，那就等于没有守卫。
 """
 import ast
 import asyncio
+import importlib
 import sys
 from pathlib import Path
 
@@ -20,49 +24,65 @@ sys.path.insert(0, str(ROOT))
 import bot  # noqa: E402
 import runtime.ctx as ctx  # noqa: E402
 import runtime.dice as rtdice  # noqa: E402
-import runtime.identity as identity  # noqa: E402
-import runtime.obs as obs  # noqa: E402
 
 BOT_PY = ROOT / "bot.py"
-
-# 已搬走的函数 -> 它们现在住的模块（每拆一片就加一行）
-MOVED = {
-    "log": obs,
-    "self_uids": identity, "is_self": identity, "self_names": identity,
-    "_load_member_names": identity, "get_full_name": identity,
-    "get_name": identity, "is_at_me": identity,
-    "_dice_state": rtdice, "_dice_save": rtdice, "_dice_current_player": rtdice,
-    "_dice_send_private": rtdice, "_dice_board_text": rtdice,
-    "_dice_deal_round": rtdice, "_dice_start_cmd": rtdice, "_dice_join_cmd": rtdice,
-    "_dice_exit_cmd": rtdice, "_dice_begin_cmd": rtdice,
-    "_dice_next_round_cmd": rtdice, "_dice_call_cmd": rtdice,
-    "_dice_open_cmd": rtdice, "_dice_quit_cmd": rtdice, "_dice_skip_cmd": rtdice,
-    "_dice_status_text": rtdice,
-}
-
-# 侦察量出来的回指数：新模块提到 `bot` 多少次。
-# 目标始终是 0；涨了就必须在这里显式登记并说明为什么。
-BACKREFS = {"obs": 0, "identity": 0, "dice": 0, "ctx": 0}
+RUNTIME_DIR = ROOT / "runtime"
 
 
-def _bot_defs():
-    tree = ast.parse(BOT_PY.read_text(encoding="utf-8"))
+def _runtime_modules():
+    """runtime/ 下所有模块（跳过 __init__）。"""
+    out = {}
+    for p in sorted(RUNTIME_DIR.glob("*.py")):
+        if p.stem == "__init__":
+            continue
+        out[p.name] = importlib.import_module("runtime." + p.stem)
+    return out
+
+
+def _module_funcs(path: Path):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     return {n.name for n in tree.body
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
 
+def moved_functions():
+    """自动推导"已搬走"的函数：模块里定义了、且 bot 上拿到的是**同一个对象**。
+
+    不需要任何人维护清单：新搬一片，这里自动包含它。
+    """
+    out = {}
+    for fname, mod in _runtime_modules().items():
+        for name in _module_funcs(RUNTIME_DIR / fname):
+            if getattr(bot, name, None) is getattr(mod, name, None):
+                out[name] = mod
+    return out
+
+
+MOVED = moved_functions()
+BOT_DEFS = _module_funcs(BOT_PY)
+
+
 # ---------------------------------------------------------------- 结构不变量
+
+def test_something_was_actually_moved():
+    """守卫本身要先能证明"确实有东西搬出来了"，否则下面的断言全是空转。"""
+    assert len(MOVED) >= 60, "只推导出 {} 个搬走的函数，守卫可能失效了".format(len(MOVED))
+
 
 def test_moved_functions_are_gone_from_bot_py():
     """bot.py 里不得再有这些函数的定义（只允许 re-export）。"""
-    left = sorted(set(MOVED) & _bot_defs())
-    assert left == [], "bot.py 里还有旧定义（会被 import 覆盖成哪个说不清）: {}".format(left)
+    left = sorted(set(MOVED) & BOT_DEFS)
+    assert left == [], "bot.py 里还有旧定义（跑哪个取决于 import 顺序）: {}".format(left)
 
 
 def test_bot_reexports_the_same_objects():
-    """bot 上的名字必须与模块里**同一个对象**，而不是又包了一层。"""
+    """bot 上的名字必须与模块里**同一个对象**，而不是又包了一层。
+
+    45 个发送调用点、几十个业务调用点都还在 `bot.xxx` 上，
+    re-export 让它们一处都不用改 —— 这条测试保证 re-export 没被"优化"掉。
+    """
     for name, mod in MOVED.items():
-        assert getattr(bot, name, None) is getattr(mod, name), name
+        assert getattr(bot, name) is getattr(mod, name), name
 
 
 def test_no_function_is_defined_in_both_bot_and_runtime():
@@ -72,31 +92,22 @@ def test_no_function_is_defined_in_both_bot_and_runtime():
     两边同名的后果是"跑哪个取决于 import 顺序"，而且测试全绿（代码本来就一样）
     —— 直到有人只改了一边，才会以"改了没生效"的形式爆出来。
     """
-    bot_defs = _bot_defs()
     clash = {}
-    for p in sorted((ROOT / "runtime").glob("*.py")):
-        tree = ast.parse(p.read_text(encoding="utf-8"))
-        names = {n.name for n in tree.body
-                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-        both = sorted(names & bot_defs)
+    for fname, _ in _runtime_modules().items():
+        both = sorted(_module_funcs(RUNTIME_DIR / fname) & BOT_DEFS)
         if both:
-            clash[p.name] = both
+            clash[fname] = both
     assert clash == {}, "两边都定义了同一个函数: {}".format(clash)
 
 
-def test_no_backreference_to_bot_in_moved_modules():
-    """拆出去就应该是单向依赖。回指数涨了 = 只是把文字挪了个位置。"""
-    for mod, expected in BACKREFS.items():
-        src = (ROOT / "runtime" / (mod + ".py")).read_text(encoding="utf-8")
-        n = sum(1 for ln in src.splitlines()
-                if ln.strip().startswith(("import bot", "from bot import")))
-        assert n == expected, "{} 回指 bot.py {} 次（期望 {}）".format(mod, n, expected)
-
-
 def test_no_import_bot_in_runtime_package():
-    """整包普查：runtime/ 里目前一处都不该 import bot。"""
+    """整包普查：runtime/ 里一处都不该 import bot。
+
+    出现回指就等于**只是把文字换了个位置**：调用时回指能绕开循环导入，
+    所以它"能跑"，但没有任何解耦。要新增回指必须先在这里显式放开并写明理由。
+    """
     hits = []
-    for p in (ROOT / "runtime").glob("*.py"):
+    for p in sorted(RUNTIME_DIR.glob("*.py")):
         for i, ln in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
             if ln.strip().startswith(("import bot", "from bot import")):
                 hits.append((p.name, i, ln.strip()))

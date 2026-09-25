@@ -64,7 +64,8 @@ for m in ["bot", "dzmm", "token_store", "profiles", "state_store",
           "runtime.session", "runtime.throttle", "runtime.outbox",
           "runtime.routing", "runtime.transport_bot", "runtime.store",
           "runtime.prompts", "runtime.ctx", "runtime.obs", "runtime.identity",
-          "runtime.dice"]:
+          "runtime.dice", "runtime.text", "runtime.members", "runtime.fortune",
+          "runtime.trend", "runtime.recap", "runtime.sign"]:
     try:
         __import__(m)
         check(m, True)
@@ -278,8 +279,14 @@ try:
     import asyncio as _aio
     import runtime.ctx as _ctx
     import runtime.dice as _dice
+    import runtime.fortune as _fort
     import runtime.identity as _ident
+    import runtime.members as _memb
     import runtime.obs as _obs
+    import runtime.recap as _recap
+    import runtime.sign as _sign
+    import runtime.text as _textm
+    import runtime.trend as _trend
 
     # a) 搬走的函数必须还是**同一个对象**（不是两边各定义一份）
     _moved = {
@@ -287,9 +294,32 @@ try:
         "_dice_state": _dice, "_dice_save": _dice, "_dice_start_cmd": _dice,
         "_dice_join_cmd": _dice, "_dice_exit_cmd": _dice,
         "_dice_current_player": _dice, "_dice_board_text": _dice,
+        "_normalize_cn": _textm, "_clean_name": _textm, "_is_stop_word": _textm,
+        "_norm_poem": _textm, "_extract_msgs": _memb, "_find_uid_by_name": _memb,
+        "_archive_text_from_profile": _memb, "_history_lines": _memb,
+        "_fortune_calc": _fort, "is_fortune_cmd": _fort, "_record_fortune": _fort,
+        "week_trend": _trend, "_trend_chong": _trend,
+        "recap_absent": _recap, "is_recap_cmd": _recap,
+        "_sign_reply": _sign, "_sign_calc": _sign, "_is_flower_grab": _sign,
     }
     _bad = [n for n, m in _moved.items() if getattr(bot, n, None) is not getattr(m, n)]
     check("搬走的 {} 个函数仍是同一对象".format(len(_moved)), not _bad, _bad[:4])
+
+    # b2) 自动推导的"已搬走"总数（不依赖任何手维护清单）
+    _mods = {}
+    for _p in sorted((GATE_ROOT / "runtime").glob("*.py")):
+        if _p.stem == "__init__":
+            continue
+        _mods[_p.name] = __import__("runtime." + _p.stem, fromlist=["x"])
+    _auto = 0
+    for _fn, _m in _mods.items():
+        _names = {n.name for n in _ast2.parse(
+            (GATE_ROOT / "runtime" / _fn).read_text(encoding="utf-8")).body
+            if isinstance(n, (_ast2.FunctionDef, _ast2.AsyncFunctionDef))}
+        for _n in _names:
+            if getattr(bot, _n, None) is getattr(_m, _n, None):
+                _auto += 1
+    check("自动推导出 {} 个已搬函数（应 ≥60）".format(_auto), _auto >= 60)
 
     # b) 全自动"两边都定义"守卫：bot.py 与 runtime/ 不得有同名函数
     _bot_defs = {n.name for n in _ast2.parse(

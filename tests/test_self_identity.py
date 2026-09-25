@@ -115,11 +115,22 @@ def test_no_bare_nuouid_comparison_left_in_business_logic():
 
 
 def test_nuonuo_uid_not_corrupted():
-    """`NUONUO_UID` 名字里含 `NUO_UID` 子串 —— 迁移不得改坏它（真人不该动）。"""
+    """`NUONUO_UID` 名字里含 `NUO_UID` 子串 —— 迁移不得改坏它（真人不该动）。
+
+    原来只数 `bot.py` 里的出现次数，P8 第 4 步把用到它的函数搬进了
+    `runtime/sign.py`，次数就跟着变了 —— 这种"跟着文件走"的断言每次搬家都要改，
+    改久了就会变成随手改数字。
+
+    所以改成直接盯**真正的失效模式**：批量把 `NUO_UID` 改名成 `SIDECAR_UID`
+    的时候，`NUONUO_UID` 会被子串替换误伤。这才是要防的东西。
+    """
     assert bot.NUONUO_UID
     assert "SIDECAR" not in bot.NUONUO_UID
-    src = BOT_PY.read_text(encoding="utf-8")
-    assert src.count("NUONUO_UID") == 3
+    for path in [BOT_PY] + sorted((ROOT / "runtime").glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for mangled in ("NUOSIDECAR", "NUO_SIDECAR", "SIDECARNUO"):
+            assert mangled not in text, "{} 被批量替换误伤：{}".format(
+                path.name, mangled)
 
 
 def test_import_from_personas_not_broken():

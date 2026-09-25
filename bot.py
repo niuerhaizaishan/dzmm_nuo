@@ -45,8 +45,7 @@ PUSH_CIDS = [
     "bd7fe6a4-0065-4551-ad3d-94116dba8f9c",  # 认证妹子群
     "007bfd75-2efb-491c-8233-20046af69b24",  # 机电驱动与智能算法研讨群
 ]
-_ACTIVE_CID = GROUPS[0]  # 当前处理的群，主循环每次迭代设置
-PRIMARY_CID = "bd7fe6a4-0065-4551-ad3d-94116dba8f9c"  # 常驻群（妹子认证群，page 常驻不 goto）
+_ACTIVE_CID = GROUPS[0]  # 当前处理的群，主循环每次迭代设置；真源在 runtime/ctx.py
 
 
 OWNER_UID = "a56cbd67-3a1e-439a-8beb-d1557dbeff79"  # 糯糯～（群主，可代注册）
@@ -77,9 +76,16 @@ import token_store
 import env_config
 import state_store                                    # P7：状态存储后端（默认 SQLite）
 from runtime import ctx                               # P8 第 4 步：当前群上下文的唯一真源
+from runtime.ctx import PRIMARY_CID                   # 常驻群 cid 的唯一真源（Sender 默认参数要用）
 from runtime.obs import log  # P8 第 4 步：搬到 runtime/obs.py
 from runtime.identity import self_uids, is_self, self_names, _load_member_names, get_full_name, get_name, is_at_me, NUO_UID, BOT_UID, BOT_NAME, BOT_NAME_SHORT, _name_cache  # P8 第 4 步：搬到 runtime/identity.py
 from runtime.dice import _dice_state, _dice_save, _dice_current_player, _dice_send_private, _dice_board_text, _dice_deal_round, _dice_start_cmd, _dice_join_cmd, _dice_exit_cmd, _dice_begin_cmd, _dice_next_round_cmd, _dice_call_cmd, _dice_open_cmd, _dice_quit_cmd, _dice_skip_cmd, _dice_status_text  # P8 第 4 步：搬到 runtime/dice.py
+from runtime.text import _get_opencc, _normalize_cn, _simplify, _strip_parenthesis, _is_stop_word, _dedupe_options, _normalize_choice, _extract_deadline_seconds, _squash, _clean_name, _norm_poem, _CJK_VARIANT, STOP_WORDS, _OPENCC_T2S  # P8 第 4 步：搬到 runtime/text.py
+from runtime.members import _extract_msgs, _get_msgs_by_uid, _member_profile_text, _find_in_profiles, _find_user_in_msgs, find_user_by_name, _find_uid_by_name, _gender_label, _random_member_uid, _archive_text_from_profile, _history_lines, _profile_history, HISTORY_MAX  # P8 第 4 步：搬到 runtime/members.py
+from runtime.fortune import is_fortune_cmd, fortune, _fortune_calc, _fortune_score, _fortune_level, _record_fortune, _get_fortune_history, _char_wx, _name_wx, _ganzhi, _relation, FORTUNE_APOLOGY, _GAN, _ZHI, _WX_GAN, _WX_ZHI, _GZ_BASE, _WX_ORDER, _WX_BASE, _WX_LUCK, _WX_YI, _WX_JI, _SHENG, _KE, _CHONG, _SHENGXIAO, _CHAR_WX, _REL_SCORE, _REL_TEXT, _LIUCHONG, _LIUHE, _ZHI_SCORE, _ZHI_PENALTY  # P8 第 4 步：搬到 runtime/fortune.py
+from runtime.trend import is_trend_cmd, is_trend_board_cmd, _trend_days, _trend_spark, _trend_chong, _trend_stats, _wd_cn, _md_cn, week_trend, week_trend_board, TREND_CIDS, TREND_DEFAULT_DAYS, TREND_MAX_DAYS  # P8 第 4 步：搬到 runtime/trend.py
+from runtime.recap import is_recap_cmd, _recap_intent, _recap_window, _day0, _msg_ts, _fmt_ts, _recap_mentions, _recap_transcript, recap_absent, RECAP_CIDS, RECAP_MAX_MSGS, RECAP_MAX_HOURS, RECAP_COOLDOWN  # P8 第 4 步：搬到 runtime/recap.py
+from runtime.sign import _room_owner, _is_room_trigger, _is_flower_grab, _sign_from_md, _sign_intent, _sign_find, _sign_parse_birth, _sign_stored, _sign_remember, _sign_calc, _sign_recent, _sign_card, _sign_reply, _ROOM_LAYOUT_WORDS, _ROOM_CONJURE_WORDS, _SIGN_FULL, _SIGN_SHORT, _SIGN_ME_RE, _SIGN_NAMES  # P8 第 4 步：搬到 runtime/sign.py
 
 # DZMM 主站 origin（多线路切换：env_config 从 DZMM_HOST 环境变量读）
 ORIGIN = env_config.get_dzmm_origin()
@@ -524,20 +530,6 @@ def should_reply(context: list[dict]) -> str:
     return ""
 
 
-def _strip_parenthesis(name: str) -> str:
-    """去掉昵称里括号及括号内容，保留波浪号前缀。
-
-    如「糯糯～（裳姐姐的骚贱小母狗❤）」→「糯糯～」。
-    用于发骚/续写的生成 prompt：括号里的签名（如「裳姐姐的骚贱小母狗」）
-    语义太强，LLM 会把「裳姐姐」当成独立角色引入，导致内容串角色。
-    """
-    for sep in ["（", "("]:
-        idx = name.find(sep)
-        if idx > 0:
-            return name[:idx]
-    return name
-
-
 def _strip_at(text: str) -> str:
     """去掉 @小小糯 前缀，返回纯提问。"""
     for name in self_names():
@@ -714,29 +706,6 @@ def _append_memory_ref(text: str, cid: str, subject: str, limit: int = 10) -> st
     return text
 
 
-def _find_user_in_msgs(query: str, msgs: list):
-    """在已有消息列表中按昵称匹配，返回 (uid, 完整昵称)."""
-    _load_member_names()  # 批量加载昵称，避免逐个 get_user
-    uids = set(m.get("sent_by", "") for m in msgs)
-    q = _normalize_cn(query)
-    # 精确匹配优先（归一化后比较，兼容异体字/繁体/空格差异）
-    for uid in uids:
-        full = get_full_name(uid)
-        if _normalize_cn(full) == q or _normalize_cn(get_name(uid)) == q:
-            return uid, full
-    # 子串匹配
-    for uid in uids:
-        full = get_full_name(uid)
-        if q in _normalize_cn(full) or q in _normalize_cn(get_name(uid)):
-            return uid, full
-    return None, None
-
-
-def find_user_by_name(query: str):
-    """根据昵称模糊匹配，返回 (uid, 完整昵称)."""
-    return _find_user_in_msgs(query, get_messages_all(_ACTIVE_CID))
-
-
 def _detect_perf_query(at_msg: str):
     """检测 @ 消息是否是"谁表现怎么样"类请求，返回 (目标名, 是否今天) 或 None."""
     triggers = ("表现怎么样", "表现如何", "表现咋样", "最近怎么样", "今天怎么样",
@@ -838,9 +807,6 @@ JOIN_WARN_NULL = "⚠️ 新成员「{name}」加入但未填性别资料，请�
 JOIN_WARN_NOT_VERIFIED = "⚠️ 新成员「{name}」加入但未通过妹子认证，请管理员留意～ @{name} 也请尽快完成认证哦～"
 
 # 运势磕头道歉文案（2026-09-05 赔罪日追加在运势分析后）
-FORTUNE_APOLOGY = """🙇♀️🙇♀️🙇♀️ 姐姐们，小小糯来磕头认错啦～前几天把运势算得凶凶的，是小小糯不好，这就跪下咚咚咚给姐姐们磕响头赔罪～💦
-为了赔罪，今天每一位姐姐的运势，小小糯都保证是 90 分以上的大吉～🍀 祝姐姐们好运连连，天天被幸福包围～
-姐姐们就原谅软软糯糯的小小糯这一次嘛～好不好嘛～♡"""
 
 # 记忆功能：触发词 + 上限
 MEMORY_TRIGGERS = ["帮我记住", "帮我记", "记住", "记一下", "记着", "别忘了", "牢记"]
@@ -1084,45 +1050,6 @@ def _parse_judge(result: str) -> dict:
     return out
 
 
-def _find_uid_by_name(name: str) -> str:
-    """昵称→uid。精确匹配优先，单字不模糊匹配（避免「裳」误中「裳姐姐」）。"""
-    name = (name or "").strip()
-    if not name:
-        return ""
-    # 1. 完整昵称精确匹配
-    for uid, full in _name_cache.items():
-        if full == name:
-            return uid
-    # 2. 简化昵称精确匹配（去括号/波浪号）
-    for uid in _name_cache:
-        if get_name(uid) == name:
-            return uid
-    # 3. 前缀匹配（name 是完整昵称前缀，如「糯糯」匹配「糯糯～（...）」）
-    for uid, full in _name_cache.items():
-        if full.startswith(name):
-            return uid
-    # 4. 子串匹配（仅 name 长度 ≥2，单字「裳」不参与，避免误中「裳姐姐」）
-    if len(name) >= 2:
-        for uid, full in _name_cache.items():
-            if name in full or full in name:
-                return uid
-    # 档案同样精确优先
-    profiles = load_profiles()
-    for uid, p in profiles.items():
-        if p.get("name", "") == name:
-            return uid
-    for uid, p in profiles.items():
-        full = p.get("name", "")
-        if full and full.startswith(name):
-            return uid
-    if len(name) >= 2:
-        for uid, p in profiles.items():
-            full = p.get("name", "")
-            if full and (name in full or full in name):
-                return uid
-    return ""
-
-
 def _judge_pending(cid: str) -> str:
     """批量评定待评发言的发情值（每2小时调用），返回评定结果文本."""
     state = load_state()
@@ -1285,41 +1212,6 @@ def fasao(cmd: str) -> str:
     return "🎯 点中 " + full + "！\n" + text
 
 
-def _extract_msgs(uid: str, msgs: list) -> list:
-    """从已有消息列表过滤某成员的发言文本."""
-    their_msgs = []
-    for m in msgs:
-        if m.get("sent_by") == uid:
-            text = (m.get("content") or {}).get("text", "").strip()
-            if text and "加入了群聊" not in text:
-                their_msgs.append(text)
-    return their_msgs
-
-
-def _get_msgs_by_uid(uid: str) -> list:
-    """拉取某成员的所有发言文本."""
-    return _extract_msgs(uid, get_messages_all(_ACTIVE_CID))
-
-
-def _member_profile_text(uid: str, full: str, msgs: list = None) -> str:
-    """组装某成员资料+发言文本."""
-    u = get_user(_ACTIVE_CID, uid)
-    their_msgs = _extract_msgs(uid, msgs) if msgs is not None else _get_msgs_by_uid(uid)
-    lines = ["昵称：" + full]
-    if u:
-        if u.get("gender"):
-            lines.append("性别：" + str(u["gender"]))
-        if u.get("quirk"):
-            lines.append("签名：" + str(u["quirk"]))
-        if u.get("bio"):
-            lines.append("简介：" + str(u["bio"]))
-    if their_msgs:
-        lines.append("最近发言（" + str(len(their_msgs)) + "条）：")
-        for t in their_msgs[-30:]:
-            lines.append("  - " + t[:80])
-    return "\n".join(lines)
-
-
 def profile_summary(query: str) -> str:
     """查资料+发言，返回给 AI 的文本."""
     uid, full = find_user_by_name(query)
@@ -1330,96 +1222,9 @@ def profile_summary(query: str) -> str:
 
 # ---- 中文昵称归一化（繁→简 + 异体字→标准字 + 去空白）----
 # 用于昵称模糊匹配，解决"寜/寧"异体字、"繁简混用"、空格差异导致的匹配失败
-_OPENCC_T2S = None
-
-
-def _get_opencc():
-    """懒加载 opencc t2s 转换器（首次调用才创建，失败返回 None 跳过繁简转换）。"""
-    global _OPENCC_T2S
-    if _OPENCC_T2S is None:
-        try:
-            from opencc import OpenCC
-            _OPENCC_T2S = OpenCC('t2s')
-        except Exception:
-            _OPENCC_T2S = False  # 不可用，跳过繁简转换
-    return _OPENCC_T2S or None
 
 
 # opencc t2s 不覆盖的生僻异体字 → 简体标准字
-_CJK_VARIANT = {
-    '寜': '宁', '寕': '宁', '甯': '宁',
-    '爲': '为', '為': '为',
-    '夠': '够', '峯': '峰', '羣': '群',
-    '裏': '里', '裡': '里', '佈': '布', '併': '并',
-    '兇': '凶', '佔': '占', '週': '周', '嚮': '向',
-    '麪': '面', '迴': '回', '姦': '奸', '啓': '启',
-    '敍': '叙', '妳': '你', '媮': '偷',
-}
-
-
-def _normalize_cn(s: str) -> str:
-    """中文昵称归一化：NFKC + 异体字映射 + 繁→简 + 去空白 + 大小写折叠。"""
-    if not s:
-        return ""
-    s = unicodedata.normalize('NFKC', s)
-    s = ''.join(_CJK_VARIANT.get(ch, ch) for ch in s)
-    cc = _get_opencc()
-    if cc:
-        try:
-            s = cc.convert(s)
-        except Exception:
-            pass
-    return re.sub(r'\s+', '', s).casefold()
-
-
-def _simplify(name: str) -> str:
-    """简化昵称：去掉 ～/~/（ 之后的后缀."""
-    for sep in ["～", "~", "（", "("]:
-        idx = name.find(sep)
-        if idx > 0:
-            return name[:idx]
-    return name
-
-
-def _find_in_profiles(query: str):
-    """在档案里按昵称匹配，返回 (uid, profile) 或 (None, None)."""
-    profiles = load_profiles()
-    q = _normalize_cn(query)
-    for uid, p in profiles.items():
-        name = p.get("name", "")
-        if _normalize_cn(name) == q or _normalize_cn(_simplify(name)) == q:
-            return uid, p
-    for uid, p in profiles.items():
-        if q in _normalize_cn(p.get("name", "")):
-            return uid, p
-    return None, None
-
-
-def _archive_text_from_profile(profile: dict) -> str:
-    """从档案构建查询文本（零 API）."""
-    lines = ["【注册档案】", "昵称：" + profile.get("name", "")]
-    if profile.get("gender"):
-        lines.append("性别：" + profile["gender"])
-    if profile.get("signature"):
-        lines.append("签名：" + profile["signature"])
-    if profile.get("bio"):
-        lines.append("简介：" + profile["bio"])
-    if profile.get("xp"):
-        lines.append("XP性癖：" + "、".join(profile["xp"]))
-    lines.append("注册时间：" + profile.get("registered_at", ""))
-    hl = _history_lines(profile, n=3, bio_n=70)
-    if hl:
-        lines.append("【变化轨迹（姓名/签名/简介；越靠前越早，可挑一处做对比反差）】")
-        lines.extend(hl)
-    lines.append("注册时画像：" + profile.get("register_summary", ""))
-    if profile.get("summary"):
-        lines.append("滚动总结：" + profile["summary"])
-    msgs = profile.get("messages", [])
-    if msgs:
-        lines.append("【最新发言】")
-        for m in msgs[-10:]:
-            lines.append("  - [" + m.get("at", "") + "] " + m.get("text", "")[:60])
-    return "\n".join(lines)
 
 
 def _live_insult_text(uid: str, profile: dict) -> str:
@@ -1515,12 +1320,6 @@ def _get_poem_history(uid: str) -> list:
     """读某人的写诗历史（避免重复用），profile 全局共享。"""
     p = get_profile(uid)
     return (p or {}).get("poem_history") or []
-
-
-def _norm_poem(text: str) -> str:
-    """规范化诗：去空行 + 限 9 行（标题占 1 行，合计 ≤10 行，避免 send 的 10 行截断砍掉诗句）。"""
-    lines = [ln for ln in (text or "").split("\n") if ln.strip()]
-    return "\n".join(lines[:9])
 
 
 def _record_poem(uid: str, style: str, text: str) -> None:
@@ -1667,20 +1466,6 @@ PROFILE_SCAN_FILE = ROOT / "profile_scan.json"  # 全群档案扫描基线（跨
 PROFILE_SCAN_HOUR = 6      # 每天 06:00 后首次循环执行一次
 PROFILE_SCAN_MAX_API = 150  # 单次扫描 get_user 上限（防限流）
 PROFILE_NOTICE_MAX = 10     # 单次扫描最多发几条群通知（防刷屏）
-HISTORY_MAX = 5             # 每人保留最近 5 版变化轨迹（姓名/签名/简介一起）
-
-
-def _profile_history(profile: dict) -> list:
-    """统一变化轨迹 [{at, name, sig, bio}]（从旧到新）；老 name_history 自动并入。"""
-    hist = profile.get("history")
-    if not isinstance(hist, list):
-        hist = []
-        for h in (profile.get("name_history") or []):
-            if isinstance(h, dict) and h.get("from"):
-                hist.append({"at": str(h.get("at") or ""), "name": str(h["from"]),
-                             "sig": "", "bio": ""})
-        profile["history"] = hist
-    return hist
 
 
 def _record_history(profile: dict, old: dict, at: str) -> None:
@@ -1690,23 +1475,6 @@ def _record_history(profile: dict, old: dict, at: str) -> None:
                  "sig": str(old.get("sig") or ""), "bio": str(old.get("bio") or "")})
     del hist[:-HISTORY_MAX]
     profile.pop("name_history", None)
-
-
-def _history_lines(profile: dict, n: int = 3, bio_n: int = 70) -> list:
-    """变化轨迹 → 给 AI 看的文本行（越靠前越早，可用于对比反差）."""
-    hist = [h for h in _profile_history(profile) if isinstance(h, dict)][-n:]
-    lines = []
-    for h in hist:
-        bits = []
-        if h.get("name"):
-            bits.append("叫「" + str(h["name"]) + "」")
-        if h.get("sig"):
-            bits.append("签名「" + _squash(h["sig"], 30) + "」")
-        if h.get("bio"):
-            bits.append("简介：" + _squash(h["bio"], bio_n))
-        if bits:
-            lines.append("  - " + (str(h.get("at")) or "?") + " 前，" + "｜".join(bits))
-    return lines
 
 
 def _scan_load() -> dict:
@@ -1722,12 +1490,6 @@ def _scan_save(d: dict) -> None:
         PROFILE_SCAN_FILE.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
-
-
-def _squash(s: str, n: int) -> str:
-    """压成单行并截断（简介/签名群内展示用）."""
-    s = " ".join(str(s or "").split())
-    return s[:n] + ("…" if len(s) > n else "")
 
 
 def _daily_profile_scan() -> list:
@@ -1850,17 +1612,6 @@ def _refresh_profile_latest(uid: str, profile: dict) -> None:
         pass
 
 
-def _gender_label(uid: str) -> str:
-    """返回性别标签：女生/男生/未知（用于 AI 称呼判断）."""
-    p = get_profile(uid)
-    g = (p.get("gender") or "").strip().lower() if p else ""
-    if g in ("male", "man", "男", "m"):
-        return "男生"
-    if g in ("female", "lesbian", "女", "f", "百合"):
-        return "女生"
-    return "未知"
-
-
 def archive_query(query: str):
     """查询某人，返回 (文本, 是否已注册). 已注册读档案（零 API），未注册实时查."""
     uid, profile = _find_in_profiles(query)
@@ -1962,343 +1713,18 @@ def is_insult_cmd(cmd: str) -> str:
 
 # ---------- 运势：五行命理算分（确定性，非随机）----------
 
-_GAN = "甲乙丙丁戊己庚辛壬癸"
-_ZHI = "子丑寅卯辰巳午未申酉戌亥"
-_WX_GAN = {"甲": "木", "乙": "木", "丙": "火", "丁": "火", "戊": "土",
-           "己": "土", "庚": "金", "辛": "金", "壬": "水", "癸": "水"}
-_WX_ZHI = {"子": "水", "丑": "土", "寅": "木", "卯": "木", "辰": "土", "巳": "火",
-           "午": "火", "未": "土", "申": "金", "酉": "金", "戌": "土", "亥": "水"}
-_GZ_BASE = datetime(1900, 1, 1)          # 甲戌日基准
-_WX_ORDER = ["木", "火", "土", "金", "水"]
 # 五行 → 命基底分（天生禀赋）
-_WX_BASE = {"木": 54, "火": 53, "土": 55, "金": 52, "水": 50}
 # 五行 → 幸运色/数字/方位
-_WX_LUCK = {"木": ("竹青", "3", "正东"), "火": ("绛红", "7", "正南"),
-            "土": ("杏黄", "5", "正中"), "金": ("皓白", "9", "正西"),
-            "水": ("月白", "1", "正北")}
 # 五行 → 当日宜/忌
-_WX_YI = {"木": ("会友", "开工"), "火": ("社交", "表白"), "土": ("守成", "理财"),
-          "金": ("决断", "讨要"), "水": ("出行", "学习")}
-_WX_JI = {"木": ("砍伐", "熬夜"), "火": ("独处", "争执"), "土": ("动土", "远行"),
-          "金": ("拖延", "硬拼"), "水": ("停滞", "冲动")}
-_SHENG = {"木": "火", "火": "土", "土": "金", "金": "水", "水": "木"}   # 我生
-_KE = {"木": "土", "土": "水", "水": "火", "火": "金", "金": "木"}       # 我克
-_CHONG = {"子": "午", "丑": "未", "寅": "申", "卯": "酉", "辰": "戌", "巳": "亥",
-          "午": "子", "未": "丑", "申": "寅", "酉": "卯", "戌": "辰", "亥": "巳"}
-_SHENGXIAO = {"子": "鼠", "丑": "牛", "寅": "虎", "卯": "兔", "辰": "龙", "巳": "蛇",
-              "午": "马", "未": "羊", "申": "猴", "酉": "鸡", "戌": "狗", "亥": "猪"}
 # 字 → 五行（常见字，按偏旁字义；查不到用编码兜底）
-_CHAR_WX = {
-    "清": "水", "海": "水", "洋": "水", "江": "水", "河": "水", "溪": "水", "涵": "水",
-    "沐": "水", "湘": "水", "泠": "水", "雨": "水", "雪": "水", "冰": "水", "霜": "水",
-    "云": "水", "水": "水", "淼": "水", "润": "水", "汐": "水", "沫": "水",
-    "林": "木", "森": "木", "松": "木", "柏": "木", "梅": "木", "兰": "木", "花": "木",
-    "草": "木", "茉": "木", "莉": "木", "薇": "木", "楠": "木", "桐": "木", "竹": "木",
-    "褚": "木", "裳": "木", "苑": "木", "苏": "木", "青": "木", "翠": "木", "若": "木",
-    "火": "火", "炎": "火", "日": "火", "阳": "火", "明": "火", "晨": "火", "曦": "火",
-    "丹": "火", "彤": "火", "红": "火", "夏": "火", "晴": "火", "暖": "火", "灵": "火",
-    "光": "火", "辉": "火", "燕": "火", "紫": "火", "昕": "火",
-    "山": "土", "峰": "土", "岩": "土", "石": "土", "城": "土", "坤": "土", "佳": "土",
-    "依": "土", "安": "土", "宇": "土", "宛": "土", "岚": "土", "雅": "土", "韵": "土",
-    "御": "土", "衡": "土", "岳": "土", "屿": "土", "糯": "土", "土": "土",
-    "金": "金", "银": "金", "钰": "金", "鑫": "金", "铭": "金", "锐": "金", "锦": "金",
-    "镜": "金", "瑞": "金", "白": "金", "素": "金", "秋": "金", "铃": "金", "珍": "金",
-    "珠": "金", "琳": "金", "瑶": "金", "璇": "金",
-}
 
 
-def _clean_name(name: str) -> str:
-    """昵称只留主名：先截断括号/波浪号等后缀，再留中文；无中文则返回截断后的原名。"""
-    for sep in ("（", "(", "～", "~", "【", "[", "·", "-"):
-        idx = name.find(sep)
-        if idx > 0:
-            name = name[:idx]
-    cn = "".join(ch for ch in name if "\u4e00" <= ch <= "\u9fff")
-    return cn or name.strip()
-
-
-def _char_wx(ch: str) -> str:
-    """单字五行：查表优先，兜底按编码映射（确定性）。"""
-    return _CHAR_WX.get(ch) or _WX_ORDER[ord(ch) % 5]
-
-
-def _name_wx(name: str) -> tuple:
-    """名格五行：主名各字五行的众数（并列取首字），返回 (五行, 依据字)。"""
-    cn = _clean_name(name)
-    if not cn:
-        return "土", ""
-    wx_list = [_char_wx(ch) for ch in cn]
-    counts = {}
-    for w in wx_list:
-        counts[w] = counts.get(w, 0) + 1
-    max_n = max(counts.values())
-    cands = [w for w, n in counts.items() if n == max_n]
-    wx = wx_list[0] if wx_list[0] in cands else cands[0]
-    return wx, cn[0]
-
-
-def _ganzhi(dt) -> tuple:
-    """公历日期 → (干支, 干五行, 支五行)。基准 1900-01-01 甲戌日。"""
-    d = dt.date() if hasattr(dt, "date") else dt
-    n = (10 + (d - _GZ_BASE.date()).days) % 60
-    g, z = _GAN[n % 10], _ZHI[n % 12]
-    return g + z, _WX_GAN[g], _WX_ZHI[z]
-
-
-def _relation(a: str, b: str) -> str:
-    """a 对 b 的五行关系：被生（b 生 a）/克/同/生/被克。"""
-    if a == b:
-        return "同"
-    if _SHENG[b] == a:
-        return "被生"
-    if _KE[a] == b:
-        return "克"
-    if _SHENG[a] == b:
-        return "生"
-    if _KE[b] == a:
-        return "被克"
-    return "同"
-
-
-_REL_SCORE = {"被生": 15, "克": 12, "同": 8, "生": 5, "被克": -26}
-_REL_TEXT = {"被生": "受生", "克": "发力", "同": "比和", "生": "泄气", "被克": "受压"}
 # 本命地支 × 当日地支：六冲 = 明确的凶日信号，六合 = 顺遂（让「凶」真的算得出来）
-_LIUCHONG = {"子": "午", "午": "子", "丑": "未", "未": "丑", "寅": "申", "申": "寅",
-             "卯": "酉", "酉": "卯", "辰": "戌", "戌": "辰", "巳": "亥", "亥": "巳"}
-_LIUHE = {"子": "丑", "丑": "子", "寅": "亥", "亥": "寅", "卯": "戌", "戌": "卯",
-          "辰": "酉", "酉": "辰", "巳": "申", "申": "巳", "午": "未", "未": "午"}
-_ZHI_SCORE = 8      # 日合本命
-_ZHI_PENALTY = -15  # 日冲本命
-
-
-def _fortune_calc(uid: str, full: str, date_str: str, bio: str = "") -> dict:
-    """运势算分（确定性）：命基 + 名格 + 本命 + 人和 → 分数/四维/幸运。"""
-    # 本命（入群日干支）
-    reg = ""
-    try:
-        reg = str((get_profile(uid) or {}).get("registered_at") or "")
-    except Exception:
-        pass
-    ben_ganzhi, ben_wx, ben_desc = "—", "土", "土土"
-    if reg:
-        try:
-            bdt = datetime.strptime(reg[:19], "%Y-%m-%d %H:%M:%S")
-            ben_ganzhi, bg, bz = _ganzhi(bdt)
-            ben_wx, ben_desc = bg, bg + bz
-        except Exception:
-            pass
-    # 今日干支
-    try:
-        dt_now = datetime.strptime(date_str, "%Y-%m-%d")
-    except Exception:
-        dt_now = datetime.now()
-    day_ganzhi, day_wx, day_zhi_wx = _ganzhi(dt_now)
-    day_desc = day_wx + day_zhi_wx
-    # 名格
-    name_wx, name_ch = _name_wx(full)
-    # 生克
-    rel_name = _relation(name_wx, day_wx)
-    rel_ben = _relation(ben_wx, day_wx)
-    # 本命地支 × 当日地支：六冲 = 凶日信号，六合 = 顺遂
-    ben_zhi = ben_ganzhi[1] if len(ben_ganzhi) > 1 else ""
-    day_zhi = day_ganzhi[-1] if day_ganzhi else ""
-    chong_ben = bool(ben_zhi) and _LIUCHONG.get(ben_zhi) == day_zhi
-    he_ben = bool(ben_zhi) and _LIUHE.get(ben_zhi) == day_zhi
-    zhi_extra = _ZHI_PENALTY if chong_ben else (_ZHI_SCORE if he_ben else 0)
-    # 人和：简介 + 群内活跃（上限 10，避免人人满分）
-    human = 5 + (2 if bio else 0)
-    try:
-        cnts = (load_state().get(_ACTIVE_CID) or {}).get("msg_count") or {}
-        n = int(cnts.get(uid, 0) or 0)
-        human += min(n, 3) if n > 0 else 0
-    except Exception:
-        pass
-    human = min(human, 10)
-    # 总分
-    score = _WX_BASE.get(ben_wx, 50) + _REL_SCORE.get(rel_name, 8) \
-        + _REL_SCORE.get(rel_ben, 8) + human + zhi_extra
-    score = max(0, min(100, score))
-    # 四维（总分 ± 确定性偏移）
-    seed = sum(ord(c) for c in (name_ch or full or "糯")) % 7
-    dims = {
-        "财运": max(0, min(100, score - 5 + seed % 5)),
-        "事业": max(0, min(100, score + 4 + (seed + 2) % 5)),
-        "感情": max(0, min(100, score + 1 + (seed + 4) % 5)),
-        "健康": max(0, min(100, score - 8 + (seed + 1) % 6)),
-    }
-    return {
-        "score": score, "level": _fortune_level(score),
-        "ben_ganzhi": ben_ganzhi, "ben_wx": ben_wx, "ben_desc": ben_desc,
-        "day_ganzhi": day_ganzhi, "day_wx": day_wx, "day_desc": day_desc,
-        "day_zhi": day_ganzhi[-1], "name_wx": name_wx, "name_ch": name_ch,
-        "rel_name": rel_name, "rel_ben": rel_ben, "human": human,
-        "ben_zhi": ben_zhi, "day_zhi": day_zhi,
-        "chong_ben": chong_ben, "he_ben": he_ben, "zhi_extra": zhi_extra,
-        "dims": dims, "luck": _WX_LUCK.get(name_wx, ("杏黄", "5", "正中")),
-    }
-
-
-def is_fortune_cmd(cmd: str) -> bool:
-    """识别算命指令."""
-    return any(cmd.startswith(p) for p in ["/算命", "/运势", "/占卜", "/今日运势", "/今日运气", "/运气"])
-
-
-def _get_fortune_history(cid: str) -> dict:
-    """读取运势历史（uid -> {date: score}），长期保留。"""
-    return (load_state().get(cid) or {}).get("fortune_history") or {}
-
-
-def _record_fortune(cid: str, uid: str, date_str: str, score: int) -> None:
-    """写入当日运势（长期历史），失败静默。"""
-    try:
-        state = load_state()
-        gs = state.get(cid) or {}
-        hist = gs.get("fortune_history") or {}
-        uh = hist.get(uid) or {}
-        uh[date_str] = score
-        hist[uid] = uh
-        gs["fortune_history"] = hist
-        state[cid] = gs
-        save_state(state)
-    except Exception:
-        pass
-
-
-def _fortune_score(uid: str, date_str: str, history: dict, min_score: int = 0) -> int:
-    """真随机评分；当天已算过则复用历史分值（同人同天稳定）。min_score 为最低分。"""
-    uh = history.get(uid) or {}
-    if date_str in uh:
-        return uh[date_str]
-    return random.randint(min_score, 100)
-
-
-def _fortune_level(score: int) -> str:
-    """评分等级."""
-    if score >= 90:
-        return "大吉"
-    if score >= 80:
-        return "吉"
-    if score >= 70:
-        return "中吉"
-    if score >= 60:
-        return "小吉"
-    if score >= 40:
-        return "平"
-    if score >= 20:
-        return "小凶"
-    return "凶"
-
-
-def fortune(cmd_sender: str) -> str:
-    """算命：五行命理算分 → 组装运势消息（硬控 ≤10 行）。"""
-    uid = cmd_sender
-    full = get_full_name(uid)
-    today = datetime.now().strftime("%Y-%m-%d")
-    profile = get_profile(uid) or {}
-    bio = str(profile.get("bio") or profile.get("signature") or "")
-    # 一次性彩蛋
-    is_caigao = (uid == "79c910d0-e0e8-40c8-9d84-ad4c6a45bd49" and today == "2026-08-24")
-    is_apology_day = (today == "2026-09-05")
-    # 五行算分（确定性）
-    info = _fortune_calc(uid, full, today, bio)
-    score, level = info["score"], info["level"]
-    if is_caigao:
-        score, level = 100, "大吉中的大吉"
-    if is_apology_day:
-        score, level = max(90, score), _fortune_level(max(90, score))
-    _record_fortune(_ACTIVE_CID, uid, today, score)
-    # 黄历：宜/忌按当日五行，冲煞按当日地支
-    dw = info["day_wx"]
-    yi = "、".join(_WX_YI.get(dw, ("会友", "开工")))
-    ji = "、".join(_WX_JI.get(dw, ("熬夜", "独处")))
-    chong = _SHENGXIAO.get(_CHONG.get(info["day_zhi"], ""), "")
-    chong_txt = (" ｜ 冲" + chong) if chong else ""
-    # 分值算式
-    base = _WX_BASE.get(info["ben_wx"], 50)
-    rn = _REL_SCORE.get(info["rel_name"], 8)
-    rb = _REL_SCORE.get(info["rel_ben"], 8)
-    ze = info.get("zhi_extra", 0)
-    calc = ("命基" + str(base)
-            + " " + ("−" if rn < 0 else "+") + " 名格" + str(abs(rn))
-            + " " + ("−" if rb < 0 else "+") + " 本命" + str(abs(rb)))
-    if ze:
-        calc += (" " + ("−" if ze < 0 else "+")
-                 + (" 日冲" if ze < 0 else " 日合") + str(abs(ze)))
-    calc += " + 人和" + str(info["human"]) + " = " + str(score)
-    # 命盘结论
-    concl = ("本命" + _REL_TEXT.get(info["rel_ben"], "比和")
-             + "、名格" + _REL_TEXT.get(info["rel_name"], "比和"))
-    if info.get("chong_ben"):
-        concl += " ⚠日冲本命"
-    elif info.get("he_ben"):
-        concl += " ✦日合本命"
-    d, lk = info["dims"], info["luck"]
-    # AI 只写最后一句（传「主名」而非完整昵称，避免从括号后缀里挑错名字）
-    main_name = _clean_name(full) or full
-    # 用户最近发言（供 AI 个性化点评，结合她近期在群里聊什么）
-    recent = ""
-    try:
-        msgs = (profile.get("messages") or [])[-6:]
-        recent = " / ".join(str(m.get("text", "")).replace("\n", " ")[:40]
-                            for m in msgs if m.get("text"))
-    except Exception:
-        pass
-    hint = ("用户主名：" + main_name + "\n"
-            + "命盘：本命" + info["ben_wx"] + "（" + _REL_TEXT.get(info["rel_ben"], "比和")
-            + "）、名格" + info["name_wx"] + "（" + _REL_TEXT.get(info["rel_name"], "比和") + "）"
-            + ("；日辰冲本命（今天尤其不顺，可以说得实在一点、别硬灌鸡汤）"
-               if info.get("chong_ben") else
-               ("；日辰与本命六合（今天顺遂）" if info.get("he_ben") else ""))
-            + "；四维：财运" + str(d["财运"]) + "、事业" + str(d["事业"])
-            + "、感情" + str(d["感情"]) + "、健康" + str(d["健康"]))
-    if recent:
-        hint += "\n最近发言：" + recent
-    try:
-        last = generate_fortune(main_name, score, today, hint) or ""
-    except Exception:
-        last = ""
-    last = " ".join(str(last).split()).strip()
-    if not last:
-        last = (full + "今天运势「" + level + "」哦～命理" + concl
-                + "，记得照着宜忌来，小小糯都替你看着呢～♡")
-    ben_gan = info["ben_ganzhi"][0] if info["ben_ganzhi"] != "—" else "—"
-    ben_zhi = info["ben_ganzhi"][1] if len(info["ben_ganzhi"]) > 1 else ""
-    lines = [
-        "🔮 " + full + " 今日运势 " + str(score) + "分（" + level + "）",
-        "————————————",
-        "📜 命盘 →  本命" + ben_gan + "：" + ben_zhi + info["ben_wx"]
-        + " | 名格：" + info["name_wx"]
-        + " |  今日：" + info["day_ganzhi"] + info["day_wx"]
-        + " → " + concl,
-        "📅 宜" + yi + " ｜ 忌" + ji + chong_txt,
-        "🧮 " + calc,
-        "📈 💰财运" + str(d["财运"]) + " · 💼事业" + str(d["事业"])
-        + " · 💗感情" + str(d["感情"]) + " · 🩺健康" + str(d["健康"]),
-        "🍀 幸运：" + lk[0] + " · " + lk[1] + " · " + lk[2],
-        "————————————",
-        last,
-    ]
-    if is_caigao:
-        lines.append("（悄悄说：这是糯糯姐看你最近太凶，手动调的高分哦～）")
-    if is_apology_day:
-        lines.append(FORTUNE_APOLOGY)
-    return "\n".join(lines)
 
 
 def is_scene_cmd(cmd: str) -> bool:
     """识别涩涩骰子指令（/发骚 为主，旧的保留作别名）."""
     return cmd.startswith("/发骚") or cmd.startswith("/体位骰") or cmd.startswith("/场景骰") or cmd.startswith("/涩涩骰")
-
-
-def _random_member_uid(exclude: set = None):
-    """随机选当前群一个发言成员（排除 agent 自己和 exclude 里的 uid）."""
-    msgs = get_messages_all(_ACTIVE_CID, max_count=200)
-    uids = [m.get("sent_by", "") for m in msgs if m.get("sent_by") and not is_self(m.get("sent_by"))]
-    if exclude:
-        uids = [u for u in uids if u not in exclude]
-    if not uids:
-        return None
-    return random.choice(list(set(uids)))
 
 
 def _maybe_devil_roast(cid: str, msgs: list, group_state: dict) -> str:
@@ -2570,20 +1996,6 @@ def is_continue_cmd(cmd: str) -> bool:
         return False
     for kw in ("继续", "续写", "接着", "再来", "再写", "往下写"):
         if c.startswith(kw):
-            return True
-    return False
-
-
-STOP_WORDS = ("停止", "停下", "结束", "终止")
-
-
-def _is_stop_word(cmd: str) -> bool:
-    """识别停止类结束词（停止/停下/结束/终止，带/或不带/）."""
-    c = cmd.strip().lstrip("/").strip()
-    if not c:
-        return False
-    for kw in STOP_WORDS:
-        if c == kw or c.startswith(kw):
             return True
     return False
 
@@ -2970,15 +2382,6 @@ def is_vote_end_cmd(cmd: str) -> bool:
     return cmd.startswith("/投票结束") or _is_stop_word(cmd)
 
 
-def _normalize_choice(s: str):
-    """归一化选项值：A/B/C... → 1/2/3...，返回数字字符串或 None."""
-    s = s.strip().upper()
-    if s in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
-        return s
-    mapping = {"A": "1", "B": "2", "C": "3", "D": "4", "E": "5", "F": "6", "G": "7", "H": "8"}
-    return mapping.get(s)
-
-
 def is_vote_choice_cmd(cmd: str):
     """识别选择指令（/选 N 或 /N），返回归一化数字或 None. 投票与剧情共用."""
     c = cmd.strip().lstrip("/").strip()
@@ -2987,17 +2390,6 @@ def is_vote_choice_cmd(cmd: str):
     if c.startswith("选"):
         return _normalize_choice(c[1:].strip())
     return _normalize_choice(c)
-
-
-def _extract_deadline_seconds(text: str):
-    """提取截止时长，返回 (剩余文本, 秒数或 None)."""
-    m = re.search(r'(\d+)\s*(分钟|小时|秒)', text)
-    if not m:
-        return text, None
-    n = int(m.group(1))
-    secs = {"分钟": 60, "小时": 3600, "秒": 1}[m.group(2)] * n
-    remaining = (text[:m.start()] + text[m.end():]).strip()
-    return remaining, secs
 
 
 def _extract_mentioned_members(text: str, cid: str) -> list:
@@ -3051,15 +2443,6 @@ def _vote_members_text(cid: str) -> str:
             uids.append(uid)
     names = [get_name(uid) for uid in uids if get_name(uid)]
     return "、".join(names[:30])
-
-
-def _dedupe_options(options: list) -> list:
-    seen = []
-    for o in options:
-        o = str(o).strip()
-        if o and o not in seen:
-            seen.append(o)
-    return seen
 
 
 def start_vote(cid: str, cmd: str, sender_uid: str) -> str:
@@ -4931,769 +4314,20 @@ async def main_loop(interval: float, dry: bool, once: bool):
 
 # ---------------------------------------------------------------- 房间群（独立人设 + 屋主权限）
 
-_ROOM_LAYOUT_WORDS = ["改变房间布局", "换房间布局", "改变布局", "换个布局", "重新布置",
-                      "布置房间", "布置一下", "换个风格", "改变风格", "装修", "改造房间",
-                      "换布置", "重新装修", "改一下房间", "变一下房间"]
-_ROOM_CONJURE_WORDS = ["给我", "拿来", "变个", "变出", "我要", "帮我拿", "帮我变",
-                       "端来", "来一个"]
-
-
-def _room_owner(cid: str, uid: str) -> bool:
-    """是不是这间屋子的主人（屋主 + 操作者）——只有他们能下命令."""
-    cfg = ROOMS.get(cid) or {}
-    return uid in (cfg.get("owners") or set())
-
-
-def _is_room_trigger(cid: str, uid: str, text: str) -> bool:
-    """房间群：这条消息要不要管家回应（被点名 / 主人指令 / 客人点单）."""
-    cfg = ROOMS.get(cid)
-    if not cfg or not text or is_self(uid):
-        return False
-    t = text.strip()
-    if not t or t.startswith("/"):
-        return False  # / 指令走权限分支
-    if ("小小糯" in t) or is_at_me(t):
-        return True
-    if _is_flower_grab(t):
-        return True  # 摘花 → 进房间分支（男生放任女鬼，其他人由 AI 婉拒）
-    if any(w in t for w in ROSE_SIGN_WORDS) or _sign_find(t):
-        return True  # 星座运势（待客服务，客人也能用）
-    if _sign_parse_birth(t) and any(k in t for k in ("我是", "生", "生日", "出生", "座")):
-        return True  # 报生日
-    if _room_owner(cid, uid):
-        # 主人没点名也可能在下命令
-        return (any(w in t for w in _ROOM_LAYOUT_WORDS)
-                or any(w in t for w in _ROOM_CONJURE_WORDS))
-    # 客人：只有明确的点单才回应（被点名 / 进群问好另外处理）
-    return (any(v in t for v in ROOM_ORDER_VERBS)
-            and any(w in t for w in ROOM_MENU_WORDS))
-
-
-def _is_flower_grab(t: str) -> bool:
-    """是不是在摘花：整句命中，或「花名 + 摘取动词」组合命中（抗语序变化）."""
-    if not t:
-        return False
-    if any(w in t for w in ROOM_FLOWER_WORDS):
-        return True
-    return (any(n in t for n in ROOM_FLOWER_NOUNS)
-            and any(v in t for v in ROOM_FLOWER_VERBS))
-
 
 # ---------------------------------------------------------------- 星座运势（Rose 专属）
 
-_SIGN_NAMES = [s[0] for s in ROSE_SIGNS]
 # 一级：全称「X座」—— 任何时候都认（天平座是常见错写，带"座"所以安全）
-_SIGN_FULL = {"白羊座": "白羊", "金牛座": "金牛", "双子座": "双子", "巨蟹座": "巨蟹",
-              "狮子座": "狮子", "处女座": "处女", "天秤座": "天秤", "天蝎座": "天蝎",
-              "射手座": "射手", "摩羯座": "摩羯", "水瓶座": "水瓶", "双鱼座": "双鱼",
-              "天平座": "天秤"}
 # 二级：简称 —— 只有同句出现星座意图词时才认
 # （已删掉"牧羊/室女/人马/山羊/宝瓶"这些非标准别名：牧羊犬、人马、山羊本身就有歧义）
-_SIGN_SHORT = {"白羊": "白羊", "金牛": "金牛", "双子": "双子", "巨蟹": "巨蟹",
-               "狮子": "狮子", "处女": "处女", "天秤": "天秤", "天蝎": "天蝎",
-               "射手": "射手", "摩羯": "摩羯", "水瓶": "水瓶", "双鱼": "双鱼"}
 # 句首「我+座名」也算自报星座（"我天秤"、"我水瓶的"）
 # 注意必须锚定句首：否则"我今天买了个水瓶"会被误判
-_SIGN_ME_RE = re.compile(r"^\s*我\s*(" + "|".join(_SIGN_SHORT.keys()) + ")")
-
-
-def _sign_from_md(month: int, day: int):
-    """月-日 → 星座条目（含元素/守护星/关键词）; 非法日期返回 None."""
-    try:
-        month, day = int(month), int(day)
-    except Exception:
-        return None
-    if not (1 <= month <= 12 and 1 <= day <= 31):
-        return None
-    for name, el, ruler, (sm, sd), (em, ed), kw in ROSE_SIGNS:
-        if (month, day) >= (sm, sd) and (month, day) <= (em, ed):
-            return (name, el, ruler, kw)
-        if sm > em:  # 跨年段（摩羯）
-            if (month, day) >= (sm, sd) or (month, day) <= (em, ed):
-                return (name, el, ruler, kw)
-    return None
-
-
-def _sign_intent(text: str) -> bool:
-    """句子里有没有"星座意图"（用来自动消歧简称）."""
-    return any(k in text for k in (
-        "我是", "我 是", "本人", "我属于", "我太阳", "我月亮", "我上升",
-        "什么座", "哪个座", "星座", "星象", "星盘", "运势", "运气",
-        "怎么样", "如何", "看看", "查查", "查一下", "今天", "本周", "这周"))
-
-
-def _sign_find(text: str):
-    """认星座。分两级（2026-09-21 屋主要求：避免误触发）：
-    一级：全称「X座」—— 任何时候都认（最安全）
-    二级：简称（"天蝎"）—— 只有同句出现星座意图词时才认（"我是天蝎"、"天蝎怎么样"）
-    所以光发「白羊」不再触发，但「我是白羊」照样认。
-    """
-    for full, std in _SIGN_FULL.items():
-        if full in text:
-            return std
-    m = _SIGN_ME_RE.match(text)
-    if m:
-        return _SIGN_SHORT.get(m.group(1))
-    if _sign_intent(text):
-        for short, std in _SIGN_SHORT.items():
-            if short in text:
-                return std
-    return None
-
-
-def _sign_parse_birth(text: str):
-    """从文本里解析生日（月-日），返回 (month, day) 或 None.
-    支持：11月5号 / 11-5 / 11.5 / 11/5 / 5月11号（靠月<=12 判断顺序）."""
-    m = re.search(r"(\d{1,2})\s*[月\-./]\s*(\d{1,2})", text)
-    if m:
-        a, b = int(m.group(1)), int(m.group(2))
-        if 1 <= a <= 12 and 1 <= b <= 31:
-            return (a, b)
-        if 1 <= b <= 12 and 1 <= a <= 31:  # 写反了（日-月）
-            return (b, a)
-        return None
-    m = re.search(r"(\d{1,2})\s*月\s*(\d{1,2})", text)
-    if m:
-        return (int(m.group(1)), int(m.group(2)))
-    return None
-
-
-def _sign_stored(cid: str, uid: str):
-    """读某人在这间屋子登记的生日 → (sign, month, day) 或 None（含平台生日兜底）."""
-    gs = (load_state().get(cid) or {})
-    d = (gs.get("rose_signs") or {}).get(uid) or {}
-    if d.get("sign"):
-        return (d["sign"], int(d.get("m") or 0), int(d.get("d") or 0))
-    # 兜底：平台资料里万一填了生日
-    try:
-        u = get_user(cid, uid) or {}
-        b = str(u.get("birthday") or "")
-        if len(b) >= 10:
-            mm, dd = int(b[5:7]), int(b[8:10])
-            s = _sign_from_md(mm, dd)
-            if s:
-                return (s[0], mm, dd)
-    except Exception:
-        pass
-    return None
-
-
-def _sign_remember(cid: str, uid: str, sign: str, month: int, day: int) -> None:
-    """把生日写进房间的册子（只记月-日，不记年份）."""
-    try:
-        st = load_state()
-        gs = st.get(cid) or {}
-        d = gs.get("rose_signs") or {}
-        d[uid] = {"sign": sign, "m": int(month), "d": int(day), "at": time.time()}
-        gs["rose_signs"] = d
-        st[cid] = gs
-        save_state(st)
-    except Exception as e:
-        log("星座记录失败: " + str(e)[:60])
-
-
-def _sign_calc(uid: str, sign: str, date_str: str) -> dict:
-    """确定性算分：同一个人、同一天、同一个星座 → 结果固定（和认证群五行运势一致）."""
-    h = hashlib.md5((uid + "|" + date_str + "|" + sign).encode("utf-8")).hexdigest()
-    nums = [int(h[i:i + 4], 16) for i in range(0, 24, 4)]
-    dims = {
-        "爱情": 52 + nums[0] % 44,
-        "事业": 52 + nums[1] % 44,
-        "财运": 52 + nums[2] % 44,
-        "心情": 52 + nums[3] % 44,
-    }
-    luck = {
-        "item": ROSE_LUCKY_ITEMS[nums[0] % len(ROSE_LUCKY_ITEMS)],
-        "dir": ROSE_LUCKY_DIRS[nums[1] % len(ROSE_LUCKY_DIRS)],
-        "color": ROSE_LUCKY_COLORS[nums[2] % len(ROSE_LUCKY_COLORS)],
-        "yi": ROSE_SIGN_YI[nums[3] % len(ROSE_SIGN_YI)],
-        "ji": ROSE_SIGN_JI[nums[4] % len(ROSE_SIGN_JI)],
-    }
-    # 月相按日期取（全房间一致，仅氛围）
-    dt = datetime.strptime(date_str, "%Y-%m-%d")
-    luck["moon"] = ROSE_MOONS[(dt.timetuple().tm_yday // 4) % len(ROSE_MOONS)]
-    return {"dims": dims, "luck": luck, "total": sum(dims.values()) // len(dims)}
-
-
-def _sign_recent(uid: str, cid: str) -> str:
-    """该客人最近的发言（给 AI 做个性化点评用）."""
-    try:
-        their = _get_msgs_by_uid(uid) or []
-        return " / ".join(str(t).replace("\n", " ")[:40] for t in their[-4:])
-    except Exception:
-        return ""
-
-
-async def _sign_card(cid: str, uid: str, sign: str, month: int, day: int,
-                     who: str = "客人") -> str:
-    """组装星座运势卡（固定 ≤10 行，AI 只写最后一段）."""
-    info = None
-    for n, el, ruler, kw in [(s[0], s[1], s[2], s[5]) for s in ROSE_SIGNS]:
-        if n == sign:
-            info = (el, ruler, kw)
-            break
-    if not info:
-        return ""
-    el, ruler, kw = info
-    today = datetime.now().strftime("%Y-%m-%d")
-    r = _sign_calc(uid, sign, today)
-    d, lk = r["dims"], r["luck"]
-    try:
-        para = await asyncio.to_thread(
-            generate_horoscope, sign, el, ruler, lk["moon"], d, lk["yi"], lk["ji"],
-            today, who, ("最近发言：" + _sign_recent(uid, cid)) if _sign_recent(uid, cid) else "")
-    except Exception as e:
-        log("星座点评生成失败: " + str(e)[:60])
-        para = ""
-    para = " ".join(str(para or "").split())
-    if not para:
-        para = ("（抬手拂过窗边那枝玫瑰，花瓣上浮起细碎的光）"
-                + "今天的星象不算平顺，把节奏放慢一点反而顺。"
-                + "（把一杯温水推到你手边）宜" + lk["yi"] + "，忌" + lk["ji"] + "，其余交给时间。")
-    md_txt = str(month).zfill(2) + "-" + str(day).zfill(2)
-    return "\n".join([
-        "🌹 今日星象 · " + sign + "座",
-        "————————————",
-        "🪐 " + el + "象 · 守护星" + ruler + " · 月相：" + lk["moon"] + " · " + md_txt + "生",
-        "💗爱情" + str(d["爱情"]) + " · 💼事业" + str(d["事业"])
-        + " · 💰财运" + str(d["财运"]) + " · 🌙心情" + str(d["心情"]),
-        "🍀 幸运：" + lk["item"] + " · " + lk["dir"] + " · " + lk["color"],
-        "📅 宜" + lk["yi"] + " ｜ 忌" + lk["ji"],
-        "————————————",
-        para,
-    ])
-
-
-async def _sign_reply(cid: str, uid: str, text: str, who: str = "客人") -> str:
-    """星座相关消息的统一入口。返回要发的内容；不是星座话题则返回 None（交给 AI 正常回应）."""
-    t = (text or "").strip()
-    if not t:
-        return None
-    has_word = any(w in t for w in ROSE_SIGN_WORDS)
-    named = _sign_find(t)
-    birth = _sign_parse_birth(t)
-    owner = _room_owner(cid, uid)
-
-    # ① 报星座："我是天蝎座的"
-    if named and (any(k in t for k in ("我是", "我 是", "我属于", "本人", "我太阳")) or not has_word):
-        if any(k in t for k in ("我是", "我属于", "本人")):
-            _sign_remember(cid, uid, named, 0, 0)
-            card = await _sign_card(cid, uid, named, 0, 0, who)
-            return "（把一片花瓣夹进册子）记下了，" + named + "座。\n" + card
-    # ② 报生日："我 11 月 5 号生的" / "我是 3.15 出生的" / "生日 12-22"
-    if birth and any(k in t for k in ("我是", "生", "生日", "出生", "座")):
-        s = _sign_from_md(birth[0], birth[1])
-        if s:
-            _sign_remember(cid, uid, s[0], birth[0], birth[1])
-            card = await _sign_card(cid, uid, s[0], birth[0], birth[1], who)
-            return ("（翻开册子写下日子，花瓣在字上停了一下）"
-                    + str(birth[0]) + "月" + str(birth[1]) + "日，是" + s[0] + "座。\n" + card)
-        return "这个日子小小糯认不出来……月日再报一次？比如 11 月 5 号。"
-    # ③ 问房间整体星象（屋主专属）
-    if owner and any(k in t for k in ("房间星象", "今日星象", "今天适合", "屋子运势", "房间运势")):
-        card = await _sign_card(cid, cid, "天秤", 9, 23, "Vv姐姐" if uid != NUONUO_UID else "糯糯姐")
-        return "（把窗推开一条缝，夜里的香气涌进来）今天这间屋子——\n" + card
-    # ④ 星象榜：谁运势最好
-    if any(k in t for k in ("谁运势", "谁运气", "运势排行", "星象榜", "谁最好")):
-        gs = (load_state().get(cid) or {})
-        rec = gs.get("rose_signs") or {}
-        if not rec:
-            return "册子上还没有人报过生日呢，报一个，小小糯才好替你们看。"
-        today = datetime.now().strftime("%Y-%m-%d")
-        _load_member_names()  # 先刷新昵称缓存，免得榜上显示 uid 前缀
-        rows = []
-        for u, dv in rec.items():
-            sg = dv.get("sign")
-            if not sg:
-                continue
-            rows.append((_sign_calc(u, sg, today)["total"], get_name(u), sg))
-        if not rows:
-            return "册子上还没有人能算呢。"
-        rows.sort(reverse=True)
-        lines = ["🔮 今日星象榜"]
-        for i, (sc, nm, sg) in enumerate(rows[:8], 1):
-            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, str(i) + ".")
-            lines.append(medal + " " + nm + " · " + sg + "座 · " + str(sc))
-        return "\n".join(lines[:10])
-    # ⑤ 问运势（指名某个星座 / 问自己的）
-    #   注意：只要文本里出现星座名（哪怕光发"白羊座"三个字）也算——光发座名就当他来看这个座的运势
-    if has_word or named:
-        if named:  # 指名某个星座（不一定是自己）
-            card = await _sign_card(cid, uid, named, 0, 0, who)
-            _st = _sign_stored(cid, uid)
-            if _st and _st[0] == named:
-                return card
-            # 没记录 / 记的不是这一座 → 末尾轻轻问一句要不要记进册子
-            return card + "\n（若是你本人的座，说一句「我是" + named + "座」，小小糯替你记进册子。）"
-        got = _sign_stored(cid, uid)
-        if not got:
-            return ("（合上册子）小小糯这儿还没记过你的生日呢。"
-                    "报一个就好——几月几号，或者直接说你是哪个星座？")
-        card = await _sign_card(cid, uid, got[0], got[1], got[2], who)
-        return card
-    return None
 
 
 # ---------------------------------------------------------------- 「我不在的时候」回顾（仅认证群）
 
-RECAP_CIDS = {PRIMARY_CID}          # 只在认证妹子群开放
-RECAP_MAX_MSGS = 400                # 窗口内最多取多少条喂给 AI（防刷屏撑爆）
-RECAP_MAX_HOURS = 48                # 窗口最长 48 小时
-RECAP_COOLDOWN = 30                 # 同一时间窗重复问的冷却（换个时间段问不受限）
-
-
-def is_recap_cmd(cmd: str):
-    """识别 /我不在 /补课 /错过 指令，返回窗口描述（可为空串）；None = 不是."""
-    for p in ["/我不在", "/补课", "/错过了什么", "/错过"]:
-        if cmd.startswith(p):
-            return cmd[len(p):].strip()
-    return None
-
-
-def _recap_intent(text: str) -> bool:
-    """自然语言里是不是在问"我不在的时候发生了什么"（配合 @小小糯 用）."""
-    t = text or ""
-    if "我不在" in t or "错过" in t:
-        return True
-    if "发生" in t and any(k in t for k in ("什么", "啥")):
-        return True
-    if any(k in t for k in ("有啥事", "有什么瓜", "有瓜吗", "群里咋了", "群里怎么了")):
-        return True
-    return False
-
-
-def _recap_window(cid: str, uid: str, text: str):
-    """算出回顾起点，返回 (起点时间戳, 人类可读窗口描述)."""
-    now = time.time()
-    t = text or ""
-    # 手动指定（支持阿拉伯数字和中文数字：3小时 / 两小时 / 半天）
-    cn = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7,
-          "八": 8, "九": 9, "十": 10}
-    m = re.search(r"(\d+)\s*(小时|钟头)", t)
-    if m:
-        h = min(int(m.group(1)), RECAP_MAX_HOURS)
-        return (now - h * 3600, now, "最近 " + str(h) + " 小时")
-    m = re.search(r"([一两二三四五六七八九十])\s*(小时|钟头)", t)
-    if m:
-        h = min(cn.get(m.group(1), 1), RECAP_MAX_HOURS)
-        return (now - h * 3600, now, "最近 " + str(h) + " 小时")
-    if "半天" in t:
-        return (now - 12 * 3600, now, "最近半天")
-    if "一天" in t or "24小时" in t:
-        return (now - 24 * 3600, now, "最近一天")
-    m = re.search(r"([一两二三四五六七八九十\d]+)\s*天(前|以前)", t)
-    if m:
-        raw = m.group(1)
-        n = int(raw) if raw.isdigit() else cn.get(raw, 1)
-        d0 = _day0(datetime.now() - timedelta(days=n))
-        return (d0, d0 + 86400, str(n) + " 天前")
-    if "大前天" in t:
-        d0 = _day0(datetime.now() - timedelta(days=3))
-        return (d0, d0 + 86400, "大前天")
-    if "前天" in t:
-        d0 = _day0(datetime.now() - timedelta(days=2))
-        return (d0, d0 + 86400, "前天")
-    if "前几天" in t:
-        return (_day0(datetime.now() - timedelta(days=3)), now, "前几天")
-    # 周末（必须放在"上周"之前判断，否则"上周末"会被"上周"先吃掉）
-    if any(k in t for k in ("周末", "礼拜六", "礼拜天", "礼拜日")):
-        d = datetime.now()
-        back = (d.weekday() - 5) % 7          # 最近的那个周六
-        sat = _day0(d - timedelta(days=back))
-        end = min(sat + 2 * 86400, now)       # 到周日 24:00（未结束则到现在）
-        return (sat, end, "上周末" if back else "本周末")
-    # 周X / 星期X / 上周X（"上周三"必须放在"上周"之前）
-    m = re.search(r"(周|星期|礼拜)([一二三四五六日天])", t)
-    if m:
-        wmap = {"一": 0, "二": 1, "三": 2, "四": 3, "五": 4, "六": 5, "日": 6, "天": 6}
-        w = wmap.get(m.group(2))
-        if w is not None:
-            d = datetime.now()
-            back = (d.weekday() - w) % 7
-            d0 = _day0(d - timedelta(days=back))
-            end = min(d0 + 86400, now)
-            return (d0, end, "周" + m.group(2))
-    if any(k in t for k in ("上周", "上个星期", "上一周", "上星期")):
-        d = datetime.now()
-        this_mon = _day0(d - timedelta(days=d.weekday()))
-        return (this_mon - 7 * 86400, this_mon, "上周")
-    if any(k in t for k in ("上个月", "上月")):
-        first = _day0(datetime.now().replace(day=1))
-        prev_month = datetime.fromtimestamp(first - 86400)  # 上个月最后一天
-        return (_day0(prev_month.replace(day=1)), first, "上个月")
-    if any(k in t for k in ("这个月", "本月")):
-        return (_day0(datetime.now().replace(day=1)), now, "这个月")
-    if "今天" in t or "今日" in t:
-        d0 = _day0(datetime.now())
-        if "早上" in t or "早晨" in t:
-            return (d0, min(d0 + 9 * 3600, now), "今天早上")
-        if "上午" in t:
-            return (d0, min(d0 + 12 * 3600, now), "今天上午")
-        if "中午" in t:
-            return (d0 + 11 * 3600, min(d0 + 14 * 3600, now), "今天中午")
-        if "下午" in t:
-            return (d0 + 12 * 3600, min(d0 + 18 * 3600, now), "今天下午")
-        if "晚上" in t:
-            return (d0 + 18 * 3600, now, "今天晚上")
-        return (d0, now, "今天")
-    if "昨天" in t or "昨日" in t:
-        d0 = _day0(datetime.now() - timedelta(days=1))
-        return (d0, d0 + 86400, "昨天")
-    if "上午" in t:
-        return (_day0(datetime.now()), now, "今天上午起")
-    if "下午" in t:
-        return (_day0(datetime.now()) + 12 * 3600, now, "今天下午起")
-    if "晚上" in t:
-        return (_day0(datetime.now()) + 18 * 3600, now, "今晚起")
-    # 默认：你上次发言之前的那一条
-    gs = (load_state().get(cid) or {})
-    prev = (gs.get("prev_speak") or {}).get(uid)
-    last = (gs.get("last_speak") or {}).get(uid)
-    since = prev or last
-    if since and now - since <= RECAP_MAX_HOURS * 3600:
-        return (since, now, "")
-    return (now - 6 * 3600, now, "最近 6 小时")
-
-
-def _day0(dt) -> float:
-    """某天 00:00 的时间戳."""
-    return dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-
-
-def _msg_ts(m: dict) -> float:
-    """消息时间戳（sent_at 是 UTC 字符串）."""
-    try:
-        return datetime.fromisoformat(
-            str(m.get("sent_at") or "").replace("+00", "+00:00")).timestamp()
-    except Exception:
-        return 0.0
-
-
-def _fmt_ts(ts: float) -> str:
-    return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
-
-
-def _recap_mentions(msgs: list, uid: str):
-    """扫窗口内有没有人提到/@他。返回 (次数, 提到他的人名列表, 一句样例)."""
-    names = {get_full_name(uid), get_name(uid)}
-    names = {n for n in names if n and len(n) >= 2}
-    if not names:
-        return (0, [], "")
-    hits, who, sample = 0, [], ""
-    for m in msgs:
-        if is_self(m.get("sent_by")) or m.get("sent_by") == uid:
-            continue
-        t = (m.get("content") or {}).get("text", "")
-        if not t or "加入了群聊" in t:
-            continue  # 入群提示里的名字不算"有人找你"（但仍保留在转录里给 AI 归纳）
-        if any(("@" + n) in t or (n in t) or (n[:4] in t and len(n) >= 4) for n in names):
-            hits += 1
-            nm = get_name(m.get("sent_by", "")) or "有人"
-            if nm not in who:
-                who.append(nm)
-            if not sample:
-                sample = t[:60]
-    return (hits, who[:3], sample)
-
-
-def _recap_transcript(msgs: list) -> tuple:
-    """消息列表 → 给 AI 的转录文本 + 条数（bot 消息标成"小小糯:"，长文截断）."""
-    lines = []
-    for m in msgs:
-        u = m.get("sent_by", "")
-        t = ((m.get("content") or {}).get("text") or "").strip()
-        if not t:
-            continue
-        if is_self(u):
-            lines.append("小小糯: " + t[:100])
-        else:
-            lines.append(get_name(u) + ": " + t[:80])
-    return ("\n".join(lines), len(lines))
-
-
-async def recap_absent(cid: str, uid: str, text: str = "") -> str:
-    """「我不在的时候群里发生了什么」——返回 ≤10 行的回顾."""
-    if cid not in RECAP_CIDS:
-        return ""
-    gs = (load_state().get(cid) or {})
-    since, until, wlabel = _recap_window(cid, uid, text)
-    wkey = str(int(since) // 60)  # 窗口指纹（起点取整到分钟）
-    # 冷却只拦"同一时间窗重复问"；换个时间段问（昨天/上午/两小时）直接放行
-    cd = gs.get("recap_ts") or {}
-    last = cd.get(uid) or {}
-    if isinstance(last, dict) and last.get("key") == wkey \
-            and time.time() - float(last.get("ts") or 0) < RECAP_COOLDOWN:
-        return "这一段刚给你说完呢～换个时间段问（比如「昨天」「上午」），或者过一会儿再问嘛～"
-    try:
-        since_utc = datetime.utcfromtimestamp(since).strftime("%Y-%m-%d %H:%M:%S")
-        msgs = await asyncio.to_thread(get_messages_since, cid, since_utc,
-                                       max_count=600)
-    except Exception as e:
-        log("回顾拉取失败: " + str(e)[:60])
-        return "哎呀，小小糯翻记录的时候卡了一下，等会儿再问一次好不好～"
-    # 先把成员昵称一次性load进来：否则转录里每个陌生 uid 都会单独发一次 HTTP 查名字
-    # （实测 6 小时窗口因此多花 2.9 秒）
-    try:
-        await asyncio.to_thread(_load_member_names, cid)
-    except Exception:
-        pass
-    msgs = [m for m in msgs if (m.get("content") or {}).get("text", "").strip()]
-    # 按窗口终点过滤（"昨天"/"上周末"这类有明确结束时间，不能把今天的消息也算进来）
-    if until and until < time.time() - 60:
-        msgs = [m for m in msgs if _msg_ts(m) <= until]
-    total = len(msgs)
-    if total == 0:
-        return "（翻了翻小本子）" + (wlabel or "你不在的这段时间") + "群里一条消息都没有，安静得像没人～"
-    kept = msgs[-RECAP_MAX_MSGS:]
-    transcript, n_shown = _recap_transcript(kept)
-    hits, who, sample = _recap_mentions(msgs, uid)
-    end_show = until if (until and until < time.time() - 60) else time.time()
-    if wlabel:
-        win_txt = wlabel + " · " + _fmt_ts(since) + " ~ " + _fmt_ts(end_show)
-    else:
-        win_txt = _fmt_ts(since) + " ~ " + _fmt_ts(end_show)
-    # 🔔 有人找你这行由代码确定，不让 AI 编
-    if hits:
-        bell = ("🔔 有人找你：" + "、".join(who) + " 提到你 " + str(hits) + " 次"
-                + ("（比如「" + sample + "」）" if sample else ""))
-    else:
-        bell = "🔔 有人找你：没人提到你，安心～"
-    mention_txt = ("提到他 " + str(hits) + " 次，提到的人是 " + "、".join(who)) if hits else "无"
-    try:
-        raw = await asyncio.to_thread(generate_recap, transcript, get_name(uid),
-                                      win_txt, mention_txt)
-    except Exception as e:
-        log("回顾生成失败: " + str(e)[:60])
-        raw = ""
-    body = {}
-    for ln in str(raw or "").split("\n"):
-        s = ln.strip()
-        for k in ("💬", "🎭", "📌"):
-            if s.startswith(k):
-                body[k] = s
-    lines = ["📮 你不在的时候（" + win_txt + "，群里 " + str(total) + " 条"
-             + ("，这里挑最近 " + str(n_shown) + " 条看" if total > n_shown else "") + "）",
-             bell]
-    for k in ("💬", "🎭", "📌"):
-        if body.get(k):
-            lines.append(body[k])
-    if len(lines) < 3:
-        lines.append("（群里挺热闹的，但小小糯没提炼出什么重点，要不你再问细一点？）")
-    # 记录冷却
-    try:
-        st = load_state()
-        g2 = st.get(cid) or {}
-        cd2 = g2.get("recap_ts") or {}
-        cd2[uid] = {"ts": time.time(), "key": wkey}
-        g2["recap_ts"] = cd2
-        st[cid] = g2
-        save_state(st)
-    except Exception:
-        pass
-    log("📮 [" + cid[:8] + "] 回顾: " + get_name(uid)[:12] + " 窗口 " + win_txt
-        + " 共 " + str(total) + " 条，提及 " + str(hits) + " 次")
-    return "\n".join(lines[:10])
-
 
 # ---------------------------------------------------------------- 过去 N 天运势趋势（认证群）
-
-TREND_CIDS = {PRIMARY_CID}      # 只在认证妹子群开放（那边才有 fortune_history）
-TREND_DEFAULT_DAYS = 7
-TREND_MAX_DAYS = 30             # 历史只从 2026-09-04 开始，再长也没数据
-
-
-def is_trend_cmd(cmd: str):
-    """识别趋势指令，返回天数；None = 不是."""
-    for p in ["/周运", "/过去一周", "/最近七天", "/周趋势", "/运势趋势", "/走势",
-              "/过去7天", "/过去"]:
-        if cmd.startswith(p):
-            rest = cmd[len(p):].strip()
-            if rest.startswith("榜"):   # /周运榜 归榜单分支，不算趋势
-                return None
-            m = re.search(r"(\d+)", rest)
-            n = int(m.group(1)) if m else TREND_DEFAULT_DAYS
-            if "半" in rest:
-                n = 15
-            elif "月" in rest:
-                n = 30
-            return max(1, min(n, TREND_MAX_DAYS))
-    return None
-
-
-def is_trend_board_cmd(cmd: str) -> bool:
-    """识别「群运势榜」指令（必须放在 is_rank_cmd 之前判断，否则会被"排行"吃掉）."""
-    return any(k in cmd for k in ("周运榜", "运势排行", "运势榜", "谁运势最好", "谁运气最好"))
-
-
-def _trend_days(cid: str, uid: str, n: int):
-    """取某人最近 n 天的真实运势记录 → [(date_str, score|None)]（从旧到新，缺的为 None）."""
-    hist = ((load_state().get(cid) or {}).get("fortune_history") or {}).get(uid) or {}
-    today = datetime.now()
-    out = []
-    for i in range(n - 1, -1, -1):
-        d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
-        sc = hist.get(d)
-        out.append((d, int(sc) if isinstance(sc, (int, float)) else None))
-    return out
-
-
-def _trend_spark(scores: list) -> str:
-    """迷你走势条：分数 → 方块字符（缺记录用 ·）."""
-    blocks = "▁▂▃▄▅▆▇█"
-    cells = []
-    for sc in scores:
-        cells.append("·" if sc is None else blocks[max(0, min(7, sc // 13))])
-    return "".join(cells)
-
-
-def _trend_chong(uid: str, dates: list) -> list:
-    """这几天里哪些是「日冲本命」（日期可确定性推算，所以补不出来也能标）."""
-    out = []
-    try:
-        p = get_profile(uid) or {}
-        full = p.get("name") or get_full_name(uid)
-        bio = str(p.get("bio") or "")
-        for d in dates:
-            try:
-                info = _fortune_calc(uid, full, d, bio)
-                if info.get("chong_ben"):
-                    out.append(d)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return out
-
-
-def _trend_stats(pairs: list):
-    """(日期, 分数) → 统计量（只按有记录的天算）."""
-    have = [(d, s) for d, s in pairs if s is not None]
-    st = {"n": len(have), "total": len(pairs)}
-    if not have:
-        return st
-    st["avg"] = round(sum(s for _, s in have) / float(len(have)), 1)
-    hi = max(have, key=lambda kv: kv[1])
-    lo = min(have, key=lambda kv: kv[1])
-    st["hi"], st["hi_d"] = hi[1], hi[0]
-    st["lo"], st["lo_d"] = lo[1], lo[0]
-    # 最长连跌（只看有记录的天，按时间顺序）
-    run = best = 0
-    best_span = None
-    cur_start = None
-    for i in range(1, len(have)):
-        if have[i][1] < have[i - 1][1]:
-            if run == 0:
-                cur_start = have[i - 1][0]
-            run += 1
-            if run > best:
-                best, best_span = run, (cur_start, have[i][0])
-        else:
-            run = 0
-    st["drop"] = best
-    st["drop_span"] = best_span
-    return st
-
-
-def _wd_cn(date_str: str) -> str:
-    """日期 → 周几（中文）."""
-    try:
-        w = datetime.strptime(date_str, "%Y-%m-%d").weekday()
-        return "一二三四五六日"[w]
-    except Exception:
-        return "?"
-
-
-def _md_cn(date_str: str) -> str:
-    return date_str[5:].replace("-", "/")
-
-
-async def week_trend(cid: str, uid: str, days: int = TREND_DEFAULT_DAYS) -> str:
-    """过去 N 天的真实运势趋势卡（只显示真实记录，没算的留空）."""
-    if cid not in TREND_CIDS:
-        return ""
-    pairs = _trend_days(cid, uid, days)
-    st = _trend_stats(pairs)
-    name = get_name(uid)
-    if st["n"] == 0:
-        return ("（翻了翻小本子）过去 " + str(days) + " 天你一次都没找小小糯算过运势呢～"
-                "发 /算命 算一次，小小糯就开始给你记了哦～")
-    scores = [s for _, s in pairs]
-    # 上周同期（用于对比）
-    prev = _trend_days(cid, uid, days * 2)[:days]
-    pst = _trend_stats(prev)
-    lines = ["📈 " + name + " · 过去 " + str(days) + " 天运势（"
-             + _md_cn(pairs[0][0]) + " ~ " + _md_cn(pairs[-1][0]) + "）",
-             "日期  " + " ".join(_wd_cn(d).rjust(2) for d, _ in pairs),
-             "分数  " + " ".join(("—" if s is None else str(s)).rjust(2) for _, s in pairs),
-             "走势  " + " ".join(("·" if s is None else "▁▂▃▄▅▆▇█"[max(0, min(7, s // 13))])
-                                 .rjust(2) for _, s in pairs),
-             "有记录 " + str(st["n"]) + "/" + str(st["total"]) + " 天 · "
-             + (("唯一记录 " + str(st["hi"]) + "(" + _wd_cn(st["hi_d"]) + ")")
-                if st["n"] == 1 else
-                ("均值 " + str(st["avg"]) + " · 最高 " + str(st["hi"])
-                 + "(" + _wd_cn(st["hi_d"]) + ")"
-                 + " · 最低 " + str(st["lo"]) + "(" + _wd_cn(st["lo_d"]) + ")"))]
-    if pst.get("n"):
-        diff = round(st["avg"] - pst["avg"], 1)
-        arrow = "↑" if diff > 0 else ("↓" if diff < 0 else "=")
-        cmp_txt = ("环比上期 " + str(pst["avg"]) + "（" + arrow + str(abs(diff)) + "）")
-    else:
-        cmp_txt = "上期没记录，没法对比"
-    if st.get("drop"):
-        sp = st["drop_span"]
-        cmp_txt += (" · 最长连跌 " + str(st["drop"]) + " 天（"
-                    + _wd_cn(sp[0]) + "→" + _wd_cn(sp[1]) + "）" if sp else "")
-    lines.append(cmp_txt)
-    chongs = _trend_chong(uid, [d for d, s in pairs if s is not None])
-    if chongs:
-        lines.append("⚠️ 凶日（日冲本命）：" + "、".join(_wd_cn(d) for d in chongs))
-    lines.append("————————————")
-    data_txt = ("统计窗口：" + pairs[0][0] + " ~ " + pairs[-1][0] + "\n"
-                + "每天分数（— = 那天没算）："
-                + "、".join(_wd_cn(d) + " " + ("没算" if s is None else str(s))
-                            for d, s in pairs) + "\n"
-                + "有记录 " + str(st["n"]) + "/" + str(st["total"]) + " 天，均值 " + str(st["avg"])
-                + "，最高 " + str(st["hi"]) + "（周" + _wd_cn(st["hi_d"]) + "）"
-                + "，最低 " + str(st["lo"]) + "（周" + _wd_cn(st["lo_d"]) + "）\n"
-                + "上期均值：" + (str(pst.get("avg")) if pst.get("n") else "无记录") + "\n"
-                + "最长连跌：" + (str(st.get("drop")) + " 天" if st.get("drop") else "无") + "\n"
-                + "日冲本命的日子：" + ("、".join(_wd_cn(d) for d in chongs) if chongs else "无"))
-    try:
-        para = await asyncio.to_thread(generate_trend, data_txt, name)
-    except Exception as e:
-        log("趋势点评生成失败: " + str(e)[:60])
-        para = ""
-    para = " ".join(str(para or "").split())
-    if not para:
-        para = "（翻了翻小本子）这 " + str(days) + " 天里你有记录的有 " + str(st["n"]) + " 天，均值 " + str(st["avg"]) + "～"
-    lines.append(para)
-    log("📈 [" + cid[:8] + "] 趋势: " + name[:12] + " " + str(days) + " 天，有记录 "
-        + str(st["n"]) + " 天，均值 " + str(st["avg"]))
-    return "\n".join(lines[:10])
-
-
-async def week_trend_board(cid: str, days: int = TREND_DEFAULT_DAYS) -> str:
-    """群运势榜：过去 N 天谁的平均分最高（只统计有记录的天，至少 2 天才上榜）."""
-    if cid not in TREND_CIDS:
-        return ""
-    fh = (load_state().get(cid) or {}).get("fortune_history") or {}
-    today = datetime.now()
-    win = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
-    rows = []
-    for uid, uh in fh.items():
-        sc = [int(uh[d]) for d in win if isinstance(uh.get(d), (int, float))]
-        if len(sc) >= 2:
-            rows.append((round(sum(sc) / float(len(sc)), 1), get_name(uid), len(sc), max(sc)))
-    if not rows:
-        return "过去 " + str(days) + " 天还没有人有 2 天以上的记录呢～多算几次就能上榜啦～"
-    rows.sort(reverse=True)
-    lines = ["🏆 群运势榜 · 过去 " + str(days) + " 天（按平均分）"]
-    for i, (avg, nm, n, hi) in enumerate(rows[:8], 1):
-        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, str(i) + ".")
-        lines.append(medal + " " + nm + " · 均值 " + str(avg) + "（算过 " + str(n) + "/"
-                     + str(days) + " 天，最高 " + str(hi) + "）")
-    lines.append("（至少算过 2 天才上榜）")
-    return "\n".join(lines[:10])
 
 
 def _room_male(cid: str, uid: str) -> bool:

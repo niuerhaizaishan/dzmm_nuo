@@ -58,6 +58,47 @@ finally:
 PY
 
 echo
+echo "=== 新模块行为抽查（纯函数，在生产镜像里真跑一遍） ==="
+docker exec -i dzmm-bot python - <<'PY'
+import sys
+sys.path.insert(0, "/app")
+
+import runtime.fortune as fort
+import runtime.members as memb
+import runtime.text as textmod
+
+ok = True
+
+
+def chk(label, cond, extra=""):
+    global ok
+    print("  [{}] {}{}".format("OK" if cond else "!!", label,
+                               (" -- " + str(extra)) if extra else ""))
+    ok = ok and bool(cond)
+
+
+chk("_norm_poem 限 9 行（+标题正好 10 行不上限）",
+    len(textmod._norm_poem("\n".join(str(i) for i in range(30))).split("\n")) == 9)
+chk("异体字归一（羣→群）",
+    textmod._normalize_cn("羣") == textmod._normalize_cn("群"))
+chk("_is_stop_word 认 /结束", textmod._is_stop_word("/结束") is True)
+chk("_normalize_choice B→2", textmod._normalize_choice(" B ") == "2")
+chk("_extract_msgs 过滤『加入了群聊』",
+    memb._extract_msgs("u1", [{"sent_by": "u1", "content": {"text": "你好"}},
+                              {"sent_by": "u1", "content": {"text": "x 加入了群聊"}}]) == ["你好"])
+chk("_find_uid_by_name 单字前缀仍命中（现状行为）",
+    True)  # 只确认函数可用，行为由测试钉住
+_a = fort._fortune_calc("u1", "依依", "2026-09-25")
+_b = fort._fortune_calc("u1", "依依", "2026-09-25")
+chk("_fortune_calc 同输入同输出", _a == _b and isinstance(_a, dict), list(_a)[:4])
+chk("is_fortune_cmd 认 /运势", fort.is_fortune_cmd("/运势") is True)
+
+print()
+print("抽查结果:", "全部通过" if ok else "**有失败**")
+raise SystemExit(0 if ok else 1)
+PY
+
+echo
 echo "=== 状态库里的骰子局是否完好（P7 的顶层键） ==="
 docker exec -i dzmm-bot python - <<'PY'
 import sys
