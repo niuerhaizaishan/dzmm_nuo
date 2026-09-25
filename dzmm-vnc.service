@@ -1,0 +1,13 @@
+[Unit]
+Description=DZMM noVNC remote desktop (Xvfb + x11vnc + websockify)
+After=network.target docker.service
+
+[Service]
+Type=forking
+ExecStart=/opt/dzmm/start_vnc.sh
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

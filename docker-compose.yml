@@ -1,0 +1,55 @@
+# ⚠️ 本地开发副本 dzmm_botapi —— 与生产容器 dzmm-bot 完全隔离，可与之并行运行。
+#
+# 隔离点：
+#   1. 服务名/镜像名/容器名均加 -botapi 后缀，不会覆盖生产容器
+#   2. 刻意不挂载 .dzmm_token.json / .dzmm_login.json
+#      （两处同时续期会互相使 session 失效，直接搞挂生产 bot）
+#   3. .env 里告警通道已置空，本地调试不会误推生产飞书/微信
+services:
+  dzmm-botapi:
+    build: .
+    image: dzmm-botapi:latest
+    container_name: dzmm-botapi
+    restart: unless-stopped
+    environment:
+      CONTAINER_MODE: "1"
+      # 本地走宿主机 Clash；云端香港/新加坡直连设空字符串（.env 里 DZMM_PROXY=）
+      DZMM_PROXY: "${DZMM_PROXY:-}"
+      # 空 = 用 playwright 自带 chromium（仅遗留通道需要；Bot API 通道不需要 chromium）
+      PLAYWRIGHT_CHANNEL: ""
+      TZ: "Asia/Shanghai"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      # 告警通道（本副本在 .env 中已置空，防误报生产）
+      FEISHU_WEBHOOK: "${FEISHU_WEBHOOK:-}"
+      FEISHU_SECRET: "${FEISHU_SECRET:-}"
+      DZMM_HOST: "${DZMM_HOST:-www.dzmm.ai}"
+      # ---- 迁移新增 ----
+      # 发送通道：legacy | botapi_<cid8> | botapi
+      SEND_TRANSPORT: "${SEND_TRANSPORT:-legacy}"
+      WEBHOOK_PORT: "8081"
+      BOT_REGISTRY: "/app/bots.json"
+      # 验证码远程桌面（仅遗留通道需要）
+      DISPLAY: ":99"
+      VNC_URL: "${VNC_URL:-}"
+      VNC_PASS: "${VNC_PASS:-}"
+      CAPTCHA_WAIT_MIN: "${CAPTCHA_WAIT_MIN:-30}"
+    ports:
+      # webhook 仅监听回环，由宿主机 Caddy 反代到公网 HTTPS
+      - "127.0.0.1:8081:8081"
+    volumes:
+      # 运行数据持久化
+      - ./state.json:/app/state.json
+      - ./profiles.json:/app/profiles.json
+      - ./profile_scan.json:/app/profile_scan.json
+      - ./novels:/app/novels
+      # 迁移新增：sqlite（幂等表 / 上下文环形缓冲 / 档案）
+      - ./data:/app/data
+      # 日志持久化
+      - ./bot.log:/app/bot.log
+      # 验证码远程桌面（仅遗留通道需要）
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      # ⚠️ 刻意不挂载生产会话凭据：
+      #   - ./.dzmm_token.json:/app/.dzmm_token.json
+      #   - ./.dzmm_login.json:/app/.dzmm_login.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

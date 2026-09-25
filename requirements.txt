@@ -1,0 +1,4 @@
+requests>=2.28
+python-socketio[client]>=5.8
+aiohttp>=3.8
+playwright>=1.40

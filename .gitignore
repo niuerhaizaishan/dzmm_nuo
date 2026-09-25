@@ -1,0 +1,29 @@
+# 凭据 / 会话 —— 绝不入库
+.dzmm_token.json
+.dzmm_login.json
+.dzmm_login*.json
+.env
+token.emergency
+bot.paused
+
+# 运行时数据（含群成员 PII）
+state.json
+profiles.json
+profile_scan.json
+data/
+novels/
+
+# 探针抓取到的真实群消息
+probe/captured/
+
+# 日志
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Playwright
+pw_profile/
+.playwright/
