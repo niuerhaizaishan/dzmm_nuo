@@ -18,7 +18,8 @@ from wx_alert import send_weixin
 from runtime import ctx
 from runtime.group_state import _get_perf_state, _set_perf_state
 from runtime.heat import _add_heat
-from runtime.identity import get_full_name, get_name, is_self, self_names
+from runtime.identity import (get_full_name, get_name, is_self, self_names,
+                              self_names_longest_first)
 from runtime.members import (_extract_msgs, _find_uid_by_name,
                              _find_user_in_msgs, _random_member_uid)
 from runtime.novel import _extract_novel_title, _novel_save_path
@@ -46,7 +47,8 @@ def _detect_perf_query(at_msg: str):
         return None
     today = ("今天" in at_msg) and ("最近" not in at_msg)
     name = at_msg
-    for n in self_names():
+    # 长名优先 —— 名字可能互为前缀，短名先剥会留下残余（见 runtime/identity.py）
+    for n in self_names_longest_first():
         if n:
             name = name.replace("@" + n, "")
     for t in triggers:

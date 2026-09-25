@@ -63,7 +63,7 @@ import state_store                                    # P7：状态存储后端�
 from runtime import ctx                               # P8 第 4 步：当前群上下文的唯一真源
 from runtime.ctx import PRIMARY_CID                   # 常驻群 cid 的唯一真源（Sender 默认参数要用）
 from runtime.obs import log  # P8 第 4 步：搬到 runtime/obs.py
-from runtime.identity import self_uids, is_self, self_names, _load_member_names, get_full_name, get_name, is_at_me, NUO_UID, BOT_UID, BOT_NAME, BOT_NAME_SHORT, _name_cache  # P8 第 4 步：搬到 runtime/identity.py
+from runtime.identity import self_uids, is_self, self_names, self_names_longest_first, _load_member_names, get_full_name, get_name, is_at_me, NUO_UID, BOT_UID, BOT_NAME, BOT_NAME_SHORT, _name_cache  # P8 第 4 步：搬到 runtime/identity.py
 from runtime.dice import _dice_state, _dice_save, _dice_current_player, _dice_send_private, _dice_board_text, _dice_deal_round, _dice_start_cmd, _dice_join_cmd, _dice_exit_cmd, _dice_begin_cmd, _dice_next_round_cmd, _dice_call_cmd, _dice_open_cmd, _dice_quit_cmd, _dice_skip_cmd, _dice_status_text  # P8 第 4 步：搬到 runtime/dice.py
 from runtime.text import _get_opencc, _normalize_cn, _simplify, _strip_parenthesis, _is_stop_word, _dedupe_options, _normalize_choice, _extract_deadline_seconds, _squash, _clean_name, _norm_poem, _CJK_VARIANT, STOP_WORDS, _OPENCC_T2S  # P8 第 4 步：搬到 runtime/text.py
 from runtime.members import _extract_msgs, _get_msgs_by_uid, _member_profile_text, _find_in_profiles, _find_user_in_msgs, find_user_by_name, _find_uid_by_name, _gender_label, _random_member_uid, _archive_text_from_profile, _history_lines, _profile_history, HISTORY_MAX  # P8 第 4 步：搬到 runtime/members.py
@@ -525,8 +525,13 @@ def should_reply(context: list[dict]) -> str:
 
 
 def _strip_at(text: str) -> str:
-    """去掉 @小小糯 前缀，返回纯提问。"""
-    for name in self_names():
+    """去掉 @小小糯 前缀，返回纯提问。
+
+    ⚠️ 必须**长名优先**（`self_names_longest_first`）：名字之间可能互为前缀，
+    短名先剥会把长名的残余留进 prompt（`@小小糯-bot` → `-bot`）。
+    见 runtime/identity.py 里那个函数的说明。
+    """
+    for name in self_names_longest_first():
         if name:
             text = text.replace("@" + name, "", 1)
     return text.strip()

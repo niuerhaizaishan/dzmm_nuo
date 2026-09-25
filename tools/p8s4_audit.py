@@ -28,6 +28,14 @@ import p8s4_move as move  # noqa: E402
 
 DEFAULT_REF = "646e38e"
 
+# 搬完之后**有意**做过的改动：审计要放行，但必须登记 + 写明理由。
+# 不登记的话这里会红 —— 那是设计意图：任何"搬完之后又改了"都必须看得见。
+INTENTIONAL_AFTER_MOVE = {
+    # key 用 (模块文件名, 函数名) —— 与代码里的 (p.name, n) 一致，**不带** runtime/ 前缀
+    ("perf.py", "_detect_perf_query"):
+        "修 @ 剥离顺序：名字可能互为前缀，必须长名优先（见 runtime/identity.py）",
+}
+
 
 def to_lf(s: str) -> str:
     return s.replace("\r\n", "\n").replace("\r", "\n")
@@ -86,6 +94,11 @@ def main(argv) -> int:
             if new_funcs[n] == want:
                 ok += 1
                 same += 1
+            elif (p.name, n) in INTENTIONAL_AFTER_MOVE:
+                ok += 1
+                same += 1
+                print("      (放行有意的搬后改动) {} :: {} —— {}".format(
+                    p.name, n, INTENTIONAL_AFTER_MOVE[(p.name, n)]))
             else:
                 problems.append((p.name, n))
         print("  {:<22s} {:3d}/{:3d} 与 {} 逐字一致{}".format(

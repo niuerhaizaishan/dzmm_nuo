@@ -31,7 +31,7 @@ _name_cache: dict = {}
 
 __all__ = [
     "NUO_UID", "BOT_UID", "BOT_NAME", "BOT_NAME_SHORT",
-    "self_uids", "is_self", "self_names",
+    "self_uids", "is_self", "self_names", "self_names_longest_first",
     "_name_cache", "_load_member_names", "get_full_name", "get_name", "is_at_me",
 ]
 
@@ -61,6 +61,25 @@ def self_names() -> set:
         names.add(BOT_NAME)
         names.add(BOT_NAME_SHORT)
     return {n for n in names if n}
+
+
+def self_names_longest_first() -> list:
+    """**剥 @ 时必须用这个**，不能用 `self_names()`。
+
+    原因：`self_names()` 是 `set`，迭代顺序不确定。而名字之间可能互为前缀 ——
+    侧车账号简化名是「小小糯」、Bot 全名可能是「小小糯-bot」。
+    短名先被剥掉时，长名的残余会留在文本里：
+
+        '@小小糯-bot 你好'  --先剥「小小糯」-->  '-bot 你好'
+
+    这个残余会被原样送进 LLM prompt（`_strip_at` / `_detect_perf_query`）。
+    按长度倒序剥就没有这个问题。
+
+    顺带说明：**今天就已经存在这个 bug** —— 侧车名是「小小糯～」而简化名是
+    「小小糯」，短名先剥时会留下一个「～」。只是残余是一个波浪号，不容易被注意到；
+    Bot 改名成「小小糯-bot」之后残余会变成 `-bot`，一眼就能看见。
+    """
+    return sorted(self_names(), key=len, reverse=True)
 
 
 def _load_member_names(cid: str = None):
