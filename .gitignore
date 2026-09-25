@@ -13,6 +13,12 @@ profile_scan.json
 data/
 novels/
 
+# 会话锁与版本戳（P5）
+.session.lock
+.session_version.json
+renew_fail_state.json
+token.emergency
+
 # 探针抓取到的真实群消息
 probe/captured/
 

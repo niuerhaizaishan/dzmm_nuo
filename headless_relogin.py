@@ -165,24 +165,8 @@ def write_to_json(cookies: list) -> bool:
     return token_store.set_cookies(cookies)
 
 
-def main():
-    if "--check" in sys.argv:
-        return 0 if check_logged_in() else 1
-
-    # 后台人工辅助登录模式：由主流程在撞验证码时 Popen 拉起，noVNC 窗口供人工过滑块
-    if "--manual-captcha" in sys.argv:
-        email, password = load_config()
-        cookies = login_manual_captcha(email, password, wait_minutes=10)
-        if cookies and write_to_json(cookies):
-            print("OK: 人工辅助登录成功")
-            return 0
-        print("FAIL: 人工辅助登录失败/超时")
-        return 1
-
-    if check_logged_in():
-        print("OK: 已登录（token 有效）")
-        return 0
-
+def _do_login() -> int:
+    """真正的登录流程；由 `main()` 在**持有会话锁**的前提下调用。"""
     email, password = load_config()
     print("token 失效，开始 headless 登录...")
     cookies = headless_login(email, password)
@@ -210,6 +194,38 @@ def main():
         return 0
     print("WARN: 写回后验证未通过")
     return 1
+
+
+def main():
+    from session_guard import guard
+
+    if "--check" in sys.argv:
+        return 0 if check_logged_in() else 1
+
+    # 后台人工辅助登录模式：由主流程在撞验证码时 Popen 拉起，noVNC 窗口供人工过滑块。
+    # 这条路径可能持续 10 分钟（等人），但仍必须持锁 —— 否则会和续期/重登并发。
+    if "--manual-captcha" in sys.argv:
+        with guard("headless_relogin.manual_captcha", timeout=600) as got:
+            if not got:
+                print("SKIP: 另一个进程正在续期/重登，放弃本次人工辅助登录")
+                return 1
+            email, password = load_config()
+            cookies = login_manual_captcha(email, password, wait_minutes=10)
+            if cookies and write_to_json(cookies):
+                print("OK: 人工辅助登录成功")
+                return 0
+            print("FAIL: 人工辅助登录失败/超时")
+            return 1
+
+    with guard("headless_relogin", timeout=180) as got:
+        if not got:
+            print("SKIP: 另一个进程正在续期/重登，放弃本次登录（避免并发登录互相作废）")
+            return 1
+        # 拿到锁后**再确认一次**：等待锁的期间别人可能已经登好了（双重检查）
+        if check_logged_in():
+            print("OK: 已登录（token 有效，锁内复查）")
+            return 0
+        return _do_login()
 
 
 if __name__ == "__main__":

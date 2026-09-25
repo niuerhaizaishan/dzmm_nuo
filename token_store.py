@@ -29,8 +29,26 @@ def load_cookies() -> list:
         return []
 
 
+def _note_written() -> None:
+    """通知会话层：凭据已更新（P5）。任何异常都忽略 —— 这不是关键路径。"""
+    try:
+        import sys
+        root = str(Path(__file__).resolve().parent)
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        import session_guard
+        session_guard.note_credentials_written("token_store.save_cookies")
+    except Exception:
+        pass
+
+
 def save_cookies(cookies: list) -> bool:
-    """写 cookie 列表（chmod 600，凭证敏感）。"""
+    """写 cookie 列表（chmod 600，凭证敏感）。
+
+    **这是全项目唯一的凭据写入点**（P5 的"唯一登录者"就建立在这上面）：
+    renew_token / headless_relogin / auto_recover 最终都调到这里，
+    所以版本递增只在这里做一次即可。
+    """
     try:
         TOKEN_FILE.write_text(
             json.dumps({"cookies": cookies}, ensure_ascii=False, indent=2),
@@ -40,6 +58,7 @@ def save_cookies(cookies: list) -> bool:
             os.chmod(TOKEN_FILE, 0o600)
         except Exception:
             pass
+        _note_written()
         return True
     except Exception:
         return False

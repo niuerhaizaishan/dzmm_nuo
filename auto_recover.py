@@ -62,7 +62,8 @@ def verify() -> bool:
         return False
 
 
-def main():
+def _recover_locked() -> int:
+    """真正的恢复流程；由 `main()` 在**持有会话锁**的前提下调用。"""
     sys.path.insert(0, str(ROOT))
     import auto_relogin
     import headless_relogin
@@ -119,6 +120,22 @@ def main():
     notify("⚠️【小小糯bot】登录已恢复，但读消息验证未通过，请检查")
     print("WARN: 验证未通过")
     return 1
+
+
+def main() -> int:
+    """入口：先取得「唯一登录者」锁（P5）。
+
+    本函数会走完整的登录阶梯（AppleScript → headless → noVNC 人工），
+    最长可能几分钟。与 renew_token / 容器启动时的 headless_relogin 并发时，
+    **只允许一个真正去登录** —— 否则 refresh_token 轮换会让彼此作废。
+    """
+    from session_guard import guard
+    with guard("auto_recover", timeout=300) as got:
+        if not got:
+            notify("⚠️【小小糯bot】另一个进程正在登录，本次自动恢复跳过")
+            print("SKIP: 另一个进程正在续期/重登，放弃本次恢复")
+            return 1
+        return _recover_locked()
 
 
 if __name__ == "__main__":

@@ -191,7 +191,8 @@ def _notify_captcha() -> None:
         pass
 
 
-def main():
+def _renew_locked() -> int:
+    """真正的续期逻辑；由 `main()` 在**持有会话锁**的前提下调用。"""
     # 1. 读现有 cookie
     cookie, d = read_token_cookie()
     if not cookie or not d:
@@ -275,6 +276,21 @@ def main():
     record_success()
     log("OK: token 续期成功，已写回 token JSON（bot 发消息前热更新，无需重启）")
     return 0
+
+
+def main() -> int:
+    """入口：先取得「唯一登录者」锁（P5）。
+
+    平台的 refresh_token 是**轮换制** —— 两个进程同时续期会互相作废，
+    表现为随机 401 / 被踢下线。拿不到锁说明别人正在做，**本次跳过**即可
+    （token 有 600 秒提前续期窗口，跳过一次不会过期）。
+    """
+    from session_guard import guard
+    with guard("renew_token", timeout=20) as got:
+        if not got:
+            log("另一个进程正在续期/重登，本次跳过（避免 refresh_token 轮换互相作废）")
+            return 0
+        return _renew_locked()
 
 
 if __name__ == "__main__":
