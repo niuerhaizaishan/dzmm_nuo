@@ -449,26 +449,32 @@ def test_successful_login_clears_failure_counter(login_server):
 def test_lockout_grows_exponentially_with_a_cap(monkeypatch):
     """锁定时间要按失败次数翻倍，并且有上限。
 
-    ⚠️ `lock_remaining()` 返回的是 `int(剩余秒)` —— **向下取整**，
-    所以它比刚存进去的等待时长小最多 1 秒（10 会读成 9）。
-    第一版断言写了精确的 `== LOCK_MAX`，于是 24 != 25 挂了。
-    这里对"读数"给 1 秒容差，对"存下来的截止时间"才做精确断言。
+    ⚠️ 断言对象是**存下来的截止时间**，不是 `lock_remaining()` 的返回值。
+    后者是 `int(剩余秒)` —— 向下取整，而且会随调用时刻抖动，
+    连续两次读同一把锁可能得到 25 和 24。第一版拿它做精确断言（`== LOCK_MAX`），
+    第二次改成"连续三次相等"，**两次都是 flaky**（实测 8 次跑 8 次红）。
+    确定性的东西是 `_fails[ip][1]`，所以只对它做精确断言。
     """
     monkeypatch.setattr(dash, "LOCK_BASE", 10)
     monkeypatch.setattr(dash, "LOCK_MAX", 25)
-    waits = [dash.note_failure("1.2.3.4") for _ in range(dash.LOCK_AFTER + 4)]
+
+    planned = []
+    for _ in range(dash.LOCK_AFTER + 4):
+        dash.note_failure("1.2.3.4")
+        until = dash._fails["1.2.3.4"][1]
+        planned.append(until - time.time() if until else 0.0)
 
     # 前 LOCK_AFTER-1 次不锁
-    assert waits[:dash.LOCK_AFTER - 1] == [0] * (dash.LOCK_AFTER - 1)
-    # 第 LOCK_AFTER 次开始锁，首次约等于 LOCK_BASE
-    assert waits[dash.LOCK_AFTER - 1] in (dash.LOCK_BASE - 1, dash.LOCK_BASE)
-    # 不会超过上限
-    assert max(waits) <= dash.LOCK_MAX
-    # 上限确实生效：后面几次不再增长
-    assert waits[-1] == waits[-2] == waits[-3]
-    # 存下来的截止时间是精确的（不受 int 截断影响）
-    stored = dash._fails["1.2.3.4"][1] - time.time()
-    assert dash.LOCK_MAX - 1 <= stored <= dash.LOCK_MAX
+    assert planned[:dash.LOCK_AFTER - 1] == [0.0] * (dash.LOCK_AFTER - 1)
+    # 第 LOCK_AFTER 次开始锁，等待时长 = LOCK_BASE
+    assert planned[dash.LOCK_AFTER - 1] == pytest.approx(dash.LOCK_BASE, abs=1)
+    # 下一次翻倍
+    assert planned[dash.LOCK_AFTER] == pytest.approx(2 * dash.LOCK_BASE, abs=1)
+    # 撞到上限后不再增长
+    assert planned[-1] == pytest.approx(dash.LOCK_MAX, abs=1)
+    assert max(planned) <= dash.LOCK_MAX + 0.5
+    # 读数只是 int(剩余秒)，允许向下取整 1 秒
+    assert dash.lock_remaining("1.2.3.4") in (dash.LOCK_MAX - 1, dash.LOCK_MAX)
 
 
 def test_session_expiry(monkeypatch):
