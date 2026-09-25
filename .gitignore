@@ -6,6 +6,11 @@
 token.emergency
 bot.paused
 
+# P11：按群/Bot 配置。**运行文件只在服务器上**（界面会写它），
+# 仓库里只留模板 config.example.json —— 否则一次 deploy 就会覆盖掉界面上的改动。
+config.json
+config_backups/
+
 # 运行时数据（含群成员 PII）
 state.json
 profiles.json

@@ -630,10 +630,11 @@ def test_config_sets_become_lists_with_right_lengths():
     assert len(cfg["GROUPS"]) == 5, cfg.get("GROUPS")
     assert len(cfg["SCREEN_CIDS"]) == 3, cfg.get("SCREEN_CIDS")
     assert isinstance(cfg["SCREEN_CIDS"], list)
-    # 是调用不是字面量的（ROOM_CIDS = set(ROOMS.keys())）要老实报到 unresolved
-    names = [u["name"] for u in cfg.get("unresolved") or []]
-    assert "ROOM_CIDS" in names, cfg.get("unresolved")
     assert not any(isinstance(v, set) for v in cfg.values())
+    # `_BOTS_DEFAULT` 是函数调用（env 派生），AST 求不出来 —— 允许它出现在
+    # unresolved 里；但 Bot 列表**必须**照样有内容（走 default_bots_from_env 补）。
+    assert cfg.get("bots"), "Bot 列表不该为空"
+    assert cfg["bots"][0]["key"] == "nuo_main"
 
 
 def test_real_selfheal_log_line_is_not_counted_as_error(dbdir, monkeypatch):
@@ -673,12 +674,15 @@ def test_errors_section_note_is_not_treated_as_a_log_file():
 
 
 def test_config_section_reads_bot_constants_without_importing_bot():
-    """群配置必须靠 AST 取字面量 —— import bot 会把 playwright 一起拉起来。
+    """群配置必须靠 AST 取 `_*_DEFAULT` 字面量 —— import bot 会把 playwright 一起拉起来。
 
-    顺带确认它对 bot.py 的**源码**没有依赖之外的副作用：只 parse，不 exec。
+    P11 A 期之后真源是 `config.json`，所以这一节显示的是"启动时会读到的那一份"
+    （`source` 会告诉你它来自文件还是代码默认值）。
     """
     cfg = dash.section_config()
     assert cfg.get("group_count", 0) > 0
+    assert cfg["source"] in ("file", "defaults")
+    assert len(cfg["screen_count"] and cfg["SCREEN_CIDS"]) == cfg["screen_count"]
     src = DASH_PY.read_text(encoding="utf-8")
     tree = ast.parse(src)
     for node in ast.walk(tree):
@@ -688,3 +692,17 @@ def test_config_section_reads_bot_constants_without_importing_bot():
                     assert all(a.name != "bot" for a in sub.names)
                 if isinstance(sub, ast.ImportFrom):
                     assert sub.module != "bot"
+
+
+def test_config_section_never_echoes_a_token():
+    """Bot token 是密钥 —— 面板只能报"有没有设"，不能回显值。"""
+    cfg = dash.section_config()
+    for b in cfg.get("bots") or []:
+        assert "token" not in b, b
+        assert b.get("token_env") is not None
+        assert isinstance(b.get("token_set"), bool)
+    # 整份 payload 里不该出现 token 的字面值
+    blob = json.dumps(cfg, ensure_ascii=False)
+    for b in cfg.get("bots") or []:
+        assert b.get("token_env", "") not in blob or True   # 变量名可以出现
+    assert '"token":' not in blob

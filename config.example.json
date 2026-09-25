@@ -1,0 +1,81 @@
+{
+  "_comment": [
+    "小小糯的按群与 Bot 配置（P11）。真正的运行文件是 /opt/dzmm/config.json。",
+    "这只是**模板**：照着它写一份放到服务器上即可；不放也不会坏 —— ",
+    "文件不存在时代码会退回 bot.py 里原来的默认值（行为与改动前逐字一致）。",
+    "",
+    "字段说明：",
+    "  groups[].cid     群 id（必填，唯一）",
+    "  groups[].alias   只用于显示（日志/运维后台），不参与任何判定",
+    "  groups[].enabled false = 完全不管这个群（不进 GROUPS）",
+    "  groups[].mute    true = 静默监控：读消息但不回复、不接指令、不筛查、不推送、不同步档案",
+    "  groups[].screen  true = 入群筛查（踢游客/男性、提醒未认证）",
+    "  groups[].push    true = 定时推送（早中晚问候、骚度排行、记忆汇报）",
+    "  groups[].persona 该群人设（空 = 用 personas 默认）",
+    "  （群走哪个 Bot 由 bots[].cid 决定，群这边不重复写）",
+    "  bots[].token_env 指向环境变量名 —— **推荐**，密钥不进这个文件",
+    "  bots[].token     内联 token —— 不推荐（这个文件会被界面写）",
+    "",
+    "改完必须重启容器才生效（配置在启动时读入）。",
+    "校验不过会**拒绝启动**并把原因打出来，不会带着半截配置跑。"
+  ],
+  "version": 1,
+  "groups": [
+    {
+      "cid": "bd7fe6a4-0065-4551-ad3d-94116dba8f9c",
+      "alias": "认证妹子群",
+      "enabled": true,
+      "mute": false,
+      "screen": true,
+      "push": true,
+      "persona": "nuo"
+    },
+    {
+      "cid": "93cc6c7b-ba9e-48f3-a106-3074483aebbd",
+      "alias": "裳姐姐和她的骚贱小母狗",
+      "enabled": true,
+      "mute": false,
+      "screen": true,
+      "push": false,
+      "persona": ""
+    },
+    {
+      "cid": "38698306-4252-438a-aa56-7dbab89250eb",
+      "alias": "被dzmm团本折磨的三人",
+      "enabled": true,
+      "mute": false,
+      "screen": true,
+      "push": false,
+      "persona": ""
+    },
+    {
+      "cid": "007bfd75-2efb-491c-8233-20046af69b24",
+      "alias": "机电驱动与智能算法研讨群",
+      "enabled": true,
+      "mute": false,
+      "screen": false,
+      "push": true,
+      "persona": ""
+    },
+    {
+      "cid": "4a56be71-9ca6-4785-b45f-18725d187f1a",
+      "alias": "Rose（505）玫瑰房",
+      "enabled": true,
+      "mute": false,
+      "screen": false,
+      "push": false,
+      "persona": "rose_butler"
+    }
+  ],
+  "bots": [
+    {
+      "key": "nuo_main",
+      "name": "小小糯-bot",
+      "short": "小小糯",
+      "cid": "bd7fe6a4-0065-4551-ad3d-94116dba8f9c",
+      "token_env": "DZMM_BOT_TOKEN",
+      "persona": "nuo",
+      "enabled": true
+    }
+  ]
+}

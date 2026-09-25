@@ -97,7 +97,12 @@ function Test-Excluded([string]$rel) {
 # a 1.8G host with ~700M free cannot run two Playwright bots, so this would very
 # likely OOM the production bot. The production compose is applied deliberately
 # from docker-compose.prod.yml (see the 'compose' action).
-$ExcludeFileNames = @('docker-compose.yml')
+# config.json: the per-group / per-bot config is SERVER-SIDE STATE (the ops UI
+# will write it). Uploading the repo copy would silently revert whatever was
+# changed in the UI. It is already excluded by the extension filter (.json is
+# not uploaded), but listing it here makes the intent explicit and survives
+# someone later adding "json" to that filter.
+$ExcludeFileNames = @('docker-compose.yml', 'config.json')
 
 function Get-CodeFiles {
     # -ErrorAction SilentlyContinue is required: a few sandbox-restricted dirs

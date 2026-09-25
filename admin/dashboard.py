@@ -468,22 +468,33 @@ def _primary_cid():
 # ---------------------------------------------------------------- 8) 群配置
 
 def section_config():
-    """群清单/静默群/筛查群。**不 import bot** —— 那会拉起 playwright。
+    """群清单 / Bot 注册表 —— **显示真正生效的那一份**。
 
-    `bot.py` 里这几张表是源码常量，直接按 AST 取字面量，既不执行代码也不会漂。
+    P11 A 期之后，真源是 `config.json`（不存在则退回 `bot.py` 里的 `_*_DEFAULT`）。
+    所以这里不再 AST 抓 `GROUPS` 之类（那些名字现在是运行期算出来的），
+    而是：AST 抓 `_*_DEFAULT` 字面量当兜底，再交给 `runtime.config_store` 解析 ——
+    于是页面上看到的就是**启动时会读到的那一份**（含 source=file/defaults）。
+
+    仍然**不 import bot**：那会把 playwright 一起拉起来（几秒 + 若干内存）。
+    每次都用 `reload` 而不是 `load`，这样在文件改动之后、重启之前，
+    面板就能先看到"重启后会生效的内容"。
 
     ⚠️ set 要转成 **list**：JSON 没有 set，`json.dumps(default=str)` 会把它变成
     `"{'a', 'b'}"` 这样的字符串 —— 长度、内容全错，而且**看起来还挺像那么回事**。
     第一次就是这么把 `SCREEN_CIDS`（3 个群）显示成长度 120 的。
     """
     import ast
-    out = {"source": str(ROOT / "bot.py"), "unresolved": []}
+    from runtime import config_store
+
+    out = {"defaults_source": str(ROOT / "bot.py"), "unresolved": []}
     try:
         tree = ast.parse((ROOT / "bot.py").read_text(encoding="utf-8"))
     except Exception as e:
         return {"error": "解析 bot.py 失败: {}".format(e)}
-    wanted = ("GROUPS", "MUTE_CIDS", "SCREEN_CIDS", "PUSH_CIDS", "PRIMARY_CID",
-              "ROOM_CIDS")
+    wanted = {"_GROUPS_DEFAULT": "groups", "_MUTE_CIDS_DEFAULT": "mute",
+              "_SCREEN_CIDS_DEFAULT": "screen", "_PUSH_CIDS_DEFAULT": "push",
+              "_GROUP_ALIASES": "aliases", "_BOTS_DEFAULT": "bots"}
+    defaults = {}
     for node in tree.body:
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
@@ -491,18 +502,54 @@ def section_config():
         if not isinstance(tgt, ast.Name) or tgt.id not in wanted:
             continue
         try:
-            val = ast.literal_eval(node.value)
+            defaults[wanted[tgt.id]] = ast.literal_eval(node.value)
         except Exception:
             # 例如 `ROOM_CIDS = set(ROOMS.keys())` —— 是调用不是字面量。
             # 老实报告"没求值"并给出表达式，不要装作读到了。
             out["unresolved"].append(
                 {"name": tgt.id, "expr": ast.unparse(node.value)[:80]})
-            continue
-        out[tgt.id] = sorted(val) if isinstance(val, (set, frozenset)) else val
-    out["group_count"] = len(out.get("GROUPS") or [])
-    out["muted_count"] = len(out.get("MUTE_CIDS") or [])
-    out["screen_count"] = len(out.get("SCREEN_CIDS") or [])
-    out["push_count"] = len(out.get("PUSH_CIDS") or [])
+
+    defaults.setdefault("personas", ())
+    # `_BOTS_DEFAULT` 是 `config_store.default_bots_from_env(...)` 的调用（不是字面量），
+    # AST 求不出来 —— 那就**照 bot.py 同样的方式**从环境变量补一份，
+    # 而不是让面板在"没有 config.json"时显示 0 个 Bot。
+    if "bots" not in defaults:
+        _g = defaults.get("groups") or [""]
+        defaults["bots"] = config_store.default_bots_from_env(_g[0])
+    try:
+        cfg = config_store.reload(defaults)
+    except Exception as e:                                      # noqa: BLE001
+        out["error"] = "配置不合法：{}".format(e)
+        return out
+
+    out["source"] = cfg.source            # "file" | "defaults"
+    out["path"] = cfg.path
+    out["note"] = ("source=defaults 表示没有 config.json，用的是 bot.py 里的默认值；"
+                   "配置改动**需要重启容器**才生效")
+    out["GROUPS"] = list(cfg.groups)
+    out["MUTE_CIDS"] = sorted(cfg.mute)
+    out["SCREEN_CIDS"] = sorted(cfg.screen)
+    out["PUSH_CIDS"] = list(cfg.push)
+    out["group_count"] = len(cfg.groups)
+    out["muted_count"] = len(cfg.mute)
+    out["screen_count"] = len(cfg.screen)
+    out["push_count"] = len(cfg.push)
+    # 「这个群走哪个 Bot」从 bots 侧**派生**，不在群上重复存一份
+    # （两个真源迟早不一致）
+    cid2bot = {b.cid: b.key for b in cfg.bots}
+    out["groups"] = [
+        {"cid": c, "alias": cfg.group(c).alias, "enabled": cfg.group(c).enabled,
+         "mute": cfg.group(c).mute, "screen": cfg.group(c).screen,
+         "push": cfg.group(c).push, "persona": cfg.group(c).persona,
+         "bot": cid2bot.get(c, "")}
+        for c in cfg.groups]
+    out["bots"] = [
+        {"key": b.key, "name": b.name, "short": b.short, "cid": b.cid,
+         "persona": b.persona, "enabled": b.enabled,
+         "token_env": b.token_env,
+         # token 只报"有没有"，**绝不回显值**
+         "token_set": bool(b.resolve_token())}
+        for b in cfg.bots]
     return out
 
 

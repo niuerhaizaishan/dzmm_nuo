@@ -7,18 +7,42 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 HERMES_PY = sys.executable  # auto_recover 重启 bot 用（当前解释器，容器/裸机通用）
-PAGE_CACHE_MAX = 3  # 常驻页面池上限（LRU 淘汰）；1.8G 内存的机器上别开太多 chromium 页
-GROUPS = [
+PAGE_CACHE_MAX = 3  # 常驻页面池上限（LRU 淘汰）；1.8G 的机器上别开太多 chromium 页
+
+# ---------------------------------------------------------------- 群清单（P11 第 A 期）
+# 下面这几个**字面量现在只是默认值**：真正的来源是 config.json
+# （`runtime/config_store.py`）。文件不存在时行为与改动前**逐字一致**，
+# 所以"删掉 config.json"就是最简单的回滚。
+_GROUPS_DEFAULT = [
     "bd7fe6a4-0065-4551-ad3d-94116dba8f9c",  # 认证妹子群（主群，常驻）
     "93cc6c7b-ba9e-48f3-a106-3074483aebbd",  # 裳姐姐和她的骚贱小母狗
     "38698306-4252-438a-aa56-7dbab89250eb",  # 被dzmm团本折磨的三人
     "007bfd75-2efb-491c-8233-20046af69b24",  # 机电驱动与智能算法研讨群
     "4a56be71-9ca6-4785-b45f-18725d187f1a",  # Rose（505）
 ]
-
 # 静默监控群：只读不回（不回复、不接指令、不筛查、不发欢迎语、不推送、不同步档案）。
 # 想恢复功能，把 cid 从这张表里删掉即可。
-MUTE_CIDS = set()
+_MUTE_CIDS_DEFAULT = set()
+# 入群筛查生效的群（踢游客 / 踢男性 / 提醒未认证 + 「妹子认证群」文案）。
+# 不在这张表里的群：新人入群只发中性欢迎语，不踢人、不发认证群文案。
+_SCREEN_CIDS_DEFAULT = {
+    "bd7fe6a4-0065-4551-ad3d-94116dba8f9c",  # 认证妹子群
+    "93cc6c7b-ba9e-48f3-a106-3074483aebbd",  # 裳姐姐和她的骚贱小母狗
+    "38698306-4252-438a-aa56-7dbab89250eb",  # 被dzmm团本折磨的三人
+}
+# 定时推送生效的群（早/中/晚问候、12·18 点骚度排行、每日记忆汇报）
+_PUSH_CIDS_DEFAULT = [
+    "bd7fe6a4-0065-4551-ad3d-94116dba8f9c",  # 认证妹子群
+    "007bfd75-2efb-491c-8233-20046af69b24",  # 机电驱动与智能算法研讨群
+]
+# 群别名：只用于**显示**（日志/运维后台），不参与任何判定
+_GROUP_ALIASES = {
+    "bd7fe6a4-0065-4551-ad3d-94116dba8f9c": "认证妹子群",
+    "93cc6c7b-ba9e-48f3-a106-3074483aebbd": "裳姐姐和她的骚贱小母狗",
+    "38698306-4252-438a-aa56-7dbab89250eb": "被dzmm团本折磨的三人",
+    "007bfd75-2efb-491c-8233-20046af69b24": "机电驱动与智能算法研讨群",
+    "4a56be71-9ca6-4785-b45f-18725d187f1a": "Rose（505）玫瑰房",
+}
 
 # 房间群（独立人设 + 屋主权限）：配置见 personas.ROOMS
 from personas import (ROOMS, apply_persona, set_cid as set_persona_cid,
@@ -33,18 +57,30 @@ from personas import (ROOMS, apply_persona, set_cid as set_persona_cid,
                       ROSE_SIGN_YI, ROSE_SIGN_JI, ROSE_MOONS, p)
 ROOM_CIDS = set(ROOMS.keys())
 
-# 入群筛查生效的群（踢游客 / 踢男性 / 提醒未认证 + 「妹子认证群」文案）。
-# 不在这张表里的群：新人入群只发中性欢迎语，不踢人、不发认证群文案。
-SCREEN_CIDS = {
-    "bd7fe6a4-0065-4551-ad3d-94116dba8f9c",  # 认证妹子群
-    "93cc6c7b-ba9e-48f3-a106-3074483aebbd",  # 裳姐姐和她的骚贱小母狗
-    "38698306-4252-438a-aa56-7dbab89250eb",  # 被dzmm团本折磨的三人
-}
-# 定时推送生效的群（早/中/晚问候、12·18 点骚度排行、每日记忆汇报）
-PUSH_CIDS = [
-    "bd7fe6a4-0065-4551-ad3d-94116dba8f9c",  # 认证妹子群
-    "007bfd75-2efb-491c-8233-20046af69b24",  # 机电驱动与智能算法研讨群
-]
+from runtime import config_store  # P11 A 期：群清单/Bot 注册表的外部配置
+
+# Bot 注册表的默认值：与现状等价（单个 Bot，绑认证群）。
+# 构造逻辑放在 config_store 里，**运维后台共用同一份** —— 否则面板显示的
+# Bot 列表和实际生效的可能不一致，那是运维后台最不该犯的错。
+_BOTS_DEFAULT = config_store.default_bots_from_env(_GROUPS_DEFAULT[0])
+
+try:
+    _CFG = config_store.load({
+        "groups": _GROUPS_DEFAULT,
+        "mute": _MUTE_CIDS_DEFAULT,
+        "screen": _SCREEN_CIDS_DEFAULT,
+        "push": _PUSH_CIDS_DEFAULT,
+        "aliases": _GROUP_ALIASES,
+        "bots": _BOTS_DEFAULT,
+        "personas": ("nuo", "rose_butler"),
+    })
+except config_store.ConfigError as _e:
+    raise SystemExit("配置不合法，拒绝启动：{}".format(_e))
+
+GROUPS = list(_CFG.groups)
+MUTE_CIDS = set(_CFG.mute)
+SCREEN_CIDS = set(_CFG.screen)
+PUSH_CIDS = list(_CFG.push)
 _ACTIVE_CID = GROUPS[0]  # 当前处理的群，主循环每次迭代设置；真源在 runtime/ctx.py
 
 
@@ -1862,6 +1898,19 @@ def _log_runtime_status() -> None:
     except Exception as e:                                 # noqa: BLE001
         log("P8: 无 runtime.prompts，prompt 全部用代码默认值（"
             + str(e)[:50] + "）")
+    try:
+        # P11 A 期自证：群清单到底来自 config.json 还是代码里的默认值。
+        # 与 P8 同一个道理 —— "悄悄退回默认值"必须能一眼看出来。
+        cfg = _CFG
+        log("P11: 配置={} 群={} 静默={} 筛查={} 推送={} Bot={} path={}".format(
+            cfg.source, len(GROUPS), len(MUTE_CIDS), len(SCREEN_CIDS),
+            len(PUSH_CIDS), len(cfg.bots), cfg.path))
+        for b in cfg.bots:
+            log("P11: Bot key={} name={} cid={} token={}".format(
+                b.key, b.name, (b.cid or "")[:8],
+                "已设置" if b.resolve_token() else "**未设置**"))
+    except Exception as e:                                 # noqa: BLE001
+        log("P11: 配置状态未知（" + str(e)[:60] + "）")
 
 
 def _wrap_with_outbox(sender, dry: bool):
