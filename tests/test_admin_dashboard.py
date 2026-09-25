@@ -102,19 +102,68 @@ def test_scope_group_constant_comes_from_real_module():
 
 # ---------------------------------------------------------------- 结构：不新增暴露面
 
-def test_published_port_is_host_loopback_only():
-    """**真正的安全边界在 compose 的端口映射上**，不在容器内绑哪个地址。
+def test_published_mapping_requires_token_and_public_flag():
+    """端口一旦发布到回环之外，compose 必须同时给出令牌与 PUBLIC 声明。
 
-    第一次部署时我把容器内绑成 127.0.0.1，结果 docker-proxy 从容器 IP 转发，
-    发布出来的端口根本连不上（宿主机 curl 000，而 ss 显示 docker-proxy 在听着）。
-    所以容器内绑 0.0.0.0，安全靠这条映射保证 —— 因此这条必须被测试钉住。
+    这是"忘了设令牌就把面板挂到公网"的**结构性**防线：
+    `DZMM_ADMIN_PUBLIC=on` + 没令牌 -> dashboard 拒绝启动（fail closed），
+    而 compose 必须把 PUBLIC 传进去、令牌必须从 .env 取。
     """
     yml = (ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
-    m = re.search(r'-\s*"([^"]*8090[^"]*)"', yml)
-    assert m, "prod compose 里找不到 8090 的端口映射"
-    mapping = m.group(1)
-    assert mapping.startswith("127.0.0.1:"), \
-        "8090 的映射必须是宿主机回环，当前是 {!r}（机器上 noVNC 6080 实测公网可达）".format(mapping)
+    m = re.search(r'-\s*"\$\{DZMM_ADMIN_BIND:-([^}]*)\}:8090:8090"', yml)
+    assert m, "找不到 8090 的端口映射（形如 ${DZMM_ADMIN_BIND:-...}:8090:8090）"
+    default_bind = m.group(1)
+    if default_bind not in ("127.0.0.1", "localhost", "::1"):
+        assert 'DZMM_ADMIN_PUBLIC: "${DZMM_ADMIN_PUBLIC:-on}"' in yml, \
+            "对外发布时必须声明 DZMM_ADMIN_PUBLIC=on"
+        assert 'DZMM_ADMIN_TOKEN: "${DZMM_ADMIN_TOKEN:-}"' in yml, \
+            "令牌必须来自 .env（留空以便 dashboard 自己 fail closed，而不是 compose 拒绝）"
+        assert "DZMM_ADMIN_TOKEN:?" not in yml, \
+            "不要用 ${VAR:?} —— 缺令牌会让整个 compose（含 bot 容器）起不来"
+
+
+def test_refuses_to_start_when_public_without_token(monkeypatch, capsys):
+    """**fail closed**：声称对外发布却没有令牌 -> 不启动。
+
+    把"忘了设令牌"从"静默裸奔"变成"启动失败 + 容器日志里一行醒目的拒绝"。
+    """
+    monkeypatch.setenv("DZMM_ADMIN_PUBLIC", "on")
+    monkeypatch.delenv("DZMM_ADMIN_TOKEN", raising=False)
+    assert dash.main() == 2
+    assert "拒绝启动" in capsys.readouterr().out
+
+
+def test_public_with_token_proceeds_past_the_gate(monkeypatch, capsys):
+    """有令牌时必须放行到"绑定端口"那一步。
+
+    ⚠️ 不能靠"绑一个特权端口让它失败"来证明 —— **Windows 没有特权端口**，
+    端口 1 会真的绑上，然后 `serve_forever()` 永不返回，测试直接挂死
+    （第一版就是这么写的，跑了两分钟被我掐掉）。所以这里用一个假 server：
+    它记录下绑定地址，然后在 serve_forever 里立刻抛 KeyboardInterrupt 退出。
+    """
+    monkeypatch.setenv("DZMM_ADMIN_PUBLIC", "on")
+    monkeypatch.setenv("DZMM_ADMIN_TOKEN", "t0ken")
+    monkeypatch.setenv("DZMM_ADMIN_HOST", "127.0.0.1")
+    monkeypatch.setenv("DZMM_ADMIN_PORT", "8123")
+
+    seen = {}
+
+    class FakeServer:
+        def __init__(self, addr, handler):
+            seen["addr"] = addr
+            seen["handler"] = handler
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            seen["closed"] = True
+
+    monkeypatch.setattr(dash, "ThreadingHTTPServer", FakeServer)
+    assert dash.main() == 0
+    assert seen["addr"] == ("127.0.0.1", 8123)
+    assert seen.get("closed") is True
+    assert "令牌=开" in capsys.readouterr().out
 
 
 def test_dashboard_binds_all_interfaces_inside_container():
@@ -123,23 +172,21 @@ def test_dashboard_binds_all_interfaces_inside_container():
 
 
 def test_compose_passes_wildcard_bind_inside_container():
-    """compose 必须显式传 0.0.0.0，不能把默认值留成回环。
+    """compose 传给容器的绑定地址必须是 0.0.0.0。
 
-    第一次部署就是栽在这里：`DZMM_ADMIN_HOST: "${...:-127.0.0.1}"` 让 compose
-    把回环地址传进了容器，端口发布出来连不上。
+    第一次部署就栽在这里：默认值留成 127.0.0.1，于是容器内绑了回环，
+    docker-proxy 转发不进来，宿主机 curl 000。
     """
     yml = (ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
     m = re.search(r'DZMM_ADMIN_HOST:\s*"\$\{DZMM_ADMIN_HOST:-([^}]*)\}"', yml)
     assert m, "compose 里找不到 DZMM_ADMIN_HOST"
-    assert m.group(1) == "0.0.0.0", "compose 传的容器内绑定地址应是 0.0.0.0，当前 {!r}".format(
-        m.group(1))
+    assert m.group(1) == "0.0.0.0", "容器内绑定地址应是 0.0.0.0，当前 {!r}".format(m.group(1))
 
 
-def test_startup_prints_the_real_boundary():
-    """启动时必须把"真正的边界在哪"打出来，避免有人改错映射还不知道后果。"""
+def test_referrer_policy_header_present():
+    """令牌可能出现在查询串里，不能顺着 Referer 漏给第三方。"""
     src = DASH_PY.read_text(encoding="utf-8")
-    assert "对外边界 = compose 的端口映射" in src
-    assert "noVNC(6080) 实测公网可达" in src
+    assert "Referrer-Policy" in src and "no-referrer" in src
 
 
 # ---------------------------------------------------------------- 行为：HTTP
@@ -241,6 +288,42 @@ def test_token_via_query(tokened_server):
 def test_token_via_header(tokened_server):
     st, _ = _req(tokened_server, "/api/summary", headers={"X-Admin-Token": "s3cret"})
     assert st == 200
+
+
+def test_token_in_query_sets_a_cookie_so_links_keep_working(tokened_server):
+    """首次用 ?token= 访问要种 cookie。
+
+    没有这一步，页面里那些站内链接（刷新 / JSON）不带令牌，点一下就 403 ——
+    面板等于只有第一屏能用。
+    """
+    st, body = _req(tokened_server, "/api/summary?token=s3cret")
+    assert st == 200
+    # urllib 自动管理 cookie，但我们要确认 Set-Cookie 真的发出去了
+    req = urllib.request.Request(tokened_server + "/api/summary?token=s3cret")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        setc = r.headers.get("Set-Cookie") or ""
+    assert dash.COOKIE_NAME in setc, setc
+    assert "HttpOnly" in setc, setc
+    assert "SameSite=Lax" in setc, setc
+
+
+def test_cookie_alone_is_accepted(tokened_server):
+    """带对 cookie 就够，不必每次都把令牌放在地址栏。"""
+    st, _ = _req(tokened_server, "/api/summary",
+                 headers={"Cookie": "{}={}".format(dash.COOKIE_NAME, "s3cret")})
+    assert st == 200
+
+
+def test_wrong_cookie_is_refused(tokened_server):
+    st, _ = _req(tokened_server, "/api/summary",
+                 headers={"Cookie": "{}={}".format(dash.COOKIE_NAME, "nope")})
+    assert st == 403
+
+
+def test_healthz_also_requires_token_when_configured(tokened_server):
+    """探活也不能白给 —— 否则它就成了一条"这个面板在这儿"的免费情报。"""
+    st, _ = _req(tokened_server, "/healthz")
+    assert st == 403
 
 
 # ---------------------------------------------------------------- 行为：降级

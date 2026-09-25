@@ -24,7 +24,7 @@ echo "[entrypoint] 启动续期 + 健康巡检后台任务..."
 #     单独进程 -> 它挂了不影响 bot；DZMM_ADMIN=off 可整体关掉。
 #     刻意放在主循环之前、且不加 `set -e` 依赖：起不来也只是没后台，不阻断 bot。
 if [ "$(echo "${DZMM_ADMIN:-on}" | tr 'A-Z' 'a-z')" != "off" ]; then
-  echo "[entrypoint] 启动运维后台（只读；对外边界见 compose 的 127.0.0.1:${DZMM_ADMIN_PORT:-8090} 映射）..."
+  echo "[entrypoint] 启动运维后台（只读；令牌检查由 dashboard 自己做）..."
   ( while true; do
       [ -f /app/bot.paused ] && { sleep 30; continue; }
       python -u admin/dashboard.py || true

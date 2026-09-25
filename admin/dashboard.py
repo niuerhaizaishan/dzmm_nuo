@@ -38,7 +38,9 @@
 
 - `DZMM_ADMIN=off`  不启动（entrypoint 读这个）
 - `DZMM_ADMIN_PORT` 默认 8090；`DZMM_ADMIN_HOST` 默认 `0.0.0.0`（见上面第 2 条）
-- `DZMM_ADMIN_TOKEN` 设了就要带令牌（`?token=` 或 `X-Admin-Token` 头）
+- `DZMM_ADMIN_PUBLIC=on` 声明"这条端口发布到了回环之外"（即能被别人连到）
+- `DZMM_ADMIN_TOKEN` 令牌。**`PUBLIC=on` 而没有令牌时，本进程拒绝启动** ——
+  这样"忘了设令牌就把面板挂到公网"是一个启动失败，而不是一次静默裸奔。
 """
 import html
 import hmac
@@ -61,12 +63,13 @@ if str(ROOT) not in sys.path:
 
 from runtime.store import SCOPE_GROUP  # noqa: E402  （只借一个常量名，避免抄 scope 字符串）
 
-VERSION = "P9-2"
+VERSION = "P9-3"
 # 容器内绑 0.0.0.0：docker-proxy 是从**容器 IP** 转发进来的，容器内绑回环会让
 # compose 发布出来的端口连不上（第一次部署就这么失败了）。
-# 真正的安全边界是 compose 里的 `127.0.0.1:8090:8090`。
+# 真正的安全边界是 compose 里的端口映射 —— 见下面 DZMM_ADMIN_PUBLIC 的说明。
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8090
+COOKIE_NAME = "dzmm_admin_token"
 
 BOT_LOG = ROOT / "bot.log"
 HEALTH_LOG = ROOT / "check_health.log"
@@ -676,24 +679,58 @@ def render_html(data):
 
 # ---------------------------------------------------------------- HTTP
 
+def _env_token():
+    return (os.environ.get("DZMM_ADMIN_TOKEN") or "").strip()
+
+
+def _truthy(v):
+    return (v or "").strip().lower() in ("on", "1", "yes", "true")
+
+
+def _token_from_cookie(handler):
+    raw = handler.headers.get("Cookie") or ""
+    for part in raw.split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == COOKIE_NAME and v:
+            return v
+    return ""
+
+
 def _token_ok(handler, query):
-    want = (os.environ.get("DZMM_ADMIN_TOKEN") or "").strip()
+    """令牌校验。未配置令牌 = 只读面板当作"仅回环可达"（由启动闸门保证）。"""
+    want = _env_token()
     if not want:
         return True
-    got = handler.headers.get("X-Admin-Token") or (query.get("token") or [""])[0]
+    got = (handler.headers.get("X-Admin-Token")
+           or (query.get("token") or [""])[0]
+           or _token_from_cookie(handler))
     return hmac.compare_digest(str(got), want)
+
+
+def _token_just_supplied(handler, query):
+    """这次请求是不是**用查询串**带对了令牌 —— 是的话要种 cookie。
+
+    没有这一步，页面里那些站内链接（刷新 / JSON）不会带上令牌，点一下就 403。
+    """
+    want = _env_token()
+    return bool(want) and hmac.compare_digest(
+        str((query.get("token") or [""])[0]), want)
 
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "dzmm-admin/" + VERSION
 
-    def _send(self, code, body, ctype):
+    def _send(self, code, body, ctype, extra_headers=()):
         raw = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        # 令牌可能出现在查询串里 —— 别让它顺着 Referer 漏给第三方
+        self.send_header("Referrer-Policy", "no-referrer")
+        for k, v in extra_headers:
+            self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(raw)
@@ -705,10 +742,18 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if not _token_ok(self, q):
-            self._send(403, "forbidden（缺 DZMM_ADMIN_TOKEN 令牌）\n", "text/plain; charset=utf-8")
+            self._send(403, "forbidden（缺 DZMM_ADMIN_TOKEN 令牌）\n",
+                       "text/plain; charset=utf-8")
             return
+        headers = ()
+        if _token_just_supplied(self, q):
+            # HttpOnly：JS 读不到；SameSite=Lax：跨站请求不带。
+            # 不开 Secure —— 这套是 http 明文，开了 cookie 就发不出去（见 README 的说明）。
+            headers = (("Set-Cookie",
+                        "{}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000"
+                        .format(COOKIE_NAME, _env_token())),)
         if u.path in ("/healthz", "/health"):
-            self._send(200, "ok\n", "text/plain; charset=utf-8")
+            self._send(200, "ok\n", "text/plain; charset=utf-8", headers)
             return
         try:
             data = collect()
@@ -718,9 +763,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/summary":
             self._send(200, json.dumps(data, ensure_ascii=False, default=str),
-                       "application/json; charset=utf-8")
+                       "application/json; charset=utf-8", headers)
         elif u.path in ("/", "/index.html"):
-            self._send(200, render_html(data), "text/html; charset=utf-8")
+            self._send(200, render_html(data), "text/html; charset=utf-8", headers)
         else:
             self._send(404, "not found\n", "text/plain; charset=utf-8")
 
@@ -742,13 +787,28 @@ def main(argv=None):
         return 0
     host = os.environ.get("DZMM_ADMIN_HOST") or DEFAULT_HOST
     port = int(os.environ.get("DZMM_ADMIN_PORT") or DEFAULT_PORT)
+    public = _truthy(os.environ.get("DZMM_ADMIN_PUBLIC"))
+    token = _env_token()
+
+    # 失效关闭（fail closed）：声称"发布到回环之外"却没有令牌 -> 直接不启动。
+    # 这一条把"忘了设令牌就把只读面板挂到公网"变成一次**启动失败**，
+    # 而不是一次静默裸奔。容器日志里会留下这行，一眼能看见。
+    if public and not token:
+        print("[admin] !! 拒绝启动：DZMM_ADMIN_PUBLIC=on（会对外可达）"
+              "但没有设置 DZMM_ADMIN_TOKEN。")
+        print("[admin]    要么在 .env 里给一个随机令牌，要么把端口映射改回 127.0.0.1。")
+        return 2
+
     srv = ThreadingHTTPServer((host, port), Handler)
     srv.daemon_threads = True
     print("[admin] 运维后台已启动 http://{}:{}  只读 / 令牌={}".format(
-        host, port, "开" if (os.environ.get("DZMM_ADMIN_TOKEN") or "").strip() else "关"))
-    print("[admin] 对外边界 = compose 的端口映射（必须是 127.0.0.1:{}:{}）。"
-          "不要改成 {}:{} —— noVNC(6080) 实测公网可达，且密码很弱。"
-          .format(port, port, port, port))
+        host, port, "开" if token else "关"))
+    if public:
+        print("[admin] 对外发布：DZMM_ADMIN_PUBLIC=on（已经要求令牌，且应配合安全组"
+              "只放行你自己的出口 IP）。")
+    else:
+        print("[admin] 对外边界 = compose 的端口映射（应为 127.0.0.1:{}:{}）。"
+              "不要在没设令牌的情况下改成对外映射。".format(port, port))
     if host in ("127.0.0.1", "localhost", "::1"):
         print("[admin] ⚠️ 绑的是回环：compose 发布会连不上（docker-proxy 从容器 IP 转发）。")
     try:

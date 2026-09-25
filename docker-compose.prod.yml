@@ -56,18 +56,23 @@ services:
       DZMM_ADMIN_PORT: "${DZMM_ADMIN_PORT:-8090}"
       # 容器内**必须**绑 0.0.0.0：docker-proxy 是从容器 IP 转发进来的，
       # 绑回环会让下面发布出来的端口连不上（第一次部署就是这么失败的）。
-      # 安全由 ports 里那条 127.0.0.1 映射保证，不靠这里。
       DZMM_ADMIN_HOST: "${DZMM_ADMIN_HOST:-0.0.0.0}"
-      # 设了就必须带令牌（?token= 或 X-Admin-Token 头）。建议在 .env 里给一个随机串
+      # 声明"这条端口发布到了回环之外"。dashboard 见到 on 却没有令牌会**拒绝启动**
+      # （fail closed）—— 免得"忘了设令牌"变成一次静默裸奔。
+      DZMM_ADMIN_PUBLIC: "${DZMM_ADMIN_PUBLIC:-on}"
+      # 令牌（发布到公网时必填）。用 ?token= / X-Admin-Token 头 / cookie 三选一；
+      # 首次带 ?token= 访问会种一个 HttpOnly cookie，之后站内点击不再需要带。
+      # 刻意用 `${...:-}` 而不是 `${...:?}`：`:?` 会让**整个 compose** 起不来
+      # （连 bot 容器一起），blast radius 太大。缺失时只让 dashboard 自己拒绝启动。
       DZMM_ADMIN_TOKEN: "${DZMM_ADMIN_TOKEN:-}"
     ports:
-      # ⚠️ 运维后台**只映射到宿主机回环**，公网碰不到。
-      #    访问方式：ssh -L 8090:127.0.0.1:8090 root@<host> 然后本地开
-      #    http://127.0.0.1:8090
-      #    实测（2026-09-25）：这台机器上 noVNC(6080) **公网可达**，
-      #    5900 虽监听 0.0.0.0 但被安全组挡住（不可达）。
-      #    在 6080 还开着的前提下，再对外开一个后台端口是不负责任的。
-      - "127.0.0.1:8090:8090"
+      # 面板对外可达 —— 所以**必须**同时具备：
+      #   1) .env 里的 DZMM_ADMIN_TOKEN（没有令牌 dashboard 直接不启动）
+      #   2) 安全组把 8090 只放行你自己的出口 IP（不要 0.0.0.0/0）
+      # 想要"完全不开公网口"的旧行为：把下面这行换成
+      #    - "127.0.0.1:8090:8090"
+      # 并去掉 .env 里的 DZMM_ADMIN_TOKEN。
+      - "${DZMM_ADMIN_BIND:-0.0.0.0}:8090:8090"
     volumes:
       # 运行数据持久化
       - ./state.json:/app/state.json
