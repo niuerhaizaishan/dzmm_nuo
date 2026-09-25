@@ -121,6 +121,41 @@ def test_reclaim_expired_returns_to_pending(store):
     assert store.get(b)["status"] == LEASED
 
 
+def test_abandon_interrupted_marks_orphans_failed(store):
+    """上次进程留下的 pending/leased 记录必须被标成 failed，而且**不重发**。
+
+    发送是同步内联的（入队→领租约→发→标记），所以进程被杀时留下的
+    leased 记录**没有任何代码会再处理它** —— 会永远挂在"未送达"里，
+    让运维看到的队列深度是错的。2026-09-25 真出现过一条（22:30:43 发给
+    玫瑰群的问候，被容器重建打断）。
+    但也不能重发：那一刻无法知道平台收没收到。
+    """
+    a = store.enqueue(chatroom_id="c1", text="a")
+    b = store.enqueue(chatroom_id="c1", text="b")
+    c = store.enqueue(chatroom_id="c1", text="c")
+    store.lease(a, "w-dead")            # 发送途中被杀
+    store.lease(b, "w-dead")
+    store.mark_sent(b)                  # 已完成的不能被碰
+    # c 仍是 pending（同样是"没来得及发"的孤儿）
+    assert store.pending_count() == 2
+    assert store.abandon_interrupted("进程重启打断") == 2
+    assert store.pending_count() == 0
+    for oid in (a, c):
+        row = store.get(oid)
+        assert row["status"] == FAILED
+        assert "进程重启打断" in row["last_error"]
+        assert row["lease_worker_id"] is None
+    assert store.get(b)["status"] == SENT
+    # 幂等：再调一次不会把已 sent 的也改掉
+    assert store.abandon_interrupted("again") == 0
+    assert store.get(b)["status"] == SENT
+
+
+def test_interrupted_note_says_why_not_resent(store):
+    from runtime.outbox import INTERRUPTED_NOTE
+    assert "不自动重发" in INTERRUPTED_NOTE
+
+
 def test_pending_count_counts_leased_too(store):
     a = store.enqueue(chatroom_id="c1", text="a")
     store.enqueue(chatroom_id="c1", text="b")

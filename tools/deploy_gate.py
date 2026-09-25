@@ -399,5 +399,33 @@ except Exception as e:                                      # noqa: BLE001
     check("模块拆分自检", False, e)
 
 print()
+print("配置（P11）:")
+try:
+    import sys as _sys
+    _sys.path.insert(0, "/app/admin")
+    import dashboard as _dash
+    from runtime import config_store as _cs
+    _defaults = _dash._config_defaults()
+    check("默认值可解析（读 bot.py）", not _defaults.get("error"), _defaults.get("error"))
+    _p = _cs.config_path()
+    check("配置文件存在", _p.is_file(), str(_p))
+    if _p.is_file():
+        # **这条最要紧**：配置不合法 → bot 直接 SystemExit 拒绝启动（线上就是挂掉）。
+        # 所以要在重启前先拿真文件真校验一遍。
+        _cfg = _cs.load(_defaults)
+        check("配置合法（不合法 bot 会拒绝启动）", True,
+              "source={}".format(_cfg.source))
+        print("     群(配置)={} 生效={} 静默={} 筛查={} 推送={} Bot={}".format(
+            len(_cfg.group_specs), len(_cfg.groups), len(_cfg.mute),
+            len(_cfg.screen), len(_cfg.push), len(_cfg.bots)))
+        _missing = [b.key for b in _cfg.bots if not (b.resolve_token() or "").strip()]
+        check("每个 Bot 的 token 都能解析到", not _missing, _missing)
+        _off = [s.cid[:8] for s in _cfg.group_specs.values() if not s.enabled]
+        if _off:
+            print("     已停用的群（enabled=false，不做任何事）：{}".format(", ".join(_off)))
+except Exception as e:                                      # noqa: BLE001
+    check("配置自检", False, "{}: {}".format(type(e).__name__, e))
+
+print()
 print("FAILED: {}".format(fails) if fails else "ALL CHECKS PASSED")
 raise SystemExit(1 if fails else 0)

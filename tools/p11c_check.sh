@@ -171,21 +171,37 @@ AFTER=$(docker inspect -f {{.State.StartedAt}} dzmm-bot)
 [ "$BEFORE" != "$AFTER" ] && echo "  确实重启了（StartedAt $BEFORE -> $AFTER）✓" \
     || { echo "  !! 没重启，StartedAt 没变（$BEFORE）"; FAIL=1; }
 docker logs --tail 40 dzmm-bot 2>&1 | grep -E 'P11:|bot路由|P8:' | sed 's/^/  /'
-# 最要紧的一条：文件改了 → 进程加载了 → **生效的开关数量跟基线一致**
-# （整表提交一旦把别的群开关带歪，这里立刻会变成 静默=5 筛查=5 推送=5）
-P11=$(docker logs --tail 40 dzmm-bot 2>&1 | grep -o 'P11: 配置=file 群=5 静默=[0-9] 筛查=[0-9] 推送=[0-9] Bot=[0-9]' | tail -1)
+# 最要紧的一条：文件改了 → 进程加载了 → **生效的开关数量与配置文件一致**
+# （整表提交一旦把别的群开关带歪，或把某个群整行删掉，这里立刻会不一致）
+EXPECT=$(python3 - <<'PY'
+import json
+c = json.load(open('/opt/dzmm/config/config.json', encoding='utf-8'))
+g = [x for x in c['groups'] if x.get('enabled', True)]
+print("群={} 静默={} 筛查={} 推送={} Bot={}".format(
+    len(g), sum(1 for x in g if x.get('mute')),
+    sum(1 for x in g if x.get('screen')), sum(1 for x in g if x.get('push')),
+    len(c.get('bots') or [])))
+PY
+)
+echo "  （按配置文件推导，应当生效的口径：$EXPECT）"
+P11=$(docker logs --tail 40 dzmm-bot 2>&1 | grep -o 'P11: 配置=file 群=[0-9]* 静默=[0-9]* 筛查=[0-9]* 推送=[0-9]* Bot=[0-9]*' | tail -1)
 case "$P11" in
-  *'静默=0 筛查=3 推送=2 Bot=1'*) echo "  ✓ 生效的开关数量与基线一致（$P11）" ;;
-  *) echo "  !! 生效的开关数量跟基线不一致：${P11:-（没抓到）}"; FAIL=1 ;;
+  *"$EXPECT"*) echo "  ✓ 生效口径与配置文件一致（$P11）" ;;
+  *) echo "  !! 生效口径与配置文件不一致：进程=${P11:-（没抓到）} 文件=$EXPECT"; FAIL=1 ;;
 esac
+echo "  群数:"
 docker exec -i dzmm-bot python - <<'PY'
 import sys
 sys.path.insert(0, "/app"); sys.path.insert(0, "/app/admin")
 import dashboard as d
 cfg = d.section_config()
 hit = [g for g in cfg["groups"] if g["cid"].startswith("bd7fe6a4")]
-print("  面板里读到的别名:", hit[0]["alias"] if hit else "(没有)")
-print("  群数:", cfg["group_count"], "| source:", cfg["source"])
+print("    面板里读到的别名:", hit[0]["alias"] if hit else "(没有)")
+print("    配置里的群:", cfg["configured_count"], "| 生效的群:", cfg["group_count"],
+      "| source:", cfg["source"])
+print("    页面上会渲染的群行数（含停用）:", len(cfg["groups"]))
+for g in cfg["groups"]:
+    print("     ", "✔" if g["enabled"] else "✘", g["cid"][:8], g["alias"][:18])
 PY
 
 echo

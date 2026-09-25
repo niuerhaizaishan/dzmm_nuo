@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path
 
 __all__ = [
-    "PENDING", "LEASED", "SENT", "FAILED",
+    "PENDING", "LEASED", "SENT", "FAILED", "INTERRUPTED_NOTE",
     "OutboxStore", "OutboxSender", "new_worker_id",
 ]
 
@@ -31,6 +31,10 @@ PENDING = "pending"
 LEASED = "leased"
 SENT = "sent"
 FAILED = "failed"
+
+# 进程重启打断发送后，留在记录里的原因（运维看到就知道"不是平台拒了"，
+# 而是"不知道有没有发出去"）
+INTERRUPTED_NOTE = "进程重启打断：未确认是否已投递，不自动重发（避免重复打扰）"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS outbound (
@@ -123,6 +127,37 @@ class OutboxStore:
             "UPDATE outbound SET status=?, lease_worker_id=NULL, lease_token=NULL,"
             " lease_expires_at=NULL WHERE status=? AND lease_expires_at < ?",
             (PENDING, LEASED, time.time()))
+        self._conn.commit()
+        return cur.rowcount
+
+    def abandon_interrupted(self, reason: str) -> int:
+        """把**上次进程留下的**未终态记录标成 failed。返回条数。
+
+        ### 为什么需要这个
+
+        `OutboxSender.send()` 是**同步内联**的：入队 → 领租约 → 发 → 标记。
+        因此"进程在发送途中被杀"（部署重启、OOM、被 kill）会留下一条
+        `leased` 记录（甚至 pending），而**没有任何代码会再去处理它** ——
+        没有轮询 pending 的后台 worker，`reclaim_expired()` 也一直没人调用。
+        结果就是这条记录永远挂在"未送达"里，运维看到的队列深度是错的
+        （2026-09-25 真出现过一条：22:30:43 发给玫瑰群的问候，
+        被随后的容器重建打断，之后一直挂着）。
+
+        ### 为什么不重发
+
+        被打断的那一刻**无法知道平台到底收没收到**（发送是同步 HTTP，
+        可能在写回标记之前就死了）。重发就有重复打扰群友的风险。
+        铁律（DDZM 接入指南 §8.5）：**平台未明确 ACK 时绝不换通道重发** ——
+        这里同理：只把记录改成 failed 并写明原因，把"不确定"如实留在审计里，
+        而不是猜一个结果。
+
+        启动时调用（那时不可能有在飞的发送，所有非终态都是上次遗留的）。
+        """
+        cur = self._conn.execute(
+            "UPDATE outbound SET status=?, last_error=?, lease_worker_id=NULL,"
+            " lease_token=NULL, lease_expires_at=NULL"
+            " WHERE status IN (?, ?)",
+            (FAILED, str(reason)[:500], PENDING, LEASED))
         self._conn.commit()
         return cur.rowcount
 

@@ -1813,7 +1813,7 @@ def _next_interval(cur: float, had_new: bool) -> float:
 # 缺包时静默退回直发，绝不让 bot 起不来。
 _RUNTIME_IMPORT_ERR = ""                                   # 无条件定义，避免条件定义隐患
 try:
-    from runtime.outbox import OutboxSender, OutboxStore
+    from runtime.outbox import INTERRUPTED_NOTE, OutboxSender, OutboxStore
     from runtime.routing import RoutingSender
     from runtime.transport_bot import DzmmBotSender
     _RUNTIME_IMPORT_OK = True
@@ -1933,6 +1933,16 @@ def _wrap_with_outbox(sender, dry: bool):
     try:
         db = os.environ.get("DZMM_OUTBOX_DB") or str(ROOT / "data" / "outbox.db")
         store = OutboxStore(db)
+        # 启动时清理上次进程留下的未终态记录：发送是同步内联的，
+        # 所以此刻任何 pending/leased 都是"上次发送途中被杀"留下的孤儿，
+        # 没有任何代码会再去处理它（会让队列深度永远看着像有积压）。
+        # 只标 failed 记录原因，**不重发**（不知道平台收没收到，重发就是重复打扰）。
+        try:
+            n = store.abandon_interrupted(INTERRUPTED_NOTE)
+            if n:
+                log("outbox: 清理上次中断的出站记录 {} 条（已标 failed，不重发）".format(n))
+        except Exception as e:                             # noqa: BLE001
+            log("outbox: 清理中断记录失败（不影响发送）：" + str(e)[:60])
         wrapped = OutboxSender(inner, store)
         log("outbox: 已启用 db=" + db + " worker=" + wrapped.worker_id)
         return wrapped
