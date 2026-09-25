@@ -82,6 +82,11 @@ services:
       # prompt 外置（P8 第 3 步）：挂上才能"改 prompt 不重新 build"。
       # 目录为空/没挂上 -> 自动退回代码里的默认值（见 runtime/prompts.py），不会变空。
       - ./prompts:/app/prompts
+      # 按群/Bot 配置（P11）：**服务器侧状态**，界面会写它。
+      # ⚠️ 挂载前宿主机上必须**先有**这个文件：源路径不存在时 Docker 会建一个
+      #    **目录**，于是 config_store 读不到（会静默退回默认值），而界面写它会失败。
+      #    首次准备：python3 tools/config_gen.py（见 docs）
+      - ./config.json:/app/config.json
       # 出站队列 sqlite（P3）：原先没挂，容器重建即丢（只影响审计留痕）
       - ./data:/app/data
       # 日志持久化（容器重建不清空，历史可追溯）

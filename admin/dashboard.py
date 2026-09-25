@@ -524,8 +524,20 @@ def section_config():
 
     out["source"] = cfg.source            # "file" | "defaults"
     out["path"] = cfg.path
+    # Docker 在 bind mount 的源文件不存在时会建一个**目录** —— 那种情况下
+    # config_store 读不到配置（静默退回默认值），而界面写它会失败。
+    # 这种"看起来配了、其实没配"的状态必须显式报出来。
+    try:
+        _p = Path(cfg.path)
+        out["path_is_dir"] = _p.is_dir()
+    except Exception:                                          # noqa: BLE001
+        out["path_is_dir"] = False
     out["note"] = ("source=defaults 表示没有 config.json，用的是 bot.py 里的默认值；"
                    "配置改动**需要重启容器**才生效")
+    if out["path_is_dir"]:
+        out["note"] = ("⚠️ {} 存在但**是个目录**（bind mount 的源文件当初不存在，"
+                       "Docker 建了目录）：配置其实没生效。删掉这个目录、"
+                       "用 tools/config_gen.py 生成文件再重启。".format(cfg.path))
     out["GROUPS"] = list(cfg.groups)
     out["MUTE_CIDS"] = sorted(cfg.mute)
     out["SCREEN_CIDS"] = sorted(cfg.screen)
@@ -550,6 +562,27 @@ def section_config():
          # token 只报"有没有"，**绝不回显值**
          "token_set": bool(b.resolve_token())}
         for b in cfg.bots]
+
+    # 警告：这些是"看起来配了、其实有问题"的状态，必须显式报出来
+    warns = []
+    if out.get("path_is_dir"):
+        warns.append("config.json 是个**目录**而不是文件 —— 配置没生效")
+    if cfg.source == "defaults":
+        warns.append("没有 config.json，正在用 bot.py 里的默认值")
+    env_name = (os.environ.get("DZMM_BOT_NAME") or "").strip()
+    for b in cfg.bots:
+        if b.token_env and not (os.environ.get(b.token_env) or "").strip():
+            warns.append("Bot {} 的 token_env={} 在环境里是空的".format(
+                b.key, b.token_env))
+        # P11 A 期的**过渡态**：Bot 名字暂时有两个来源（identity.py 读 env、
+        # config.json 里也有一份）。本期 config 还不生效，但两边不一致时
+        # 必须看得见 —— 否则第 B 期"改走 config"的那一刻会突然换成另一个名字。
+        if env_name and b.name and b.name != env_name:
+            warns.append(
+                "Bot {} 的名字不一致：config={!r} 而 env DZMM_BOT_NAME={!r}"
+                "（A 期以 env 为准；B 期起以 config 为准）".format(
+                    b.key, b.name, env_name))
+    out["warnings"] = warns
     return out
 
 
