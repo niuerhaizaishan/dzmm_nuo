@@ -4340,6 +4340,23 @@ def _wrap_with_bot_routing(account):
         return account
 
 
+def _log_p5_status() -> None:
+    """启动时打印 P5（唯一登录者 + 限流）状态。
+
+    没有这一行，P5 生效与否在日志里看不出来（它默认不输出任何东西）。
+    """
+    try:
+        from session_guard import version as _sver
+        from throttle_guard import stats as _tstats
+        s = _tstats() or {}
+        b = s.get("bucket") or {}
+        log("P5: 会话锁=on(version={}) 限流={} rate={}/min burst={}".format(
+            _sver(), "on" if s.get("enabled") else "off",
+            b.get("rate_per_min"), b.get("capacity")))
+    except Exception as e:                                 # noqa: BLE001
+        log("P5: 状态未知（" + str(e)[:60] + "）")
+
+
 def _wrap_with_outbox(sender, dry: bool):
     """组装发送链：`OutboxSender( RoutingSender( 账号 ) )`。
 
@@ -4372,6 +4389,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
     global _ACTIVE_CID, _captcha_active, _captcha_notified
     sender = _wrap_with_outbox(Sender(), dry)
     if not dry:
+        _log_p5_status()
         try:
             await sender.start()
         except Exception as e:

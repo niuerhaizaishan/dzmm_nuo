@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    [dev copy] DZMM bot deploy / ops script. Target container dzmm-botapi,
-    remote dir /opt/dzmm-botapi -- fully isolated from production dzmm-bot.
+    [production] DZMM bot deploy / ops script. Target container dzmm-bot,
+    remote dir /opt/dzmm -- IN-PLACE production deployment.
 .DESCRIPTION
     Uses passwordless SSH (root@47.237.152.187).
 
@@ -30,10 +30,10 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('deploy','upload','status','logs','rollback','sync','diff','health')]
+    [ValidateSet('deploy','upload','compose','status','logs','rollback','sync','diff','health')]
     [string]$Action    = 'deploy',
     [string]$Remote    = 'root@47.237.152.187',
-    [string]$RemoteDir = '/opt/dzmm-botapi',
+    [string]$RemoteDir = '/opt/dzmm',
     [string]$LocalDir  = $PSScriptRoot,
     [int]$LogLines     = 50
 )
@@ -90,14 +90,24 @@ function Test-Excluded([string]$rel) {
     return $false
 }
 
+# NEVER upload these by name.
+# docker-compose.yml: the dev copy (repo root) compose is the ISOLATED one
+# (container_name: dzmm-bot). Uploading it to /opt/dzmm would overwrite the
+# production compose and then `up -d` would create a SECOND container there --
+# a 1.8G host with ~700M free cannot run two Playwright bots, so this would very
+# likely OOM the production bot. The production compose is applied deliberately
+# from docker-compose.prod.yml (see the 'compose' action).
+$ExcludeFileNames = @('docker-compose.yml')
+
 function Get-CodeFiles {
     # -ErrorAction SilentlyContinue is required: a few sandbox-restricted dirs
     # (.pytest-tmp, pytest-cache-files-*) make -Recurse throw
     # UnauthorizedAccessException, and $ErrorActionPreference='Stop' would abort
     # the whole deploy.
-    Get-ChildItem $LocalDir -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object {
+    Get-ChildItem $script:BaseDir -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object {
         $rel = Get-RelPath $_.FullName
         if (Test-Excluded $rel) { return $false }
+        if ($ExcludeFileNames -contains $_.Name) { return $false }
         ($_.Name -match '\.(py|sh|yml|yaml|service)$') -or
         ($_.Name -in @('Dockerfile', 'requirements.txt'))
     }
@@ -155,6 +165,21 @@ switch ($Action) {
         $n = Push-CodeFiles
         Write-Host "OK uploaded $n files. NO service was started."
     }
+    'compose' {
+        # Apply docker-compose.prod.yml to the remote docker-compose.yml.
+        # Deliberate, validated, backed up -- never a blind overwrite.
+        $src = Join-Path $script:BaseDir 'docker-compose.prod.yml'
+        if (-not (Test-Path $src)) { throw "missing $src" }
+        $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        Write-Host "[compose] backup remote compose -> docker-compose.yml.bak-$stamp"
+        Invoke-Ssh "cd $RemoteDir && cp -a docker-compose.yml docker-compose.yml.bak-$stamp"
+        Invoke-Scp $src (Remote-Path 'docker-compose.yml')
+        Write-Host "[compose] validate..."
+        Invoke-Ssh "cd $RemoteDir && docker compose config -q && echo COMPOSE-OK"
+        Write-Host "[compose] recreate container..."
+        Invoke-Ssh "cd $RemoteDir && docker compose up -d dzmm-bot"
+        Write-Host "OK compose applied (backup: docker-compose.yml.bak-$stamp)"
+    }
     'deploy' {
         $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
         $tar   = "backup-code-$stamp.tar.gz"
@@ -168,26 +193,26 @@ switch ($Action) {
         Write-Host "  total: $n files"
 
         Write-Host "[3/3] rebuild container on cloud..."
-        Invoke-Ssh "cd $RemoteDir && docker compose build dzmm-botapi && docker compose up -d dzmm-botapi"
+        Invoke-Ssh "cd $RemoteDir && docker compose build dzmm-bot && docker compose up -d dzmm-bot"
         Write-Host "OK deploy done (backup: $RemoteDir/$tar)"
     }
     'status' {
-        Invoke-Ssh "docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'; docker inspect -f 'restarts={{.RestartCount}} started={{.State.StartedAt}}' dzmm-botapi; echo '--- health log tail ---'; tail -5 $RemoteDir/check_health.log"
+        Invoke-Ssh "docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'; docker inspect -f 'restarts={{.RestartCount}} started={{.State.StartedAt}}' dzmm-bot; echo '--- health log tail ---'; tail -5 $RemoteDir/check_health.log"
     }
     'logs' {
-        Invoke-Ssh "docker logs --tail $LogLines dzmm-botapi 2>&1"
+        Invoke-Ssh "docker logs --tail $LogLines dzmm-bot 2>&1"
     }
     'rollback' {
         $latest = (Invoke-Ssh "ls -t $RemoteDir/backup-code-*.tar.gz 2>/dev/null | head -1").Trim()
         if (-not $latest) { throw "no backup-code-*.tar.gz found on cloud" }
         Write-Host "rollback to: $latest"
-        Invoke-Ssh "cd $RemoteDir && tar xzf $latest && docker compose build dzmm-botapi && docker compose up -d dzmm-botapi"
+        Invoke-Ssh "cd $RemoteDir && tar xzf $latest && docker compose build dzmm-bot && docker compose up -d dzmm-bot"
         Write-Host "OK rollback done"
     }
     'sync' {
-        if (-not (Test-Path $LocalDir)) { New-Item -ItemType Directory -Force $LocalDir | Out-Null }
-        Invoke-Scp -Recurse (Remote-Path '.') $LocalDir
-        Write-Host "OK synced from cloud to $LocalDir"
+        if (-not (Test-Path $script:BaseDir)) { New-Item -ItemType Directory -Force $script:BaseDir | Out-Null }
+        Invoke-Scp -Recurse (Remote-Path '.') $script:BaseDir
+        Write-Host "OK synced from cloud to $script:BaseDir"
     }
     'diff' {
         foreach ($f in Get-CodeFiles) {
@@ -200,15 +225,16 @@ switch ($Action) {
     }
     'health' {
         Write-Host "=== [1/4] container + resources + processes ==="
-        Invoke-Ssh "docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'; docker inspect -f 'restarts={{.RestartCount}} started={{.State.StartedAt}}' dzmm-botapi; docker stats --no-stream dzmm-botapi --format 'CPU={{.CPUPerc}} MEM={{.MemUsage}} ({{.MemPerc}})'; docker exec dzmm-botapi ps aux | grep -E 'bot.py|renew_token|check_bot_health|heartbeat' | grep -v grep"
+        Invoke-Ssh "docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'; docker inspect -f 'restarts={{.RestartCount}} started={{.State.StartedAt}}' dzmm-bot; docker stats --no-stream dzmm-bot --format 'CPU={{.CPUPerc}} MEM={{.MemUsage}} ({{.MemPerc}})'; docker exec dzmm-bot ps aux | grep -E 'bot.py|renew_token|check_bot_health|heartbeat' | grep -v grep"
 
         Write-Host "`n=== [2/4] login state + active health check ==="
-        Invoke-Ssh "docker exec dzmm-botapi python headless_relogin.py --check && echo LOGIN-OK || echo LOGIN-FAIL; docker exec dzmm-botapi python check_bot_health.py; tail -3 /opt/dzmm-botapi/check_health.log"
+        Invoke-Ssh "docker exec dzmm-bot python headless_relogin.py --check && echo LOGIN-OK || echo LOGIN-FAIL; docker exec dzmm-bot python check_bot_health.py; tail -3 /opt/dzmm/check_health.log"
 
         Write-Host "`n=== [3/4] bot main loop log ==="
-        Invoke-Ssh "docker logs --tail 30 dzmm-botapi 2>&1"
+        Invoke-Ssh "docker logs --tail 30 dzmm-bot 2>&1"
 
         Write-Host "`n=== [4/4] health + renew logs ==="
-        Invoke-Ssh "echo '--- check_health.log ---'; tail -12 /opt/dzmm-botapi/check_health.log; echo '--- renew_token.log ---'; tail -10 /opt/dzmm-botapi/renew_token.log"
+        Invoke-Ssh "echo '--- check_health.log ---'; tail -12 /opt/dzmm/check_health.log; echo '--- renew_token.log ---'; tail -10 /opt/dzmm/renew_token.log"
     }
 }
+

@@ -6,6 +6,9 @@ import requests
 import token_store
 import env_config
 
+# P5.2 出站限流（令牌桶 + 冷却）。runtime 包缺失时退化为不限流。
+from throttle_guard import acquire as _throttle, note_response as _note_resp
+
 ORIGIN = env_config.get_dzmm_origin()
 
 # 代理地址走环境变量 DZMM_PROXY（默认 127.0.0.1:7890；云端香港/新加坡直连设空字符串）
@@ -26,7 +29,10 @@ def api(path: str, inp: dict, cookies: dict | None = None) -> dict:
         cookies = get_cookies()
     q = urllib.parse.quote(json.dumps(inp))
     url = ORIGIN + "/api/trpc/" + path + "?input=" + q
+    _throttle("trpc:" + path)                  # P5.2：令牌桶（失败开放，绝不阻塞）
     resp = requests.get(url, cookies=cookies, timeout=15, proxies=PROXIES)
+    # 先看响应再解析：限流/验证码信号可能就在 body 里，非 JSON 响应也要能识别
+    _note_resp(resp, path=path)                # P5.2：命中则进入全局冷却
     data = resp.json()
     if isinstance(data, dict) and "error" in data:
         msg = data["error"].get("json", {}).get("message", str(data["error"])) if isinstance(data.get("error"), dict) else str(data.get("error"))
@@ -145,10 +151,12 @@ def remove_member(chatroom_id: str, member_id: str, cookies: dict | None = None)
     if cookies is None:
         cookies = get_cookies()
     url = ORIGIN + "/api/trpc/groupChat.removeMember"
+    _throttle("trpc:groupChat.removeMember")   # P5.2：与 api() 共用同一个桶
     resp = requests.post(url, cookies=cookies, timeout=15, proxies=PROXIES,
                          json={"json": {"chatroomId": chatroom_id, "memberId": member_id}},
                          headers={"Content-Type": "application/json",
                                   "Origin": ORIGIN, "Referer": ORIGIN + "/"})
+    _note_resp(resp, path="groupChat.removeMember")
     data = resp.json()
     if isinstance(data, dict) and data.get("error"):
         msg = data["error"].get("json", {}).get("message", str(data["error"]))

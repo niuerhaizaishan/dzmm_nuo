@@ -1,0 +1,72 @@
+# 生产 compose（/opt/dzmm/docker-compose.yml 的唯一权威来源）。
+#
+# ⚠️ 与仓库根的 docker-compose.yml **不是同一份**：那份是本地隔离开发副本
+#    （container_name: dzmm-botapi），deploy.ps1 已把它列入"永不上传"。
+#
+# 应用方式（不要手工 scp 覆盖后直接 up，先 validate）：
+#     .\deploy.ps1 -Action compose
+#
+# 需要存在于 /opt/dzmm/.env 的键（本文件只做透传，不写死值）：
+#   DZMM_BOT_TOKEN / DZMM_BOT_ID / DZMM_BOT_CID / DZMM_BOT_ROUTING
+services:
+  dzmm-bot:
+    build: .
+    image: dzmm-bot:latest
+    container_name: dzmm-bot
+    restart: unless-stopped
+    environment:
+      CONTAINER_MODE: "1"
+      # 本地走宿主机 Clash；云端香港/新加坡直连设空字符串（.env 里 DZMM_PROXY=）
+      DZMM_PROXY: "${DZMM_PROXY:-}"
+      # 空 = 用 playwright 自带 chromium（镜像内已 install chromium）
+      PLAYWRIGHT_CHANNEL: ""
+      TZ: "Asia/Shanghai"
+      # 凭据注入（从 .env 读，不写死进镜像）
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      # 飞书告警 webhook（主通道，无 session 依赖）+ 可选签名密钥
+      FEISHU_WEBHOOK: "${FEISHU_WEBHOOK:-}"
+      FEISHU_SECRET: "${FEISHU_SECRET:-}"
+      # 主站域名（多线路切换：节点故障/撞验证码时改 .env 的 DZMM_HOST，见 dzmm-addr 页面）
+      DZMM_HOST: "${DZMM_HOST:-www.dzmm.ai}"
+      # 验证码远程桌面：容器内 chromium 用 headed 模式显示到宿主机 Xvfb :99
+      DISPLAY: ":99"
+      # noVNC 远程桌面连接信息（撞验证码时人工处理用，从 .env 读）
+      VNC_URL: "${VNC_URL:-http://47.237.152.187:6080/vnc.html}"
+      VNC_PASS: "${VNC_PASS:-dzmm2026}"
+      CAPTCHA_WAIT_MIN: "${CAPTCHA_WAIT_MIN:-30}"
+
+      # ---- P3/P4/P5：以下键原先**没有透传**，所以配了也不生效 ----
+      # 出站队列（P3）。off = 退回直发
+      DZMM_OUTBOX: "${DZMM_OUTBOX:-on}"
+      # 官方 Bot 群文本通道（P4）。off = 只接线不上线
+      DZMM_BOT_ROUTING: "${DZMM_BOT_ROUTING:-off}"
+      DZMM_BOT_TOKEN: "${DZMM_BOT_TOKEN:-}"
+      # Bot id：同时用于 is_self（免得小小糯把自己的 Bot 发言当成群友）
+      DZMM_BOT_ID: "${DZMM_BOT_ID:-}"
+      DZMM_BOT_CID: "${DZMM_BOT_CID:-}"
+      DZMM_BOT_NAME: "${DZMM_BOT_NAME:-小小糯}"
+      DZMM_BOT_SHORT: "${DZMM_BOT_SHORT:-小小糯}"
+      # 唯一登录者会话锁（P5.1）。off = 不互斥
+      DZMM_SESSION_LOCK: "${DZMM_SESSION_LOCK:-on}"
+      # 出站限流（P5.2）。off = 不限流
+      DZMM_THROTTLE: "${DZMM_THROTTLE:-on}"
+      DZMM_RATE_PER_MIN: "${DZMM_RATE_PER_MIN:-90}"
+    volumes:
+      # 运行数据持久化
+      - ./state.json:/app/state.json
+      - ./profiles.json:/app/profiles.json
+      - ./profile_scan.json:/app/profile_scan.json
+      - ./novels:/app/novels
+      # 出站队列 sqlite（P3）：原先没挂，容器重建即丢（只影响审计留痕）
+      - ./data:/app/data
+      # 日志持久化（容器重建不清空，历史可追溯）
+      - ./bot.log:/app/bot.log
+      - ./check_health.log:/app/check_health.log
+      - ./renew_token.log:/app/renew_token.log
+      # 验证码远程桌面：挂载 X socket，容器内 chromium headed 显示到宿主机虚拟屏
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      # 凭据（本地从已迁移的 token JSON + login 挂载；云端改用 secrets）
+      - ./.dzmm_token.json:/app/.dzmm_token.json
+      - ./.dzmm_login.json:/app/.dzmm_login.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
