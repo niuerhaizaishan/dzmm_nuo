@@ -240,6 +240,8 @@ def section_process():
         "bot_pid": pid,
         "bot_rss": rss,
         "bot_started_at": _fmt_ts(started) if started else "-",
+        # 原始 epoch：配置编辑页拿它判断"配置文件是否比进程新"（＝改动未生效）
+        "bot_started_epoch": started,
         "bot_uptime": _ago(time.time() - started) if started else "-",
         "self_pid": os.getpid(),
         "self_rss": proc_info(os.getpid())[0],
@@ -773,6 +775,7 @@ def render_html(data):
             "<span class='dim'>{}</span>"
             "<span class='dim'>只读</span>"
             "<span style='margin-left:auto'>"
+            "<a href='/edit' style='color:#7aa2f7'>⚙ 配置</a> · "
             "<a href='/api/summary' style='color:#7aa2f7'>JSON</a> · "
             "<a href='/' style='color:#7aa2f7'>刷新</a> · "
             "<a href='/logout' style='color:#7aa2f7'>退出</a>"
@@ -842,6 +845,7 @@ MAX_BODY = 4096                  # 登录表单体积上限
 
 _sessions = {}                   # sid -> 过期时间戳
 _fails = {}                      # ip -> [失败次数, 解锁时间戳]
+_csrf_tokens = {}                # sid -> (过期时间戳, token)
 
 
 def _cfg_user():
@@ -946,6 +950,73 @@ def _cookie_sid(handler):
     return ""
 
 
+# ---------------------------------------------------------------- 配置编辑（唯一允许写的地方）
+#
+# 只读面板的那些 section 仍然**一处写操作都没有**；写只允许走 /edit，
+# 而且只写 config.json 一个文件（+ 它的备份 + 审计日志）。
+# 边界这么划是为了让"只读"这条性质仍然可验证：源码扫描那两条测试
+# （每处 sqlite3.connect 都带 mode=ro、不得出现写库语句）继续成立。
+
+def _config_defaults():
+    """给 config_store 用的默认值：AST 取 `_*_DEFAULT`，不 import bot。"""
+    import ast
+    from runtime import config_store
+    out = {"personas": (), "unresolved": []}
+    try:
+        tree = ast.parse((ROOT / "bot.py").read_text(encoding="utf-8"))
+    except Exception as e:                                      # noqa: BLE001
+        out["error"] = "解析 bot.py 失败: {}".format(e)
+        return out
+    wanted = {"_GROUPS_DEFAULT": "groups", "_MUTE_CIDS_DEFAULT": "mute",
+              "_SCREEN_CIDS_DEFAULT": "screen", "_PUSH_CIDS_DEFAULT": "push",
+              "_GROUP_ALIASES": "aliases"}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        tgt = node.targets[0]
+        if isinstance(tgt, ast.Name) and tgt.id in wanted:
+            try:
+                out[wanted[tgt.id]] = ast.literal_eval(node.value)
+            except Exception:                                   # noqa: BLE001
+                out["unresolved"].append(tgt.id)
+    if "groups" not in out:
+        out["error"] = "bot.py 里找不到 _GROUPS_DEFAULT"
+        return out
+    out["bots"] = config_store.default_bots_from_env(out["groups"][0])
+    return out
+
+
+def _raw_from_store(defaults):
+    """当前生效的配置（读文件；没有就取默认值）→ 可编辑的 raw dict。"""
+    from runtime import config_store
+    cfg = config_store.reload(defaults)
+    return json.loads(json.dumps(cfg.as_dict(), ensure_ascii=False))
+
+
+def _token_unsupported_notes(raw, defaults):
+    """哪些改动**暂时**不会生效 —— 页面必须说清楚，不能装作都会生效。"""
+    from runtime import config_store
+    notes = []
+    env_tokens = {}
+    try:
+        old = config_store.reload(defaults)
+        old_keys = [b.key for b in old.bots]
+    except Exception:                                           # noqa: BLE001
+        old_keys = []
+    new_keys = [b.get("key") for b in (raw.get("bots") or [])]
+    if set(new_keys) != set(old_keys):
+        notes.append(
+            "Bot 的增删（{} → {}）：多 Bot 的**运行期**支持还没做（P11 B 期）。"
+            "配置会正确存下来，但只有环境变量里的主 Bot 会被实际使用。"
+            .format(old_keys or "无", new_keys or "无"))
+    for b in raw.get("bots") or []:
+        te = (b.get("token_env") or "").strip()
+        if te and not (os.environ.get(te) or "").strip():
+            notes.append("Bot {} 的 token_env={} 在环境里是空的（发送会失败）"
+                         .format(b.get("key"), te))
+    return notes
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "dzmm-admin/" + VERSION
 
@@ -1006,6 +1077,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._require_session():
             return
+        if u.path in ("/edit", "/config"):
+            self._send(200, self._render_edit_page(), "text/html; charset=utf-8")
+            return
         try:
             data = collect()
         except Exception as e:                                  # noqa: BLE001
@@ -1022,18 +1096,135 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, "not found\n", "text/plain; charset=utf-8")
 
-    def do_POST(self):
-        """**唯一**允许的非 GET 路径是 /login。
+    # ------------------------------------------------ 配置编辑
+    def _csrf(self):
+        """与会话绑定的 CSRF token（没有会话时用一个短命的一次性 token）。"""
+        sid = _cookie_sid(self)
+        rec = _csrf_tokens.get(sid) if sid else None
+        if not rec or rec[0] < time.time():
+            tok = secrets.token_urlsafe(24)
+            _csrf_tokens[sid or "-"] = (time.time() + 3600, tok)
+            return tok
+        return rec[1]
 
-        面板本身仍然一处写操作都没有：登录只动进程内存里的会话表和 Cookie，
-        既不碰数据库也不碰文件。`tests/test_admin_dashboard.py` 里
-        `test_only_login_accepts_post` 钉住这条。
+    def _render_edit_page(self, error="", notice="", raw=None, changes=()):
+        from admin import config_ui
+        defaults = _config_defaults()
+        if defaults.get("error"):
+            return ("<pre>配置默认值读取失败：{}</pre>"
+                    .format(_e(defaults["error"])))
+        try:
+            raw = raw if raw is not None else _raw_from_store(defaults)
+        except Exception as e:                                  # noqa: BLE001
+            return "<pre>读配置失败：{}</pre>".format(_e(e))
+        from runtime import config_store
+        pending = config_ui.pending_change(
+            config_store.config_path(), section_process().get("bot_started_epoch"))
+        return config_ui.render_edit(
+            raw, error=error, notice=notice, csrf=self._csrf(),
+            pending=pending,
+            backups=config_ui.list_backups(config_store.backup_dir()),
+            audit=config_ui.read_audit(config_store.audit_path()),
+            unsupported=_token_unsupported_notes(raw, defaults),
+            changes=changes)
+
+    def _read_form(self):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except Exception:
+            length = 0
+        if length <= 0 or length > MAX_BODY * 16:
+            return None
+        body = self.rfile.read(length).decode("utf-8", "replace")
+        return parse_qs(body, keep_blank_values=True)
+
+    def _post_edit(self):
+        from admin import config_ui
+        from runtime import config_store
+        form = self._read_form()
+        if form is None:
+            return self._send(400, self._render_edit_page(error="请求格式不对"),
+                              "text/html; charset=utf-8")
+        sid = _cookie_sid(self)
+        want = (_csrf_tokens.get(sid) or (0, ""))[1]
+        got = (form.get("csrf") or [""])[0]
+        if not want or not hmac.compare_digest(got, want):
+            print("[admin] 配置保存被拒：CSRF token 不匹配", flush=True)
+            return self._send(400, self._render_edit_page(error="CSRF 校验失败，请重新打开页面"),
+                              "text/html; charset=utf-8")
+
+        defaults = _config_defaults()
+        old = _raw_from_store(defaults)
+        new = config_ui.parse_form(form)
+        summary = config_ui.diff_summary(old, new)
+        if not summary:
+            return self._send(200, self._render_edit_page(notice="没有检测到改动"),
+                              "text/html; charset=utf-8")
+        try:
+            config_store.save(new, defaults)          # 校验不过这里会抛，一个字都不写
+        except Exception as e:                        # noqa: BLE001
+            print("[admin] 配置保存被拒：{}".format(str(e)[:120]), flush=True)
+            return self._send(400,
+                              self._render_edit_page(error="配置不合法，未写入：{}".format(e),
+                                                     raw=new),
+                              "text/html; charset=utf-8")
+        config_ui.audit_log(config_store.audit_path(), _client_ip(self), summary)
+        print("[admin] 配置已保存 来源 {} 改动 {} 项".format(
+            _client_ip(self), len(summary)), flush=True)
+        return self._send(200, self._render_edit_page(
+            notice="已保存（{} 项改动）。**需要重启容器才生效**".format(len(summary)),
+            changes=summary),
+            "text/html; charset=utf-8")
+
+    def _post_rollback(self):
+        from admin import config_ui
+        from runtime import config_store
+        form = self._read_form()
+        if form is None:
+            return self._send(400, "bad request\n", "text/plain; charset=utf-8")
+        sid = _cookie_sid(self)
+        want = (_csrf_tokens.get(sid) or (0, ""))[1]
+        if not want or not hmac.compare_digest((form.get("csrf") or [""])[0], want):
+            return self._send(400, self._render_edit_page(error="CSRF 校验失败"),
+                              "text/html; charset=utf-8")
+        name = (form.get("name") or [""])[0]
+        defaults = _config_defaults()
+        try:
+            raw = config_ui.restore_backup(config_store.backup_dir(), name)
+            old = _raw_from_store(defaults)
+            config_store.save(raw, defaults)          # 备份也要过校验
+        except Exception as e:                        # noqa: BLE001
+            return self._send(400, self._render_edit_page(
+                error="回滚失败：{}".format(e)), "text/html; charset=utf-8")
+        summary = ["回滚到备份 {}".format(name)] + config_ui.diff_summary(old, raw)
+        config_ui.audit_log(config_store.audit_path(), _client_ip(self), summary)
+        print("[admin] 配置已回滚到 {} 来源 {}".format(name, _client_ip(self)), flush=True)
+        return self._send(200, self._render_edit_page(
+            notice="已回滚到 {name}。**需要重启容器才生效**".format(name=name),
+            changes=summary),
+            "text/html; charset=utf-8")
+
+    def do_POST(self):
+        """非 GET 只有两条：`/login`（登录）和配置编辑（`/edit`、`/edit/rollback`）。
+
+        只读面板的那些 section 仍然一处写操作都没有；写只发生在
+        `config_store.save()` 里，而它**只写 config.json 一个文件**（+ 备份 + 审计）。
+        `tests/test_admin_dashboard.py` 钉住这条边界。
         """
         _prune()
         u = urlparse(self.path)
         ip = _client_ip(self)
+
+        if u.path == "/edit/rollback":
+            if not self._require_session():
+                return
+            return self._post_rollback()
+        if u.path == "/edit":
+            if not self._require_session():
+                return
+            return self._post_edit()
         if u.path != "/login":
-            self._send(405, "read-only：只接受 GET/HEAD（登录用 POST /login）\n",
+            self._send(405, "只接受 GET/HEAD（登录 POST /login；配置 POST /edit）\n",
                        "text/plain; charset=utf-8")
             return
 
@@ -1077,7 +1268,7 @@ class Handler(BaseHTTPRequestHandler):
     do_DELETE = do_PATCH = do_OPTIONS = do_PUT
 
     def _refuse(self):
-        self._send(405, "read-only：只接受 GET/HEAD（登录用 POST /login）\n",
+        self._send(405, "只接受 GET/HEAD（登录 POST /login；配置 POST /edit）\n",
                    "text/plain; charset=utf-8")
 
     def log_message(self, fmt, *args):

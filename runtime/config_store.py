@@ -29,8 +29,17 @@ Bot 用 `token_env` 指向环境变量名（如 `DZMM_BOT_TOKEN_NUO_ROSE`），
 
 ### 写入
 
-`save()` 是**原子写 + 每次写前备份**（保留最近 N 版），供后续的运维界面用。
-本期先把写路径和校验一起实现并测掉 —— 免得界面做出来才发现校验没地方放。
+`save()` 是**原子写 + 每次写前备份**（保留最近 N 版），供运维界面用。
+
+⚠️ 为什么配置放在**目录**里（`config/config.json`）而不是仓库根下的单文件：
+`config.json` 在容器里是 bind mount。**单文件**挂载时 `os.replace()` 会
+`Device or resource busy`（EBUSY）—— `runtime/store.py` 的注释里早就记过这个坑
+（`profiles.py`/`state.json` 当初就是这么被逼成"原地写"的），我第一版又踩了一次。
+**挂载目录**就没这个问题：目录内可以自由 rename，原子替换成立。
+
+顺带还消掉了另一个坑：目录挂载的源不存在时，Docker 只是建一个**空目录**，
+无害；而**文件**挂载的源不存在时，Docker 会建一个**目录**顶在文件路径上，
+于是配置读不到、界面写它会失败。
 """
 import json
 import os
@@ -40,13 +49,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 __all__ = ["Config", "BotSpec", "GroupSpec", "ConfigError", "load", "save",
-           "config_path", "backup_dir", "KEEP_BACKUPS", "SCHEMA_VERSION"]
+           "config_path", "backup_dir", "audit_path", "KEEP_BACKUPS",
+           "SCHEMA_VERSION"]
 
 SCHEMA_VERSION = 1
 KEEP_BACKUPS = 20
 
 _ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_FILE = _ROOT / "config.json"
+CONFIG_DIRNAME = "config"
+_DEFAULT_FILE = _ROOT / CONFIG_DIRNAME / "config.json"
 
 
 class ConfigError(ValueError):
@@ -150,6 +161,15 @@ def config_path() -> Path:
 
 def backup_dir() -> Path:
     return config_path().parent / "config_backups"
+
+
+def audit_path() -> Path:
+    """审计日志与配置放**同一个目录**。
+
+    ⚠️ 不能放在 `/app` 根下：那里不在任何挂载卷里，容器一重建日志就没了 ——
+    而"谁在什么时候改了什么"恰恰是最需要跨重启保留的东西。
+    """
+    return config_path().parent / "config_audit.log"
 
 
 # ---------------------------------------------------------------- 校验

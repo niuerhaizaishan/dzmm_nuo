@@ -291,14 +291,18 @@ def test_unknown_path_404(server):
 def test_write_methods_are_refused(server, method):
     st, body, _ = _req(server, "/api/summary", method=method)
     assert st == 405
-    assert "read-only" in body
+    assert "GET/HEAD" in body
 
 
-def test_post_outside_login_is_refused(server):
-    """POST 只对 /login 开门；别处一律 405（面板本身不接受写入）。"""
+def test_post_outside_login_and_edit_is_refused(server):
+    """POST 只对 /login 和配置页开门；别处一律 405。
+
+    只读面板的那些 section **一处写操作都没有**；写只发生在配置页，
+    而且只写 config.json（+ 备份 + 审计）。
+    """
     st, body, _ = _req(server, "/api/summary", method="POST", data={"x": "1"})
     assert st == 405
-    assert "read-only" in body
+    assert "GET/HEAD" in body
 
 
 def test_head_has_no_body(server):
