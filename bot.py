@@ -47,44 +47,7 @@ PUSH_CIDS = [
 ]
 _ACTIVE_CID = GROUPS[0]  # 当前处理的群，主循环每次迭代设置
 PRIMARY_CID = "bd7fe6a4-0065-4551-ad3d-94116dba8f9c"  # 常驻群（妹子认证群，page 常驻不 goto）
-NUO_UID = "503e3cb9-ee6f-4e17-be51-e4ca399b4515"  # 侧车账号（登录态持有者）
 
-# ---------------------------------------------------------------- 自身身份（P4.2）
-# 从 P4 起，「我自己」有**两个**身份，必须分清：
-#   NUO_UID  —— 侧车账号：私聊 / 图片 / 分享 / 其他群，以及历史数据里的旧发言
-#   BOT_UID  —— 官方 Bot：群文本发送（P4.1 的 RoutingSender）
-# 回声过滤与「排除自己」必须同时认这两个。否则 Bot 的发言会被当成群友 ——
-# 轻则统计污染，重则自触发循环。
-BOT_UID = (os.environ.get("DZMM_BOT_ID") or "").strip()
-BOT_NAME = (os.environ.get("DZMM_BOT_NAME") or "小小糯").strip()
-BOT_NAME_SHORT = (os.environ.get("DZMM_BOT_SHORT") or "小小糯").strip()
-
-
-def self_uids() -> set:
-    """全部「我自己」的 uid。"""
-    ids = {NUO_UID}
-    if BOT_UID:
-        ids.add(BOT_UID)
-    return ids
-
-
-def is_self(uid) -> bool:
-    """这条消息是不是我自己发的（侧车账号或官方 Bot）。"""
-    if not uid:
-        return False
-    return uid == NUO_UID or (bool(BOT_UID) and uid == BOT_UID)
-
-
-def self_names() -> set:
-    """判定「@的是我」用的名字集合。
-
-    账号名查成员表；Bot 名**读配置**（Bot API 没有成员接口，查不到）。
-    """
-    names = {get_full_name(NUO_UID), get_name(NUO_UID)}
-    if BOT_UID:
-        names.add(BOT_NAME)
-        names.add(BOT_NAME_SHORT)
-    return {n for n in names if n}
 
 OWNER_UID = "a56cbd67-3a1e-439a-8beb-d1557dbeff79"  # 糯糯～（群主，可代注册）
 
@@ -113,6 +76,10 @@ from wx_alert import send_weixin
 import token_store
 import env_config
 import state_store                                    # P7：状态存储后端（默认 SQLite）
+from runtime import ctx                               # P8 第 4 步：当前群上下文的唯一真源
+from runtime.obs import log  # P8 第 4 步：搬到 runtime/obs.py
+from runtime.identity import self_uids, is_self, self_names, _load_member_names, get_full_name, get_name, is_at_me, NUO_UID, BOT_UID, BOT_NAME, BOT_NAME_SHORT, _name_cache  # P8 第 4 步：搬到 runtime/identity.py
+from runtime.dice import _dice_state, _dice_save, _dice_current_player, _dice_send_private, _dice_board_text, _dice_deal_round, _dice_start_cmd, _dice_join_cmd, _dice_exit_cmd, _dice_begin_cmd, _dice_next_round_cmd, _dice_call_cmd, _dice_open_cmd, _dice_quit_cmd, _dice_skip_cmd, _dice_status_text  # P8 第 4 步：搬到 runtime/dice.py
 
 # DZMM 主站 origin（多线路切换：env_config 从 DZMM_HOST 环境变量读）
 ORIGIN = env_config.get_dzmm_origin()
@@ -135,19 +102,7 @@ CAPTCHA_RECOVERED_NOTICE = ("✅ 验证码风控解除啦～查资料、踢人�
 # 页面会话刷新：页面存活超 2 小时强制 reload（兜底防会话老化；token 变化也会触发 reload）
 PAGE_MAX_AGE_SEC = 7200
 
-# 昵称缓存（uid -> 昵称），跨轮次复用
-_name_cache = {}
 _group_name_cache = {}  # cid -> {"name":..., "ts":...}
-
-
-def log(msg: str) -> None:
-    line = datetime.now().strftime("%H:%M:%S") + " " + msg
-    print(line, flush=True)
-    try:
-        with open(ROOT / "bot.log", "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
 
 
 # 状态存储：P7 起默认走 SQLite（`state_store`），`DZMM_STORE=json` 可回退。
@@ -171,6 +126,19 @@ def get_cached_cookie() -> str:
     _cookie_cache["cookie_str"] = token_store.get_cookie_string()
     _cookie_cache["ts"] = time.time()
     return _cookie_cache["cookie_str"]
+
+
+def _set_active_cid(cid: str) -> None:
+    """设置「当前正在处理的群」。
+
+    P8 第 4 步起 `_ACTIVE_CID` 有两个消费者：bot.py 自己（24 个读点，保持不变）
+    和 `runtime/ctx`（搬出去的模块从那里读）。**唯一**允许写它的地方就是这里 ——
+    镜像与真源一起更新，写点分散就会出现"搬出去的模块读到旧的群"这种隐性错。
+    一致性由 tests/test_p8s4_split.py 与部署闸门钉住。
+    """
+    global _ACTIVE_CID
+    _ACTIVE_CID = cid
+    ctx.set_active_cid(cid)
 
 
 class Sender:
@@ -556,39 +524,6 @@ def should_reply(context: list[dict]) -> str:
     return ""
 
 
-def _load_member_names(cid: str = None):
-    """批量加载成员昵称到缓存（一次 API，替代逐个 get_user）."""
-    try:
-        members = get_members(cid or _ACTIVE_CID)
-        for uid, name in members.items():
-            if name:
-                _name_cache[uid] = name
-    except Exception:
-        pass
-
-
-def get_full_name(uid: str) -> str:
-    """uid -> 完整昵称（缓存）."""
-    if uid not in _name_cache:
-        u = get_user(_ACTIVE_CID, uid)
-        nm = (u.get("fullName", "") if u else "") or ""
-        if not nm:
-            # 跨群/接口失败时兜底用档案里的昵称，别把 uid 前缀当名字叫出去
-            nm = str((get_profile(uid) or {}).get("name") or "")
-        _name_cache[uid] = nm or uid[:8]
-    return _name_cache[uid]
-
-
-def get_name(uid: str) -> str:
-    """uid -> 简化昵称（去掉波浪号/括号后缀）."""
-    name = get_full_name(uid)
-    for sep in ["～", "~", "（", "("]:
-        idx = name.find(sep)
-        if idx > 0:
-            return name[:idx]
-    return name
-
-
 def _strip_parenthesis(name: str) -> str:
     """去掉昵称里括号及括号内容，保留波浪号前缀。
 
@@ -601,16 +536,6 @@ def _strip_parenthesis(name: str) -> str:
         if idx > 0:
             return name[:idx]
     return name
-
-
-def is_at_me(text: str) -> bool:
-    """判断消息是否 @ 了小小糯（agent）."""
-    if "@" not in text:
-        return False
-    for name in self_names():
-        if name and ("@" + name) in text:
-            return True
-    return False
 
 
 def _strip_at(text: str) -> str:
@@ -1317,334 +1242,7 @@ async def _publish_memory_report(sender, cid: str, dry: bool):
         log("✅" if ok else "❌")
 
 
-# ============ 吹牛骰子游戏 ============
-
 DICE_TIMEOUT_SEC = 180  # 3 分钟超时弃权
-
-
-def _dice_state() -> dict:
-    """读骰子局状态（**顶层键**，不按 cid 存）。"""
-    return state_store.top_get("dice_game") or {}
-
-
-def _dice_save(g: dict) -> None:
-    """写骰子局状态。"""
-    state_store.top_set("dice_game", g)
-
-
-def _dice_current_player(g: dict) -> str:
-    """当前轮到谁（order[current_idx]）。"""
-    order = g.get("order") or []
-    idx = g.get("current_idx", 0)
-    if not order:
-        return ""
-    return order[idx % len(order)]
-
-
-async def _dice_send_private(sender, uid: str, text: str) -> bool:
-    """私聊发消息给 uid（纯 Playwright，不走 Socket.IO 兜底，避免假成功）。"""
-    cid = await asyncio.to_thread(get_private_cid, uid)
-    if not cid:
-        log("  私聊 chat_id 未找到 uid=" + uid[:8])
-        return False
-    return await sender.send(text, cid, allow_fallback=False)
-
-
-def _dice_board_text(g: dict, final: bool = False) -> str:
-    """看板：轮结束看板 或 总看板。"""
-    players = g.get("players", [])
-    stats = g.get("stats", {})
-    round_num = g.get("round", 1)
-    lines = []
-    if final:
-        lines.append(f"📊 骰子局结束！共 {round_num} 轮，参与 {len(players)} 人")
-    else:
-        lines.append(f"📊 第 {round_num} 轮结束（当前 {len(players)} 人）")
-    lines.append("参与人员：" + "、".join("@" + get_name(p) for p in players))
-    lines.append("累计战绩：")
-    for p in players:
-        s = stats.get(p, {})
-        lines.append(f"@{get_name(p)}  {s.get('win', 0)}胜{s.get('lose', 0)}负")
-    if not final:
-        lines.append("发 /下一轮 开下一轮（没在发骚时 /继续 也行），发起者可 /结束")
-    return "\n".join(lines)
-
-
-async def _dice_deal_round(sender, g: dict) -> str:
-    """发骰 + 返回本轮广播文本（编号 + 首叫提示 + 发骰失败提示）。"""
-    order = g.get("order", [])
-    failed = []
-    for p in order:
-        ok = await _dice_send_private(sender, p, "你的骰子：" + dice_str(g["dice"][p]))
-        log("  发骰 " + get_name(p) + ": " + ("✅" if ok else "❌"))
-        if not ok:
-            failed.append(p)
-    num = len(order)
-    lines = [f"🎲 骰子局（第 {g.get('round', 1)} 轮）开始！"]
-    wild = g.get("wild")
-    if wild:
-        lines.append(f"🃏 本轮万能点：{dice_str([wild])}（可顶任何点数）")
-    for i, p in enumerate(order, 1):
-        lines.append(f"{i}号 @{get_name(p)}")
-    lines.append(f"由 1号 首叫（最少叫 {num} 个，格式 /N个X）")
-    if failed:
-        lines.append("⚠️ " + "、".join("@" + get_name(p) for p in failed)
-                     + " 骰子没发成功（私聊未解锁），请先私聊小小糯发一句话，再发 /看骰 查看～")
-    return "\n".join(lines)
-
-
-async def _dice_start_cmd(cid: str, uid: str) -> str:
-    """发起骰子局。"""
-    g = _dice_state()
-    if g.get("active"):
-        return "🎲 已经有一局骰子在进行啦～先 /结束 再开新的～"
-    g = {"active": True, "phase": "waiting", "host": uid, "cid": cid,
-         "players": [uid], "order": [], "dice": {},
-         "current_call": None, "last_caller": None, "wild": None, "called_wild": False,
-         "current_idx": 0, "last_action_ts": time.time(), "timeout_streak": 0,
-         "round": 1, "stats": {}, "round_history": []}
-    _dice_save(g)
-    return "🎲 吹牛骰子局发起！想玩的发 /加入，人齐后发起者发 /开始～"
-
-
-async def _dice_join_cmd(uid: str) -> str:
-    """加入骰子局（等待中立即加入；游戏中加入下一轮生效）。"""
-    g = _dice_state()
-    if not g.get("active"):
-        return "现在没有骰子局哦～发 /吹牛骰子 发起～"
-    if uid in g.get("players", []):
-        return "你已经在局里啦～"
-    if g.get("phase") == "waiting":
-        g["players"].append(uid)
-        _dice_save(g)
-        return f"@{get_name(uid)} 加入！当前 {len(g['players'])} 人～"
-    # 游戏中加入，下一轮生效（本轮不参与 order）
-    g["players"].append(uid)
-    _dice_save(g)
-    return f"@{get_name(uid)} 加入！下一轮参战～"
-
-
-def _dice_exit_cmd(uid: str) -> str:
-    """退出游戏（不算输）。"""
-    g = _dice_state()
-    if not g.get("active") or uid not in g.get("players", []):
-        return ""
-    old_order = g.get("order", [])
-    old_idx = g.get("current_idx", 0) % max(len(old_order), 1)
-    old_cur = old_order[old_idx] if old_order else ""
-    g["players"].remove(uid)
-    new_order = [p for p in old_order if p != uid]
-    g["order"] = new_order
-    if new_order:
-        if old_cur == uid:
-            g["current_idx"] = min(old_idx, len(new_order) - 1)
-        elif old_cur in new_order:
-            g["current_idx"] = new_order.index(old_cur)
-        else:
-            g["current_idx"] = 0
-    else:
-        g["current_idx"] = 0
-    _dice_save(g)
-    if len(g["players"]) < 2:
-        g["active"] = False
-        g["phase"] = "done"
-        _dice_save(g)
-        return f"@{get_name(uid)} 退出游戏，剩余不足 2 人，骰子局结束。"
-    return f"@{get_name(uid)} 退出游戏（不算输），剩余 {len(g['players'])} 人。"
-
-
-async def _dice_begin_cmd(sender, uid: str) -> str:
-    """开始骰子局（发骰 + 随机编号）。"""
-    g = _dice_state()
-    if not g.get("active"):
-        return "现在没有骰子局哦～发 /吹牛骰子 发起～"
-    if uid != g.get("host"):
-        return "只有发起者能 /开始 哦～"
-    if g.get("phase") != "waiting":
-        return "已经开始了～"
-    if len(g.get("players", [])) < 2:
-        return "至少 2 人才能开始哦～"
-    import random
-    players = list(g["players"])
-    random.shuffle(players)
-    g["order"] = players
-    g["dice"] = {p: roll_dice(5) for p in players}
-    g["phase"] = "calling"
-    g["current_call"] = None
-    g["last_caller"] = None
-    g["wild"] = roll_wild()
-    g["called_wild"] = False
-    g["current_idx"] = 0
-    g["last_action_ts"] = time.time()
-    g["timeout_streak"] = 0
-    g["round"] = 1
-    g["stats"] = {}
-    g["round_history"] = []
-    _dice_save(g)
-    return await _dice_deal_round(sender, g)
-
-
-async def _dice_next_round_cmd(sender) -> str:
-    """/下一轮（或发骚未进行时的 /继续）：进入下一轮（新加入者追加到顺序，重新摇骰发骰）。"""
-    g = _dice_state()
-    if not g.get("active") or g.get("phase") != "round_end":
-        return ""
-    # 新加入的人追加到 order 末尾
-    order = list(g.get("order", []))
-    for p in g.get("players", []):
-        if p not in order:
-            order.append(p)
-    g["order"] = order
-    g["round"] = g.get("round", 1) + 1
-    g["dice"] = {p: roll_dice(5) for p in order}
-    g["phase"] = "calling"
-    g["current_call"] = None
-    g["last_caller"] = None
-    g["wild"] = roll_wild()
-    g["called_wild"] = False
-    g["current_idx"] = 0
-    g["last_action_ts"] = time.time()
-    g["timeout_streak"] = 0
-    _dice_save(g)
-    return await _dice_deal_round(sender, g)
-
-
-async def _dice_call_cmd(uid: str, call) -> str:
-    """叫数加码。"""
-    g = _dice_state()
-    if not g.get("active") or g.get("phase") != "calling":
-        return "现在没有进行中的骰子局哦～"
-    cur = _dice_current_player(g)
-    if uid != cur:
-        return f"还没轮到你哦～现在轮到 @{get_name(cur)}～"
-    if not is_legal_raise(g.get("current_call"), call, len(g.get("order", []))):
-        return "叫数不合法哦～要比上一个大（个数更多，或点数更大）～"
-    g["current_call"] = list(call)
-    g["last_caller"] = uid
-    if call[1] == g.get("wild"):
-        g["called_wild"] = True
-    g["current_idx"] = (g.get("current_idx", 0) + 1) % len(g["order"])
-    g["last_action_ts"] = time.time()
-    g["timeout_streak"] = 0  # 正常行动重置超时计数
-    _dice_save(g)
-    nxt = _dice_current_player(g)
-    n, x = call
-    tip = "（🎲万能点失效！）" if x == g.get("wild") else ""
-    return f"@{get_name(uid)} 叫 {n}个{x}{tip}！轮到 @{get_name(nxt)}（加码 /N个X 或 /开）"
-
-
-async def _dice_open_cmd(uid: str) -> str:
-    """开牌判定：记输赢 → 看板 → round_end。"""
-    g = _dice_state()
-    if not g.get("active") or g.get("phase") != "calling":
-        return "现在没有进行中的骰子局哦～"
-    cur = _dice_current_player(g)
-    if uid != cur:
-        return f"还没轮到你哦～现在轮到 @{get_name(cur)}～"
-    if not g.get("current_call"):
-        return "还没有人叫数呢，不能开～"
-    caller = g.get("last_caller")
-    if caller == uid:
-        return "你不能开自己叫的数哦～"
-    call = tuple(g["current_call"])
-    actual = count_point(g["dice"], call[1], g.get("wild", 1), g.get("called_wild", False))
-    caller_win = actual >= call[0]
-    winner = caller if caller_win else uid
-    loser = uid if caller_win else caller
-    # 记录输赢
-    stats = g.get("stats", {})
-    stats.setdefault(winner, {"win": 0, "lose": 0})["win"] += 1
-    stats.setdefault(loser, {"win": 0, "lose": 0})["lose"] += 1
-    g["stats"] = stats
-    g.setdefault("round_history", []).append(
-        {"round": g.get("round", 1), "winner": winner, "loser": loser, "actual": actual})
-    g["phase"] = "round_end"
-    g["last_action_ts"] = time.time()
-    _dice_save(g)
-    lines = ["🎲 开牌！全场骰子："]
-    for p in g.get("order", []):
-        lines.append(f"@{get_name(p)}：{dice_str(g['dice'][p])}")
-    n, x = call
-    lines.append(f"@{get_name(caller)} 叫 {n}个{x}，实际 {actual} 个")
-    lines.append(f"🎉 @{get_name(winner)} 赢！@{get_name(loser)} 输了，接受惩罚～")
-    lines.append("")
-    lines.append(_dice_board_text(g))
-    return "\n".join(lines)
-
-
-async def _dice_quit_cmd(uid: str, timeout: bool = False) -> str:
-    """主动 /结束：等待阶段取消，游戏中出总看板。"""
-    g = _dice_state()
-    if not g.get("active"):
-        return ""
-    if g.get("phase") == "waiting":
-        g["active"] = False
-        g["phase"] = "done"
-        _dice_save(g)
-        return "🎲 骰子局已取消～"
-    if g.get("phase") not in ("calling", "round_end"):
-        return ""
-    g["active"] = False
-    g["phase"] = "done"
-    _dice_save(g)
-    return _dice_board_text(g, final=True)
-
-
-def _dice_skip_cmd(uid: str) -> str:
-    """超时跳过：uid 移到顺序最后，游戏继续。连续超时满一圈则本轮作废。"""
-    g = _dice_state()
-    if not g.get("active") or g.get("phase") != "calling":
-        return ""
-    order = g.get("order", [])
-    n = len(order)
-    if n == 0:
-        return ""
-    idx = g.get("current_idx", 0) % n
-    if order[idx] != uid:
-        return ""
-    # uid 移到最后，current_idx 指向原下一位（最后一位超时则回到 0）
-    new_order = order[:idx] + order[idx + 1:] + [order[idx]]
-    g["order"] = new_order
-    g["current_idx"] = 0 if idx == n - 1 else idx
-    g["last_action_ts"] = time.time()
-    g["timeout_streak"] = g.get("timeout_streak", 0) + 1
-    # 连续超时满一圈（全场轮空）→ 本轮作废，进入 round_end
-    if g["timeout_streak"] >= n:
-        g["phase"] = "round_end"
-        g["last_action_ts"] = time.time()
-        _dice_save(g)
-        return "⏱️ 大家都超时了，这一轮作废！\n\n" + _dice_board_text(g)
-    _dice_save(g)
-    nxt = _dice_current_player(g)
-    return f"⏱️ @{get_name(uid)} 超时，自动跳到下一位！轮到 @{get_name(nxt)}"
-
-
-def _dice_status_text(g: dict) -> str:
-    """骰子局状态文本。"""
-    if not g.get("active"):
-        return "现在没有进行中的骰子局哦～发 /吹牛骰子 发起～"
-    if g.get("phase") == "waiting":
-        return f"🎲 骰子局等待中（{len(g.get('players', []))} 人），发起者发 /开始～"
-    if g.get("phase") == "round_end":
-        return f"🎲 第 {g.get('round', 1)} 轮已结束，发 /下一轮 开下一轮（没在发骚时 /继续 也行）～"
-    order = g.get("order", [])
-    cur = _dice_current_player(g)
-    call = g.get("current_call")
-    lines = [f"🎲 骰子局第 {g.get('round', 1)} 轮进行中（{len(order)} 人）"]
-    lines.append("顺序：" + " → ".join(f"{i+1}号@{get_name(p)}" for i, p in enumerate(order)))
-    if call:
-        n, x = call
-        lines.append(f"当前叫数：{n}个{x}（@{get_name(g.get('last_caller', ''))} 叫的）")
-    else:
-        lines.append("当前叫数：无（等 1号 首叫）")
-    lines.append(f"轮到：@{get_name(cur)}")
-    wild = g.get("wild")
-    if wild:
-        if g.get("called_wild"):
-            lines.append(f"⚠️ 已叫过万能点 🎲{wild}，它不再万能")
-        else:
-            lines.append(f"🃏 本轮万能点：🎲{wild}（可顶任何点数）")
-    return "\n".join(lines)
 
 
 def is_fasao_cmd(cmd: str) -> bool:
@@ -4496,7 +4094,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
             log("私聊消息处理异常: " + str(_pe)[:80])
         captcha_hit = False
         for cid in GROUPS:
-            _ACTIVE_CID = cid
+            _set_active_cid(cid)  # 同时更新 bot.py 镜像与 runtime/ctx（搬出去的模块读它）
             set_persona_cid(cid)  # 分群人设：本轮所有 AI 调用都按这个群的人设走
             meta = group_meta[cid]
             # 该群没到轮询时间，跳过（每群独立退避）
@@ -6414,12 +6012,11 @@ def sync_profiles() -> str:
 
 def sync_all() -> str:
     """对所有群执行增量同步（供 cron --sync 调用）."""
-    global _ACTIVE_CID
     results = []
     for cid in GROUPS:
         if cid in MUTE_CIDS:  # 静默监控群：不同步档案
             continue
-        _ACTIVE_CID = cid
+        _set_active_cid(cid)
         try:
             results.append("[" + cid[:8] + "] " + sync_profiles())
         except Exception as e:

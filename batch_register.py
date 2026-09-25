@@ -8,7 +8,7 @@ from profiles import load_profiles, upsert_profile
 import brains
 
 cid = bot.PRIMARY_CID
-bot._ACTIVE_CID = cid
+bot._set_active_cid(cid)
 EXECUTE = "--execute" in sys.argv
 
 members = bot.get_members(cid)

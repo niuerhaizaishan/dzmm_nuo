@@ -6,7 +6,7 @@ import sys
 sys.path.insert(0, "/app")
 import bot
 
-bot._ACTIVE_CID = "bd7fe6a4-0065-4551-ad3d-94116dba8f9c"
+bot._set_active_cid("bd7fe6a4-0065-4551-ad3d-94116dba8f9c")
 prof = json.load(open("/app/profiles.json"))
 name2uid = {v.get("name"): uid for uid, v in prof.items()
             if isinstance(v, dict) and v.get("name")}

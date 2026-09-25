@@ -63,7 +63,8 @@ for m in ["bot", "dzmm", "token_store", "profiles", "state_store",
           "check_bot_health", "session_guard", "throttle_guard",
           "runtime.session", "runtime.throttle", "runtime.outbox",
           "runtime.routing", "runtime.transport_bot", "runtime.store",
-          "runtime.prompts"]:
+          "runtime.prompts", "runtime.ctx", "runtime.obs", "runtime.identity",
+          "runtime.dice"]:
     try:
         __import__(m)
         check(m, True)
@@ -268,6 +269,85 @@ try:
     check("发送链仍为 OutboxSender", type(w).__name__ == "OutboxSender", type(w).__name__)
 except Exception as e:                                      # noqa: BLE001
     check("P3/P4 回归", False, e)
+
+# ---------- 7) 模块拆分（P8 第 4 步） ----------
+print()
+print("模块拆分（P8 第 4 步）:")
+try:
+    import ast as _ast2
+    import asyncio as _aio
+    import runtime.ctx as _ctx
+    import runtime.dice as _dice
+    import runtime.identity as _ident
+    import runtime.obs as _obs
+
+    # a) 搬走的函数必须还是**同一个对象**（不是两边各定义一份）
+    _moved = {
+        "log": _obs, "get_name": _ident, "is_self": _ident, "self_uids": _ident,
+        "_dice_state": _dice, "_dice_save": _dice, "_dice_start_cmd": _dice,
+        "_dice_join_cmd": _dice, "_dice_exit_cmd": _dice,
+        "_dice_current_player": _dice, "_dice_board_text": _dice,
+    }
+    _bad = [n for n, m in _moved.items() if getattr(bot, n, None) is not getattr(m, n)]
+    check("搬走的 {} 个函数仍是同一对象".format(len(_moved)), not _bad, _bad[:4])
+
+    # b) 全自动"两边都定义"守卫：bot.py 与 runtime/ 不得有同名函数
+    _bot_defs = {n.name for n in _ast2.parse(
+        (GATE_ROOT / "bot.py").read_text(encoding="utf-8")).body
+        if isinstance(n, (_ast2.FunctionDef, _ast2.AsyncFunctionDef))}
+    _clash = {}
+    for _p in sorted((GATE_ROOT / "runtime").glob("*.py")):
+        _names = {n.name for n in _ast2.parse(_p.read_text(encoding="utf-8")).body
+                  if isinstance(n, (_ast2.FunctionDef, _ast2.AsyncFunctionDef))}
+        if _names & _bot_defs:
+            _clash[_p.name] = sorted(_names & _bot_defs)
+    check("无同名重复定义", not _clash, _clash)
+
+    # c) `_ACTIVE_CID` 只能由 _set_active_cid 写（否则搬出去的模块读到旧群）
+    _tree = _ast2.parse((GATE_ROOT / "bot.py").read_text(encoding="utf-8"))
+    _badw = []
+    for _fn in _ast2.walk(_tree):
+        if not isinstance(_fn, (_ast2.FunctionDef, _ast2.AsyncFunctionDef)):
+            continue
+        for _s in _ast2.walk(_fn):
+            if isinstance(_s, _ast2.Assign) and any(
+                    isinstance(t, _ast2.Name) and t.id == "_ACTIVE_CID"
+                    for t in _s.targets) and _fn.name != "_set_active_cid":
+                _badw.append((_fn.name, _s.lineno))
+    check("_ACTIVE_CID 只有一个写点", not _badw, _badw)
+
+    bot._set_active_cid("gate-cid-1")
+    check("ctx 与 bot 镜像同步",
+          _ctx.get_active_cid() == "gate-cid-1" == bot._ACTIVE_CID)
+    bot._set_active_cid("")
+
+    # d) 拆出去的模块不得回指 bot.py（回指 = 只是把文字挪了个位置）
+    _refs = []
+    for _p in sorted((GATE_ROOT / "runtime").glob("*.py")):
+        for _i, _ln in enumerate(_p.read_text(encoding="utf-8").splitlines(), 1):
+            if _ln.strip().startswith(("import bot", "from bot import")):
+                _refs.append((_p.name, _i))
+    check("runtime/ 无回指 bot.py", not _refs, _refs)
+
+    # e) 骰子局跑一遍真流程（搬完还能用）
+    #    先清空：上面"非 UUID 顶层键保留"那项往库里写了 {"active": True}，
+    #    不清的话 _dice_start_cmd 会正确地拒绝重复开局，测试反而失败。
+    _dice._dice_save({})
+    _dice_get_name = _dice.get_name
+    _dice.get_name = lambda uid: "名-" + uid[:4]
+    try:
+        _r1 = _aio.run(_dice._dice_start_cmd("gate-cid", "u1"))
+        _r2 = _aio.run(_dice._dice_join_cmd("u2"))
+        _g = _dice._dice_state()
+        _r3 = _dice._dice_exit_cmd("u2")
+        _after = _dice._dice_state()
+        check("骰子局 发起/加入/退出 全流程",
+              "发起" in _r1 and "加入" in _r2 and "剩余不足 2 人" in _r3
+              and _g["players"] == ["u1", "u2"] and _after["active"] is False)
+    finally:
+        _dice.get_name = _dice_get_name
+except Exception as e:                                      # noqa: BLE001
+    check("模块拆分自检", False, e)
 
 print()
 print("FAILED: {}".format(fails) if fails else "ALL CHECKS PASSED")

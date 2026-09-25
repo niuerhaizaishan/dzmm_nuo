@@ -6,7 +6,7 @@ from brains import generate_perf_novel_chunked
 
 cid = "bd7fe6a4-0065-4551-ad3d-94116dba8f9c"
 start_id = "2a02438f-2752-4630-a51f-ae50e9e61f41"
-bot._ACTIVE_CID = cid
+bot._set_active_cid(cid)
 _load_member_names()
 
 try:
