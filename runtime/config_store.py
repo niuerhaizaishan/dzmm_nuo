@@ -139,12 +139,22 @@ class Config:
         return self.group_specs.get(cid)
 
     def as_dict(self) -> dict:
+        """序列化回"配置文件的样子"。
+
+        ⚠️ 群列表**必须是全部**配置项，不能只给 `self.groups`（那只是
+        **生效**的那些，已按 `enabled` 过滤过）。踩过的坑：运维后台的
+        `/edit` 是用这个方法渲染表单的，于是"取消勾选启用"一存，
+        那个群就**从页面上消失**了 —— 再也勾不回来；更糟的是，
+        这时候在页面上改任何别的东西再保存，配置里那几行会被
+        **整行删掉**（别名、人设一起没）。所以这里与运行期语义分开：
+        运行期看 `groups`，配置界面看 `group_specs`。
+        """
         return {
             "version": SCHEMA_VERSION,
             "groups": [{"cid": g.cid, "alias": g.alias, "enabled": g.enabled,
                         "mute": g.mute, "screen": g.screen, "push": g.push,
                         "persona": g.persona}
-                       for g in (self.group_specs[c] for c in self.groups)],
+                       for g in self.group_specs.values()],
             "bots": [{"key": b.key, "name": b.name, "short": b.short, "cid": b.cid,
                       "token_env": b.token_env, "persona": b.persona,
                       "enabled": b.enabled,

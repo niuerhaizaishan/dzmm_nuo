@@ -123,7 +123,11 @@ BASE_BOTS = [{"key": "nuo_main", "name": "小小糯-bot", "short": "小小糯",
 
 
 def _form(groups, bots, csrf):
-    d = {"csrf": csrf}
+    d = {"csrf": csrf,
+         # 真实页面会带上这两个隐藏字段（渲染时存在哪些群/Bot），
+         # 保存前的"旧页面"闸门靠它判断。测试里也照带，才和浏览器一致。
+         "__groups_seen": ",".join(g.get("cid", "") for g in groups if g.get("cid")),
+         "__bots_seen": ",".join(b.get("key", "") for b in bots if b.get("key"))}
     for i, g in enumerate(groups):
         for k in ("cid", "alias", "persona"):
             d["groups[{}][{}]".format(i, k)] = g.get(k, "")
@@ -442,3 +446,100 @@ def test_render_edit_lists_change_details():
 def test_render_edit_has_no_change_block_when_clean():
     html = ui.render_edit({"version": 1, "groups": [], "bots": []}, csrf="t")
     assert "本次改动" not in html
+
+
+# ------------------------------------------- 被禁用的群不能从页面上消失
+
+DISABLED_GROUPS = [
+    {"cid": CID_A, "alias": "认证妹子群", "enabled": True, "mute": False,
+     "screen": True, "push": True, "persona": ""},
+    {"cid": CID_ROSE, "alias": "玫瑰房", "enabled": False, "mute": False,
+     "screen": False, "push": False, "persona": ""},
+]
+
+
+def test_as_dict_keeps_disabled_groups():
+    """`as_dict()` 必须给出**全部**配置项，不是只给生效的那些。
+
+    真实事故：用户在页面上把 4 个群取消勾选「启用」并保存，再打开页面 ——
+    那 4 个群整行消失了（页面是用 as_dict 渲染的，而它只序列化生效的群），
+    于是**再也勾不回来**；更糟的是这时候改任何别的东西再保存，
+    配置里那 4 行会被整行删掉，别名和人设一起没。
+    """
+    raw = {"version": 1, "groups": DISABLED_GROUPS, "bots": []}
+    cfg = cs._parse(raw, {})
+    d = cfg.as_dict()
+    assert len(d["groups"]) == 2, "被禁用的群不能从 as_dict 里消失"
+    assert [g["cid"] for g in d["groups"]] == [CID_A, CID_ROSE], "顺序要保持"
+    # 但运行期语义不变：生效的只有 enabled 的那些
+    assert list(cfg.groups) == [CID_A]
+
+
+def test_page_still_shows_a_disabled_group(edit_server):
+    base, cfgp = edit_server
+    cookie = _login(base)
+    csrf = _csrf_from(_req(base, "/edit", headers=cookie)[1])
+    g2 = [DISABLED_GROUPS[0], dict(DISABLED_GROUPS[1])]
+    st, _b, _h = _req(base, "/edit", method="POST", headers=cookie,
+                      data=_form(g2, BASE_BOTS, csrf))
+    assert st == 200, st
+    st, page, _ = _req(base, "/edit", headers=cookie)
+    assert CID_ROSE in page, "被禁用的群必须还在页面上（否则勾不回来）"
+    assert "name='groups[1][cid]' value='{}'".format(CID_ROSE) in page
+    # 而且它的「启用」是**没勾**的
+    import re
+    tag = re.search(r"<input[^>]*name='groups\[1\]\[enabled\]'[^>]*>", page)
+    assert tag and "checked" not in tag.group(0), "禁用状态要如实渲染成未勾选"
+
+
+def test_save_keeps_disabled_groups_and_alias(edit_server):
+    """在含"被禁用群"的页面上改别的东西再保存，那几行不能被写丢。"""
+    base, cfgp = edit_server
+    cookie = _login(base)
+    csrf = _csrf_from(_req(base, "/edit", headers=cookie)[1])
+    st, _b, _h = _req(base, "/edit", method="POST", headers=cookie,
+                      data=_form(DISABLED_GROUPS, BASE_BOTS, csrf))
+    assert st == 200, st
+    # 现在把启用群的别名改掉再存一次（表单来自"完整"页面）
+    page = _req(base, "/edit", headers=cookie)[1]
+    csrf = _csrf_from(page)
+    g2 = [dict(DISABLED_GROUPS[0], alias="改过的名字"), DISABLED_GROUPS[1]]
+    st, body, _ = _req(base, "/edit", method="POST", headers=cookie,
+                       data=_form(g2, BASE_BOTS, csrf))
+    assert st == 200 and "已保存" in body, body[:300]
+    saved = json.loads(cfgp.read_text(encoding="utf-8"))
+    assert len(saved["groups"]) == 2, "被禁用的群被写丢了"
+    assert saved["groups"][1]["alias"] == "玫瑰房"
+    assert saved["groups"][1]["enabled"] is False
+
+
+def test_stale_page_cannot_delete_groups(edit_server):
+    """旧页面（没有那几行）提交上来，必须整单拒绝 —— 不许静默删配置。"""
+    base, cfgp = edit_server
+    cookie = _login(base)
+    csrf = _csrf_from(_req(base, "/edit", headers=cookie)[1])
+    st, _b, _h = _req(base, "/edit", method="POST", headers=cookie,
+                      data=_form(DISABLED_GROUPS, BASE_BOTS, csrf))
+    assert st == 200 and cfgp.exists()
+    before = cfgp.read_text(encoding="utf-8")
+    # 模拟"旧页面"：只提交第一个群，隐藏字段里也没有第二个群
+    stale = _form([DISABLED_GROUPS[0]], BASE_BOTS, csrf)
+    stale["__groups_seen"] = CID_A
+    st, body, _ = _req(base, "/edit", method="POST", headers=cookie, data=stale)
+    assert st == 400
+    assert "旧的一份" in body
+    assert CID_ROSE[:8] in body, "要指出到底缺了哪个"
+    assert cfgp.read_text(encoding="utf-8") == before, "一个字都不许写"
+
+
+def test_unseen_deletions_unit():
+    form = {"__groups_seen": CID_A, "__bots_seen": "nuo_main"}
+    old = {"groups": [{"cid": CID_A}, {"cid": CID_ROSE}],
+           "bots": [{"key": "nuo_main"}]}
+    new = {"groups": [{"cid": CID_A}], "bots": [{"key": "nuo_main"}]}
+    assert ui.unseen_deletions(old, new, form) == ["群 " + CID_ROSE[:8]]
+    # 页面见过它、用户又清空了 cid ⇒ 这是"有意删除"，放行
+    form2 = {"__groups_seen": CID_A + "," + CID_ROSE}
+    assert ui.unseen_deletions(old, new, form2) == []
+    # 全新的一单（老配置里没有）不算删除
+    assert ui.unseen_deletions({"groups": [], "bots": []}, new, form) == []

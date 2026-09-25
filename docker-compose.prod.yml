@@ -67,11 +67,12 @@ services:
       DZMM_ADMIN_PASSWORD: "${DZMM_ADMIN_PASSWORD:-}"
     ports:
       # 面板对外可达 —— 所以**必须**同时具备：
-      #   1) .env 里的 DZMM_ADMIN_TOKEN（没有令牌 dashboard 直接不启动）
+      #   1) .env 里的 DZMM_ADMIN_USER / DZMM_ADMIN_PASSWORD（缺密码 dashboard 拒绝启动）
       #   2) 安全组把 8090 只放行你自己的出口 IP（不要 0.0.0.0/0）
       # 想要"完全不开公网口"的旧行为：把下面这行换成
       #    - "127.0.0.1:8090:8090"
-      # 并去掉 .env 里的 DZMM_ADMIN_TOKEN。
+      # （P9 之后授权方式已改成账号密码登录；早期那套 URL 令牌已废弃，
+      #   容器内 bind 仍**必须**是 0.0.0.0，见上面 DZMM_ADMIN_HOST 的注释。）
       - "${DZMM_ADMIN_BIND:-0.0.0.0}:8090:8090"
     volumes:
       # 运行数据持久化

@@ -544,19 +544,22 @@ def section_config():
     out["MUTE_CIDS"] = sorted(cfg.mute)
     out["SCREEN_CIDS"] = sorted(cfg.screen)
     out["PUSH_CIDS"] = list(cfg.push)
-    out["group_count"] = len(cfg.groups)
+    out["group_count"] = len(cfg.groups)          # **生效**的群数
+    out["configured_count"] = len(cfg.group_specs)  # 配置文件里写了几个群
     out["muted_count"] = len(cfg.mute)
     out["screen_count"] = len(cfg.screen)
     out["push_count"] = len(cfg.push)
     # 「这个群走哪个 Bot」从 bots 侧**派生**，不在群上重复存一份
     # （两个真源迟早不一致）
     cid2bot = {b.cid: b.key for b in cfg.bots}
+    # 列出**全部**配置项（含 enabled=false 的）：面板要能看到"我关掉了哪些群"，
+    # 只列生效的会让被关掉的群在界面上凭空消失（配置界面踩过这个坑）。
     out["groups"] = [
-        {"cid": c, "alias": cfg.group(c).alias, "enabled": cfg.group(c).enabled,
-         "mute": cfg.group(c).mute, "screen": cfg.group(c).screen,
-         "push": cfg.group(c).push, "persona": cfg.group(c).persona,
-         "bot": cid2bot.get(c, "")}
-        for c in cfg.groups]
+        {"cid": s.cid, "alias": s.alias, "enabled": s.enabled,
+         "mute": s.mute, "screen": s.screen, "push": s.push,
+         "persona": s.persona, "active": s.cid in cfg.groups,
+         "bot": cid2bot.get(s.cid, "")}
+        for s in cfg.group_specs.values()]
     out["bots"] = [
         {"key": b.key, "name": b.name, "short": b.short, "cid": b.cid,
          "persona": b.persona, "enabled": b.enabled,
@@ -1156,6 +1159,20 @@ class Handler(BaseHTTPRequestHandler):
         defaults = _config_defaults()
         old = _raw_from_store(defaults)
         new = config_ui.parse_form(form)
+        # 先挡住"旧页面把配置整行删掉"：旧页面里没有的条目，提交上来就会丢。
+        # 只在**配置文件真的存在**时才查 —— 没有文件时用的是 bot.py 里的默认值，
+        # 删不掉任何东西，没必要拦。
+        # （页面渲染时会写隐藏字段记着当时有哪些群/Bot，这里拿它比对）
+        if config_store.config_path().is_file():
+            unseen = config_ui.unseen_deletions(old, new, form)
+            if unseen:
+                print("[admin] 拒绝保存：提交的是旧页面，缺少 {}".format(unseen), flush=True)
+                return self._send(400, self._render_edit_page(
+                    error=("这个页面是**旧的一份**，里面没有 {}。直接保存会把配置里这几行"
+                           "整行删掉（别名、人设一起没），所以已拒绝。"
+                           "请刷新页面（或换回最新那个标签页）后重新修改。"
+                           .format("、".join(unseen))),
+                    raw=new), "text/html; charset=utf-8")
         summary = config_ui.diff_summary(old, new)
         if not summary:
             return self._send(200, self._render_edit_page(notice="没有检测到改动"),

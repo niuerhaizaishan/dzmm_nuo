@@ -29,7 +29,8 @@ import time
 from pathlib import Path
 
 __all__ = ["render_edit", "parse_form", "diff_summary", "audit_log",
-           "pending_change", "list_backups", "restore_backup"]
+           "pending_change", "list_backups", "restore_backup",
+           "unseen_deletions"]
 
 AUDIT_NAME = "config_audit.log"
 
@@ -181,6 +182,9 @@ def render_edit(cfg_raw, error="", notice="", csrf="", pending=False,
             "{msg}"
             "<form method=post action='/edit'>"
             "<input type=hidden name='csrf' value='{csrf}'>"
+            # 记下这一版页面渲染时存在哪些条目 —— 保存时用它判断"提交的是不是旧页面"
+            "<input type=hidden name='__groups_seen' value='{seen_g}'>"
+            "<input type=hidden name='__bots_seen' value='{seen_b}'>"
             "<h2>群（{n} 个）—— 空行会被忽略；cid 填了就新增</h2>"
             "<table><tr><th>群 id</th><th>别名</th><th>启用</th><th>静默</th>"
             "<th>入群筛查</th><th>定时推送</th><th>人设</th></tr>{g}</table>"
@@ -200,7 +204,9 @@ def render_edit(cfg_raw, error="", notice="", csrf="", pending=False,
             "</main><footer>配置改动<b>需要重启容器</b>才生效 · "
             "写入前自动备份 · 校验失败不落盘</footer></body></html>").format(
         css=_CSS, msg=msg, csrf=_e(csrf), g="".join(g_html), b="".join(b_html),
-        au=au, bk=bk, n=len(groups), m=len(bots))
+        au=au, bk=bk, n=len(groups), m=len(bots),
+        seen_g=_e(",".join(str(g.get("cid") or "") for g in groups if g.get("cid"))),
+        seen_b=_e(",".join(str(b.get("key") or "") for b in bots if b.get("key"))))
 
 
 # ---------------------------------------------------------------- 表单 → 配置
@@ -210,6 +216,35 @@ def _s(form, key):
     if isinstance(v, list):
         v = v[0] if v else ""
     return (v or "").strip()
+
+
+def _seen(form, name) -> set:
+    """页面渲染时"当时存在哪些条目"（隐藏字段里记着）。"""
+    return {x for x in _s(form, name).split(",") if x}
+
+
+def unseen_deletions(old: dict, new: dict, form) -> list:
+    """会被**顺手删掉**、但这个页面从来没见过那些条目的情况。
+
+    表单是整表提交，所以"配置里有、提交里没有"既可能是用户清空了 cid（想删），
+    也可能是**提交的是一个旧页面**（另一个标签页；或者刚禁用某群、页面还没刷新
+    就又点了保存）。后者会把配置里那几行整行删掉，连别名和人设一起没。
+
+    判据：拿页面渲染时写下的隐藏字段 `__groups_seen` / `__bots_seen` 比对 ——
+    配置里有、提交里没有、**而且渲染那一版页面时也没有** ⇒ 一定是旧页面，拒绝保存。
+    返回人话列表；空列表表示可以保存。
+    """
+    out = []
+    for what, listkey, idkey, seenkey in (
+            ("群", "groups", "cid", "__groups_seen"),
+            ("Bot", "bots", "key", "__bots_seen")):
+        seen = _seen(form, seenkey)
+        old_ids = {str(x.get(idkey)) for x in (old.get(listkey) or []) if x.get(idkey)}
+        new_ids = {str(x.get(idkey)) for x in (new.get(listkey) or []) if x.get(idkey)}
+        for gone in sorted(old_ids - new_ids):
+            if gone not in seen:
+                out.append("{} {}".format(what, gone[:8] if idkey == "cid" else gone))
+    return out
 
 
 def _flag(form, key):
