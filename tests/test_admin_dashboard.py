@@ -114,7 +114,7 @@ def test_published_port_is_host_loopback_only():
     assert m, "prod compose 里找不到 8090 的端口映射"
     mapping = m.group(1)
     assert mapping.startswith("127.0.0.1:"), \
-        "8090 的映射必须是宿主机回环，当前是 {!r}（机器上 5900/6080 已公网可达）".format(mapping)
+        "8090 的映射必须是宿主机回环，当前是 {!r}（机器上 noVNC 6080 实测公网可达）".format(mapping)
 
 
 def test_dashboard_binds_all_interfaces_inside_container():
@@ -139,7 +139,7 @@ def test_startup_prints_the_real_boundary():
     """启动时必须把"真正的边界在哪"打出来，避免有人改错映射还不知道后果。"""
     src = DASH_PY.read_text(encoding="utf-8")
     assert "对外边界 = compose 的端口映射" in src
-    assert "5900/6080 已经是公网可达" in src
+    assert "noVNC(6080) 实测公网可达" in src
 
 
 # ---------------------------------------------------------------- 行为：HTTP

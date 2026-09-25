@@ -747,7 +747,7 @@ def main(argv=None):
     print("[admin] 运维后台已启动 http://{}:{}  只读 / 令牌={}".format(
         host, port, "开" if (os.environ.get("DZMM_ADMIN_TOKEN") or "").strip() else "关"))
     print("[admin] 对外边界 = compose 的端口映射（必须是 127.0.0.1:{}:{}）。"
-          "不要改成 {}:{} —— 这台机器上 5900/6080 已经是公网可达了。"
+          "不要改成 {}:{} —— noVNC(6080) 实测公网可达，且密码很弱。"
           .format(port, port, port, port))
     if host in ("127.0.0.1", "localhost", "::1"):
         print("[admin] ⚠️ 绑的是回环：compose 发布会连不上（docker-proxy 从容器 IP 转发）。")
