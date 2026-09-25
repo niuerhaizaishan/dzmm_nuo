@@ -119,25 +119,67 @@ function Get-CodeFiles {
 }
 
 function Invoke-Ssh([string]$cmd) {
-    ssh -o BatchMode=yes -o ConnectTimeout=15 $Remote "$cmd 2>&1"
+    # ServerAlive* : a long build/extract over one connection must not be dropped
+    # as an idle socket.
+    ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 `
+        -o ServerAliveCountMax=4 $Remote "$cmd 2>&1"
     if ($LASTEXITCODE -ne 0) { throw "SSH failed: $cmd" }
 }
 
 function Invoke-Scp([string]$src, [string]$dst, [switch]$Recurse) {
-    $scpArgs = @('-o', 'BatchMode=yes')
+    $scpArgs = @('-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15',
+                 '-o', 'ServerAliveCountMax=4')
     if ($Recurse) { $scpArgs += '-r' }
     scp @scpArgs $src $dst
     if ($LASTEXITCODE -ne 0) { throw "SCP failed: $src -> $dst" }
 }
 
-function Push-CodeFiles {
-    Write-Host "  base dir: $script:BaseDir"
-    $files = @(Get-CodeFiles)
-    if ($files.Count -eq 0) { throw "no deployable code files under $script:BaseDir" }
+function Get-RelPaths([array]$files) {
+    $rels = @()
+    foreach ($f in $files) {
+        $rel = (Get-RelPath $f.FullName) -replace '\\', '/'
+        # Hard guard: a colon or leading separator here means the archive (or a
+        # per-file scp) would create a bogus directory on the server.
+        # See the Resolve-BaseDir comment for the incident this prevents.
+        if ($rel -match ':' -or $rel -match '^[/\\]') {
+            throw "refusing to upload suspicious remote path: '$rel'"
+        }
+        $rels += $rel
+    }
+    return $rels
+}
 
+function Push-WithTar([array]$rels) {
+    # ONE archive over ONE connection instead of ~145 separate scp calls.
+    # Rationale (both observed for real):
+    #   * a single dropped scp aborted the whole upload half-way, leaving the
+    #     remote tree partially updated;
+    #   * 145 sequential connections took >120s, so the upload kept getting
+    #     killed by command timeouts.
+    $stamp  = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $tarName = "dzmm-upload-$stamp.tar.gz"
+    $tarLocal = Join-Path $env:TEMP $tarName
+    $listLocal = Join-Path $env:TEMP "dzmm-upload-$stamp.txt"
+    # LF, no BOM: bsdtar treats a BOM/CR as part of the filename.
+    [System.IO.File]::WriteAllText($listLocal, ($rels -join "`n"),
+        (New-Object System.Text.UTF8Encoding($false)))
+    try {
+        tar -czf $tarLocal -C $script:BaseDir --files-from $listLocal
+        if ($LASTEXITCODE -ne 0) { throw "local tar failed" }
+        Invoke-Ssh "mkdir -p '$RemoteDir'"
+        Invoke-Scp $tarLocal (Remote-Path $tarName)
+        # Extract into place, then remove the archive so it never shows up in a
+        # later `Get-CodeFiles` (it is not a .py/.yml, but keep the tree clean).
+        Invoke-Ssh "cd '$RemoteDir' && tar xzf '$tarName' && rm -f '$tarName'"
+    } finally {
+        Remove-Item -Force $tarLocal, $listLocal -ErrorAction SilentlyContinue
+    }
+    Write-Host "  packed $($rels.Count) files into one archive and extracted remotely"
+}
+
+function Push-OneByOne([array]$files) {
+    # Fallback for machines without tar.
     Invoke-Ssh "mkdir -p '$RemoteDir'"
-
-    # Create remote sub-directories first (package dirs included).
     $dirs = $files | ForEach-Object {
         $d = Split-Path (Get-RelPath $_.FullName) -Parent
         if ($d) { $d -replace '\\', '/' }
@@ -146,16 +188,26 @@ function Push-CodeFiles {
         Invoke-Ssh "mkdir -p '$RemoteDir/$d'"
         Write-Host "  mkdir: $d"
     }
-
     foreach ($f in $files) {
         $rel = (Get-RelPath $f.FullName) -replace '\\', '/'
-        # Hard guard: a colon or leading separator here means scp would create a
-        # bogus directory on the server (see Resolve-BaseDir comment).
         if ($rel -match ':' -or $rel -match '^[/\\]') {
             throw "refusing to upload suspicious remote path: '$rel'"
         }
         Invoke-Scp $f.FullName (Remote-Path $rel)
         Write-Host "  uploaded: $rel"
+    }
+}
+
+function Push-CodeFiles {
+    Write-Host "  base dir: $script:BaseDir"
+    $files = @(Get-CodeFiles)
+    if ($files.Count -eq 0) { throw "no deployable code files under $script:BaseDir" }
+    $rels = Get-RelPaths $files
+    if (Get-Command tar -ErrorAction SilentlyContinue) {
+        Push-WithTar $rels
+    } else {
+        Write-Host "  (tar not found, falling back to per-file scp)"
+        Push-OneByOne $files
     }
     return $files.Count
 }

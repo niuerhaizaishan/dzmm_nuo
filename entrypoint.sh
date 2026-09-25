@@ -20,6 +20,20 @@ echo "[entrypoint] 启动续期 + 健康巡检后台任务..."
 # 2.5 心跳（每 2 小时发一次运行状态到飞书；首次启动立即发一条）
 ( while true; do [ -f /app/bot.paused ] && { sleep 30; continue; }; python heartbeat.py || true; sleep 7200; done ) &
 
+# 2.6 运维后台（P9）：只读、只绑 127.0.0.1，用 SSH 隧道访问。
+#     单独进程 -> 它挂了不影响 bot；DZMM_ADMIN=off 可整体关掉。
+#     刻意放在主循环之前、且不加 `set -e` 依赖：起不来也只是没后台，不阻断 bot。
+if [ "$(echo "${DZMM_ADMIN:-on}" | tr 'A-Z' 'a-z')" != "off" ]; then
+  echo "[entrypoint] 启动运维后台（只读；对外边界见 compose 的 127.0.0.1:${DZMM_ADMIN_PORT:-8090} 映射）..."
+  ( while true; do
+      [ -f /app/bot.paused ] && { sleep 30; continue; }
+      python -u admin/dashboard.py || true
+      sleep 30
+    done ) &
+else
+  echo "[entrypoint] DZMM_ADMIN=off，跳过运维后台"
+fi
+
 # 3. 档案同步定时（问候/记忆汇报已改由 bot 主循环用常驻页面发送，见 bot._scheduled_pushes）
 #    原因：原来「到点另起进程 + 冷启浏览器」在平台抖动时会整页加载超时，问候整晚丢失
 #    （2026-09-16 认证群 22:00 晚安丢失事故）
