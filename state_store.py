@@ -133,6 +133,63 @@ def save_state(s: dict) -> None:
     _save_state_json(s or {})
 
 
+# ---------------------------------------------------------------- 群状态：单键读写
+
+def group_get(cid: str, key: str, default=None):
+    """读某群的**单个键**。"""
+    if _sqlite_enabled():
+        try:
+            g = _get_store().get("group", cid) or {}
+            return g.get(key, default)
+        except Exception:
+            pass
+    return (_load_state_json().get(cid) or {}).get(key, default)
+
+
+def group_set(cid: str, key: str, value) -> None:
+    """写某群的**单个键** —— 只写该群那一行。
+
+    比旧的"load 全部群 → 改 → save 全部群"更省，且竞态窗口更小
+    （P8 状态存取器的核心价值）。
+    """
+    if _sqlite_enabled():
+        try:
+            st = _get_store()
+            g = st.get("group", cid) or {}
+            g[key] = value
+            st.set("group", cid, g)
+            return
+        except Exception:
+            pass
+    raw = _load_state_json()
+    g = raw.get(cid) or {}
+    g[key] = value
+    raw[cid] = g
+    _save_state_json(raw)
+
+
+def top_get(key: str, default=None):
+    """读**顶层**键（如 `dice_game`）—— 注意它不按 cid 存。"""
+    if _sqlite_enabled():
+        try:
+            return _get_store().get("group", key)
+        except Exception:
+            pass
+    return _load_state_json().get(key, default)
+
+
+def top_set(key: str, value) -> None:
+    if _sqlite_enabled():
+        try:
+            _get_store().set("group", key, value)
+            return
+        except Exception:
+            pass
+    raw = _load_state_json()
+    raw[key] = value
+    _save_state_json(raw)
+
+
 # ---------------------------------------------------------------- profiles
 
 def _load_profiles_json() -> dict:

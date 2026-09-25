@@ -650,19 +650,16 @@ def _extract_remember(text: str):
 
 def _get_memory(cid: str) -> list:
     """读取记忆列表（按群）。"""
-    return (load_state().get(cid) or {}).get("memory") or []
+    return state_store.group_get(cid, "memory", []) or []
 
 
 def _remember(cid: str, text: str, from_name: str) -> None:
     """写入一条记忆（滑动窗口，最多 MEMORY_MAX 条），失败静默。"""
     try:
-        state = load_state()
-        gs = state.get(cid) or {}
-        mem = gs.get("memory") or []
-        mem.append({"text": text, "from": from_name, "at": time.strftime("%Y-%m-%d %H:%M")})
-        gs["memory"] = mem[-MEMORY_MAX:]
-        state[cid] = gs
-        save_state(state)
+        mem = state_store.group_get(cid, "memory", []) or []
+        mem.append({"text": text, "from": from_name,
+                    "at": time.strftime("%Y-%m-%d %H:%M")})
+        state_store.group_set(cid, "memory", mem[-MEMORY_MAX:])
     except Exception:
         pass
 
@@ -1071,17 +1068,29 @@ def rank_summary() -> str:
     return "\n".join(lines)
 
 
+# ============ 发情值增量（P8 集中管理）============
+# 原先 5/8/10/15/20 散落在十余个函数里，改规则要到处找。括号内是原行号，便于对照。
+HEAT_SCENE_PICK = 10              # 发骚骰子：被抽中（2887）
+HEAT_SCENE_CONTINUE_TARGET = 10   # 发骚续写：目标（3028）
+HEAT_SCENE_CONTINUE_SENDER = 10   # 发骚续写：发起人（3030）
+HEAT_INSULT_TARGET = 15           # 被羞辱（3056、4921）
+HEAT_INSULT_SENDER = 10           # 羞辱续写：发起人（3058）
+HEAT_FASAO_PICK = 15              # 被点名发骚 /发情点名（1680）
+HEAT_DIAOJIAO_ROUND = 20          # 被调教一轮（3290）
+HEAT_VOTE_STARTER = 8             # 投票：发起人（3562）
+HEAT_VOTE_VOTER = 5               # 投票：参与者（3565）
+HEAT_STORY_VOTER = 8              # 剧情：投票者（3746）
+HEAT_STORY_PROTAGONIST = 15       # 剧情：主角（3748）
+
+
 def _add_heat(cid: str, uid: str, delta: int) -> None:
     """给某人加发情值（持久化，排除小小糯）."""
     if not uid or is_self(uid) or delta <= 0:
         return
-    state = load_state()
-    group_state = state.get(cid) or {}
-    heat = group_state.get("heat_value") or {}
+    # P8：单键读写 —— 只写该群那一行（原先每次都要重写全部群）
+    heat = state_store.group_get(cid, "heat_value", {}) or {}
     heat[uid] = heat.get(uid, 0) + delta
-    group_state["heat_value"] = heat
-    state[cid] = group_state
-    save_state(state)
+    state_store.group_set(cid, "heat_value", heat)
 
 
 def _rollback_last_id(cid: str, old_last_id: str) -> None:
@@ -1314,16 +1323,13 @@ DICE_TIMEOUT_SEC = 180  # 3 分钟超时弃权
 
 
 def _dice_state() -> dict:
-    """读骰子局状态。"""
-    state = load_state()
-    return state.get("dice_game") or {}
+    """读骰子局状态（**顶层键**，不按 cid 存）。"""
+    return state_store.top_get("dice_game") or {}
 
 
 def _dice_save(g: dict) -> None:
     """写骰子局状态。"""
-    state = load_state()
-    state["dice_game"] = g
-    save_state(state)
+    state_store.top_set("dice_game", g)
 
 
 def _dice_current_player(g: dict) -> str:
@@ -1677,7 +1683,7 @@ def fasao(cmd: str) -> str:
     text = (text or "").strip().replace("🤖", "")
     if not text:
         text = full + "，发个骚给主人看看～"
-    _add_heat(cid, uid, 15)
+    _add_heat(cid, uid, HEAT_FASAO_PICK)
     return "🎯 点中 " + full + "！\n" + text
 
 
@@ -2884,7 +2890,7 @@ def scene(cmd: str) -> str:
         selected_uid = _random_member_uid()
         full = get_full_name(selected_uid) if selected_uid else "姐姐"
     if selected_uid:
-        _add_heat(_ACTIVE_CID, selected_uid, 10)  # 被抽中 → 发情值 +10
+        _add_heat(_ACTIVE_CID, selected_uid, HEAT_SCENE_PICK)
     glabel = _gender_label(selected_uid) if selected_uid else "未知"
     # 读取目标 XP + 资料（签名/简介/画像，供增加上下文）
     xp = []
@@ -2946,11 +2952,7 @@ def scene(cmd: str) -> str:
 def _set_last_action(cid: str, action: dict) -> None:
     """记录上一段动作上下文（供 /继续 续写）."""
     try:
-        state = load_state()
-        gs = state.get(cid) or {}
-        gs["last_action"] = action
-        state[cid] = gs
-        save_state(state)
+        state_store.group_set(cid, "last_action", action)
     except Exception:
         pass
 
@@ -2958,7 +2960,7 @@ def _set_last_action(cid: str, action: dict) -> None:
 def _get_last_action(cid: str):
     """读取上一段动作上下文."""
     try:
-        return (load_state().get(cid) or {}).get("last_action")
+        return state_store.group_get(cid, "last_action")
     except Exception:
         return None
 
@@ -3025,9 +3027,9 @@ def continue_last(cid: str, cmd: str = "", sender_uid: str = "") -> str:
             return "续写失败啦，换个指令试试～"
         target_uid = fs.get("uid")
         if target_uid:
-            _add_heat(cid, target_uid, 10)
+            _add_heat(cid, target_uid, HEAT_SCENE_CONTINUE_TARGET)
         if sender_uid and sender_uid != target_uid:
-            _add_heat(cid, sender_uid, 10)
+            _add_heat(cid, sender_uid, HEAT_SCENE_CONTINUE_SENDER)
         history.append(text)
         fs["history"] = history
         fs["last_ts"] = time.time()
@@ -3050,12 +3052,12 @@ def continue_last(cid: str, cmd: str = "", sender_uid: str = "") -> str:
     text = (text or "").strip()
     if not text:
         return "续写失败啦，换个指令试试～"
-    # 续写加分（和目标原指令一致：羞辱+15）
+    # 续写加分（和目标原指令一致：羞辱 +15）
     target_uid = action.get("uid")
     if target_uid:
-        _add_heat(cid, target_uid, 15)
+        _add_heat(cid, target_uid, HEAT_INSULT_TARGET)
     if sender_uid and sender_uid != target_uid:
-        _add_heat(cid, sender_uid, 10)
+        _add_heat(cid, sender_uid, HEAT_INSULT_SENDER)
     action["output"] = text
     _set_last_action(cid, action)
     return text
@@ -3065,16 +3067,12 @@ def continue_last(cid: str, cmd: str = "", sender_uid: str = "") -> str:
 
 def _get_fasao_state(cid: str) -> dict:
     """读取发骚状态."""
-    return (load_state().get(cid) or {}).get("fasao") or {}
+    return state_store.group_get(cid, "fasao", {}) or {}
 
 
 def _set_fasao_state(cid: str, fs: dict) -> None:
     """写入发骚状态."""
-    state = load_state()
-    group = state.get(cid) or {}
-    group["fasao"] = fs
-    state[cid] = group
-    save_state(state)
+    state_store.group_set(cid, "fasao", fs)
 
 
 def is_fasao_end_cmd(cmd: str) -> bool:
@@ -3156,16 +3154,12 @@ def rewrite_last(cid: str, cmd: str = "") -> str:
 
 def _get_dj_state(cid: str) -> dict:
     """读取调教状态."""
-    return (load_state().get(cid) or {}).get("diaojiao") or {}
+    return state_store.group_get(cid, "diaojiao", {}) or {}
 
 
 def _set_dj_state(cid: str, dj: dict) -> None:
     """写入调教状态."""
-    state = load_state()
-    group = state.get(cid) or {}
-    group["diaojiao"] = dj
-    state[cid] = group
-    save_state(state)
+    state_store.group_set(cid, "diaojiao", dj)
 
 
 def is_diaojiao_cmd(cmd: str) -> str:
@@ -3287,7 +3281,7 @@ def _check_diaojiao(cid: str, pending: list) -> str:
                     dj["last_activity"] = now
                     dj["round"] = dj.get("round", 0) + 1
                     _set_dj_state(cid, dj)
-                    _add_heat(cid, target_uid, 20)  # 被调教一轮 +20
+                    _add_heat(cid, target_uid, HEAT_DIAOJIAO_ROUND)  # 被调教一轮
                     return "目标回应啦～谁想发下一条命令？发 /命令 xxx 或直接 /xxx 都行（目标自己也能发哦～）30秒没人发我就自己来～"
         return None
     if phase == "等命令":
@@ -3330,16 +3324,13 @@ def is_review_cmd(cmd: str):
 
 
 def _get_perf_state(cid: str) -> dict:
-    state = load_state()
-    return (state.get(cid) or {}).get("perf") or {}
+    """读取公演状态。"""
+    return state_store.group_get(cid, "perf", {}) or {}
 
 
 def _set_perf_state(cid: str, perf: dict) -> None:
-    state = load_state()
-    group = state.get(cid) or {}
-    group["perf"] = perf
-    state[cid] = group
-    save_state(state)
+    """写入公演状态。"""
+    state_store.group_set(cid, "perf", perf)
 
 
 # ============ 投票功能（/投票）============
@@ -3364,16 +3355,13 @@ DEVIL_HOT_WINDOW = 3 * 60        # 热闹窗口：3 分钟内发言算"同时活
 
 
 def _get_vote_state(cid: str) -> dict:
-    state = load_state()
-    return (state.get(cid) or {}).get("vote") or {}
+    """读取投票状态。"""
+    return state_store.group_get(cid, "vote", {}) or {}
 
 
 def _set_vote_state(cid: str, vote: dict) -> None:
-    state = load_state()
-    group = state.get(cid) or {}
-    group["vote"] = vote
-    state[cid] = group
-    save_state(state)
+    """写入投票状态。"""
+    state_store.group_set(cid, "vote", vote)
 
 
 def is_vote_start_cmd(cmd: str) -> bool:
@@ -3559,10 +3547,10 @@ def _finish_vote(cid: str) -> str:
         lines.append("【" + str(i) + "】" + opt + "　" + str(n) + "票(" + str(pct) + "%)　" + voter_str)
     starter = vote.get("starter", "")
     if starter and not is_self(starter):
-        _add_heat(cid, starter, 8)
+        _add_heat(cid, starter, HEAT_VOTE_STARTER)
     for uid in votes.keys():
         if uid and not is_self(uid) and uid != starter:
-            _add_heat(cid, uid, 5)
+            _add_heat(cid, uid, HEAT_VOTE_VOTER)
     _set_vote_state(cid, {})
     lines.append("🎉 结算：发起人 +8，投票的人各 +5")
     return "\n".join(lines)
@@ -3590,16 +3578,13 @@ STORY_VOTE_SECONDS = 60
 
 
 def _get_story_state(cid: str) -> dict:
-    state = load_state()
-    return (state.get(cid) or {}).get("story") or {}
+    """读取剧情状态。"""
+    return state_store.group_get(cid, "story", {}) or {}
 
 
 def _set_story_state(cid: str, story: dict) -> None:
-    state = load_state()
-    group = state.get(cid) or {}
-    group["story"] = story
-    state[cid] = group
-    save_state(state)
+    """写入剧情状态。"""
+    state_store.group_set(cid, "story", story)
 
 
 def _active_play_hint(cid: str) -> str:
@@ -3743,9 +3728,9 @@ def _finish_story(cid: str) -> str:
     protagonist = story.get("protagonist", "")
     for uid in votes.keys():
         if uid and not is_self(uid):
-            _add_heat(cid, uid, 8)
+            _add_heat(cid, uid, HEAT_STORY_VOTER)
     if protagonist_uid and not is_self(protagonist_uid):
-        _add_heat(cid, protagonist_uid, 15)
+        _add_heat(cid, protagonist_uid, HEAT_STORY_PROTAGONIST)
     _set_story_state(cid, {})
     lines = ["🎬 剧情结束！女主：" + protagonist]
     if ending:
@@ -4918,7 +4903,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                     reply = p("not_found_insult", cid)
                                 else:
                                     # 被羞辱 → 发情值 +15
-                                    _add_heat(cid, target_uid, 15)
+                                    _add_heat(cid, target_uid, HEAT_INSULT_TARGET)
                                     history = _get_insult_history(target_uid)
                                     text = _append_memory_ref(text, cid, get_full_name(target_uid))
                                     reply, style = await asyncio.to_thread(generate_insult, text, custom, history)

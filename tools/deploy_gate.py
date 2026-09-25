@@ -145,6 +145,21 @@ for mod_name in ("renew_token", "headless_relogin", "auto_recover"):
     check("{} 的 main 用会话锁".format(mod_name),
           "guard(" in inspect.getsource(mod.main))
 
+# P8：状态存取器 + 发情值常量
+check("bot._add_heat 走 state_store",
+      "state_store" in inspect.getsource(bot._add_heat))
+check("bot._set_vote_state 走 state_store",
+      "state_store" in inspect.getsource(bot._set_vote_state))
+_heat_consts = [n for n in dir(bot) if n.startswith("HEAT_")]
+check("发情值常量已集中（{} 个）".format(len(_heat_consts)), len(_heat_consts) == 11)
+try:
+    import re as _re
+    _bot_src = Path("/app/bot.py").read_text(encoding="utf-8")
+    _left = _re.findall(r"_add_heat\([^)]*,\s*\d+\)", _bot_src)
+    check("无裸数字 _add_heat 调用", not _left, _left[:3])
+except Exception as e:                                      # noqa: BLE001
+    check("裸数字检查", False, e)
+
 # ---------- 6) 回归（P3/P4） ----------
 print()
 print("回归（P3/P4）:")

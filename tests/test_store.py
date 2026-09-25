@@ -185,18 +185,6 @@ def test_import_survives_corrupt_json(dbdir):
 
 # ---------------------------------------------------------------- 统一入口
 
-@pytest.fixture
-def isolated(monkeypatch, dbdir):
-    """把 state_store 指到临时目录，并清掉单例与后端缓存。"""
-    state_store.close()
-    monkeypatch.setattr(state_store, "STATE_FILE", dbdir / "state.json")
-    monkeypatch.setattr(state_store, "PROFILES_FILE", dbdir / "profiles.json")
-    monkeypatch.setenv("DZMM_STORE_DB", str(dbdir / "store.db"))
-    monkeypatch.delenv("DZMM_STORE", raising=False)
-    yield monkeypatch
-    state_store.close()
-
-
 def test_sqlite_backend_roundtrip(isolated):
     assert state_store.using_sqlite() is True
     state_store.save_state({CID_A: {"x": 1}})
