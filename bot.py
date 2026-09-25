@@ -112,6 +112,7 @@ from profiles import get_profile, upsert_profile, load_profiles, save_profiles
 from wx_alert import send_weixin
 import token_store
 import env_config
+import state_store                                    # P7：状态存储后端（默认 SQLite）
 
 # DZMM 主站 origin（多线路切换：env_config 从 DZMM_HOST 环境变量读）
 ORIGIN = env_config.get_dzmm_origin()
@@ -149,15 +150,18 @@ def log(msg: str) -> None:
         pass
 
 
+# 状态存储：P7 起默认走 SQLite（`state_store`），`DZMM_STORE=json` 可回退。
+# 函数名与签名保持不变 —— 下面约 45 个调用点一处都不用改。
+# 旧实现的问题（已核实）：写是**非原子**的 write_text（文件 bind mount 上 os.replace
+# 会 EBUSY），写到一半被 kill 会留下截断 JSON，而解析失败时**静默返回 {}**，
+# 导致全群发情值/高潮/状态机/记忆一起无声清零。
 def load_state() -> dict:
-    try:
-        return json.loads((ROOT / "state.json").read_text("utf-8"))
-    except Exception:
-        return {}  # {"<cid>": {"last_id": ..., "last_sync_at": ...}}
+    """读全部群状态 `{cid: {...}}`。"""
+    return state_store.load_state()
 
 
 def save_state(s: dict) -> None:
-    (ROOT / "state.json").write_text(json.dumps(s, ensure_ascii=False, indent=2), "utf-8")
+    state_store.save_state(s)
 
 
 def get_cached_cookie() -> str:
@@ -4340,10 +4344,10 @@ def _wrap_with_bot_routing(account):
         return account
 
 
-def _log_p5_status() -> None:
-    """启动时打印 P5（唯一登录者 + 限流）状态。
+def _log_runtime_status() -> None:
+    """启动时打印 P5 / P7 的运行时状态。
 
-    没有这一行，P5 生效与否在日志里看不出来（它默认不输出任何东西）。
+    没有这几行，这些能力生效与否在日志里看不出来（它们默认不输出任何东西）。
     """
     try:
         from session_guard import version as _sver
@@ -4355,6 +4359,13 @@ def _log_p5_status() -> None:
             b.get("rate_per_min"), b.get("capacity")))
     except Exception as e:                                 # noqa: BLE001
         log("P5: 状态未知（" + str(e)[:60] + "）")
+    try:
+        import state_store
+        st = state_store.stats()
+        log("P7: 存储={} db={} counts={}".format(
+            st.get("backend"), st.get("db") or "-", st.get("counts") or {}))
+    except Exception as e:                                 # noqa: BLE001
+        log("P7: 状态未知（" + str(e)[:60] + "）")
 
 
 def _wrap_with_outbox(sender, dry: bool):
@@ -4389,7 +4400,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
     global _ACTIVE_CID, _captcha_active, _captcha_notified
     sender = _wrap_with_outbox(Sender(), dry)
     if not dry:
-        _log_p5_status()
+        _log_runtime_status()
         try:
             await sender.start()
         except Exception as e:

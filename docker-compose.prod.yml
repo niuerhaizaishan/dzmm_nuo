@@ -63,6 +63,11 @@ services:
       - ./bot.log:/app/bot.log
       - ./check_health.log:/app/check_health.log
       - ./renew_token.log:/app/renew_token.log
+      # 巡检的去重/去抖状态。原先没挂 -> 每次重建容器就丢，会重复发一遍告警
+      - ./check_health_state.json:/app/check_health_state.json
+      # 续期失败计数与 emergency 冷却时间戳（原先也没挂，重建即丢）
+      - ./renew_fail_state.json:/app/renew_fail_state.json
+      - ./renew_emergency_state.json:/app/renew_emergency_state.json
       # 验证码远程桌面：挂载 X socket，容器内 chromium headed 显示到宿主机虚拟屏
       - /tmp/.X11-unix:/tmp/.X11-unix
       # 凭据（本地从已迁移的 token JSON + login 挂载；云端改用 secrets）

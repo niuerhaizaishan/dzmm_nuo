@@ -177,7 +177,10 @@ switch ($Action) {
         Write-Host "[compose] validate..."
         Invoke-Ssh "cd $RemoteDir && docker compose config -q && echo COMPOSE-OK"
         Write-Host "[compose] recreate container..."
-        Invoke-Ssh "cd $RemoteDir && docker compose up -d dzmm-bot"
+        # Build too: a compose change usually rides along with code changes, and
+        # `up -d` alone recreates from the OLD image -- that silently skipped a
+        # whole deploy once (the container came up without the new code).
+        Invoke-Ssh "cd $RemoteDir && docker compose build dzmm-bot && docker compose up -d dzmm-bot"
         Write-Host "OK compose applied (backup: docker-compose.yml.bak-$stamp)"
     }
     'deploy' {
