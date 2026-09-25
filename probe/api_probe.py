@@ -38,6 +38,9 @@ def main() -> None:
     ap.add_argument("--proxy", default="http://127.0.0.1:7890")
     ap.add_argument("--rate-n", type=int, default=8)
     ap.add_argument("--skip-send", action="store_true", help="只做端点发现，不发任何消息")
+    ap.add_argument("--include-mutating", action="store_true",
+                    help="⚠️ 一并探测会改状态的端点（leave/kick/ban/delete/set-webhook）。"
+                         "默认关闭：这些路径即使传无效 id 也可能被后端真的执行（最坏 = bot 退群）")
     a = ap.parse_args()
 
     O = a.origin.rstrip("/")
@@ -99,35 +102,84 @@ def main() -> None:
         print(f"    成功 {ok} / 失败 {fail}" + ("（未见限流）" if fail == 0 else "（出现限流，需退避策略）"))
 
     # ------------------------------------------------------------------ Q6 端点发现
+    # 实测（2026-09-22）：该 API **不用 HTTP 状态码表达存在性** —— 未知方法也返回
+    # 200 + {"ok":false,"message":"Invalid method"}。故必须按 **响应体** 判定。
     print("\n" + "=" * 70)
-    print("[Q6] 文档外端点发现（非 404 即可能存在；401/403 说明存在但需权限）")
+    print("[Q6] 文档外端点发现（按响应体判定：'Invalid method' = 方法不存在）")
     print("=" * 70)
 
-    kebab = ["send-message", "pin-message", "get-me", "get-chat", "get-members",
-             "get-chat-members", "get-chat-member", "get-user", "get-updates",
-             "delete-message", "edit-message", "send-photo", "send-photo-url",
-             "leave-chat", "kick-member", "ban-member", "remove-member",
-             "get-verified", "get-profile", "set-webhook", "delete-webhook", "get-webhook-info"]
-    camel = ["getMe", "getChat", "getChatMember", "getChatMemberCount", "getChatAdministrators",
-             "getUpdates", "deleteMessage", "editMessageText", "sendChatAction", "leaveChat",
-             "banChatMember", "kickChatMember", "getUserProfilePhotos", "setWebhook",
-             "deleteWebhook", "getWebhookInfo", "sendMessage", "sendPhoto"]
+    # 全 0 的 chatroom_id：确定不存在，用于取"方法存在"的响应形状，且不会投递到任何群
+    BOGUS = "00000000-0000-0000-0000-000000000000"
+
+    def classify(tx: str) -> str:
+        try:
+            j = json.loads(tx)
+        except Exception:
+            return "非JSON"
+        if not isinstance(j, dict):
+            return "?"
+        msg = str(j.get("message", ""))
+        if msg.strip().lower() == "invalid method":
+            return "不存在"
+        if j.get("ok") is True:
+            return "存在·成功"
+        return "存在·" + (msg[:36] or "ok:false")
+
+    # 对照：已知端点 + 不存在的 chatroom_id → 拿到"方法存在"的响应形状（安全，不会真的发出消息）
+    print("\n[对照] 已知端点 + 不存在的 chatroom_id（安全，不会投递到任何群）")
+    for label, url, hdr, payload in [
+        ("send-message", f"{O}/api/bot/send-message", HDR,
+         {"chatroom_id": BOGUS, "content": "probe"}),
+        ("pin-message", f"{O}/api/bot/pin-message", HDR,
+         {"chatroom_id": BOGUS, "message_id": "x"}),
+        ("bot<token>/sendMessage", f"{O}/api/bot/bot{a.token}/sendMessage",
+         {"Content-Type": "application/json"}, {"chat_id": BOGUS, "text": "probe"}),
+    ]:
+        st, ms, tx = call("POST", url, hdr, payload, a.proxy)
+        print(f"   {label:<24} -> {st} {ms}ms [{classify(tx)}] {tx[:120]}")
+    print("   ↑ 这种形状 = 『方法存在』。下面同形状即存在；'Invalid method' 即不存在。")
+
+    # ⚠️ 安全设计：默认只探只读端点。
+    #    会改状态的路径（leave/kick/ban/delete/set-webhook）即使传无效 id，
+    #    也可能被实现不严的后端真的执行 —— 最坏情况是让 bot 直接退群。
+    #    确需探测时显式加 --include-mutating。
+    read_only_kebab = ["get-me", "get-chat", "get-members", "get-chat-members",
+                       "get-chat-member", "get-chat-member-count", "get-chat-administrators",
+                       "get-user", "get-updates", "get-verified", "get-profile",
+                       "get-webhook-info", "webhook-info"]
+    read_only_camel = ["getMe", "getChat", "getChatMember", "getChatMemberCount",
+                       "getChatAdministrators", "getUpdates", "getWebhookInfo",
+                       "getUserProfilePhotos"]
+    mutating_kebab = ["send-message", "pin-message", "send-photo", "send-photo-url",
+                      "delete-message", "edit-message", "leave-chat", "kick-member",
+                      "ban-member", "remove-member", "set-webhook", "delete-webhook"]
+    mutating_camel = ["sendMessage", "sendPhoto", "deleteMessage", "editMessageText",
+                      "sendChatAction", "leaveChat", "banChatMember", "kickChatMember",
+                      "setWebhook", "deleteWebhook"]
+
+    kebab = read_only_kebab + (mutating_kebab if a.include_mutating else [])
+    camel = read_only_camel + (mutating_camel if a.include_mutating else [])
+    if a.include_mutating:
+        print("\n⚠️ 已启用 --include-mutating：将探测会改状态的端点，请确认目标是测试群！")
+    else:
+        print("\n（只探只读端点；要探 leave/kick/ban/delete 等请显式加 --include-mutating）")
 
     print("\n-- A 形式：POST /api/bot/<kebab> + X-Bot-Token --")
-    print("   对照：send-message 已知可用（应 200）")
     for m in kebab:
         st, ms, tx = call("POST", f"{O}/api/bot/{m}", HDR,
-                          {"chatroom_id": CID, "chat_id": CID}, a.proxy)
-        mark = "  " if st == 404 else "★ "
-        print(f"   {mark}{m:<22} -> {st} {ms}ms {tx[:100]}")
+                          {"chatroom_id": BOGUS, "chat_id": BOGUS}, a.proxy)
+        c = classify(tx)
+        mark = "★ " if c.startswith("存在") else "  "
+        print(f"   {mark}{m:<24} -> {st} {ms}ms [{c}] {tx[:90]}")
 
     print("\n-- B 形式：POST /api/bot/bot<token>/<Camel> --")
     for m in camel:
         st, ms, tx = call("POST", f"{O}/api/bot/bot{a.token}/{m}",
                           {"Content-Type": "application/json"},
-                          {"chat_id": CID}, a.proxy)
-        mark = "  " if st == 404 else "★ "
-        print(f"   {mark}{m:<24} -> {st} {ms}ms {tx[:100]}")
+                          {"chat_id": BOGUS}, a.proxy)
+        c = classify(tx)
+        mark = "★ " if c.startswith("存在") else "  "
+        print(f"   {mark}{m:<26} -> {st} {ms}ms [{c}] {tx[:90]}")
 
     print("\n把 ★ 标记的端点逐个人工确认语义，结论记入 docs/BotAPI能力矩阵.md")
 
