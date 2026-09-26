@@ -94,6 +94,32 @@ def edit_server(monkeypatch, dbdir):
             srv.server_close()
 
 
+@pytest.fixture
+def edit_server_nopw(monkeypatch, dbdir):
+    """**未配密码**的服务器（= 仅回环 / SSH 隧道模式）。
+
+    这个模式下 `_require_session()` 直接放行，所以浏览器永远拿不到 session cookie。
+    曾经因此 CSRF 键对不上（存 `sid or "-"`、查 `sid`）：
+    页面能打开，但保存和回滚**一律 400**。
+    """
+    cfgp = dbdir / "config.json"
+    monkeypatch.setenv("DZMM_CONFIG", str(cfgp))
+    monkeypatch.delenv("DZMM_ADMIN_PASSWORD", raising=False)
+    monkeypatch.setenv("DZMM_BOT_TOKEN", "dummy-token")
+    cs._cache = None
+    from http.server import ThreadingHTTPServer
+    import threading
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), dash.Handler)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = "http://127.0.0.1:{}".format(srv.server_address[1])
+    try:
+        yield base, cfgp
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
 def _login(base):
     st, _body, hdrs = _req(base, "/login", method="POST",
                            data={"username": USER, "password": PW})
@@ -530,6 +556,132 @@ def test_stale_page_cannot_delete_groups(edit_server):
     assert "旧的一份" in body
     assert CID_ROSE[:8] in body, "要指出到底缺了哪个"
     assert cfgp.read_text(encoding="utf-8") == before, "一个字都不许写"
+
+
+# -------------------------------- 未配密码（回环/隧道）模式：页面必须能存能回滚
+
+def test_nopassword_mode_can_save(edit_server_nopw):
+    """未配密码时没有 session cookie，CSRF 的键必须两边一致，保存才能通过。
+
+    回归：曾经渲染表单存 `sid or "-"`、校验查 `sid` ⇒ 该模式下一律 400
+    「CSRF 校验失败」——页面能看不能改。生产配了密码，所以从没暴露。
+    """
+    base, cfgp = edit_server_nopw
+    st, page, _ = _req(base, "/edit")
+    assert st == 200 and "保存配置" in page
+    csrf = _csrf_from(page)
+    st, body, _ = _req(base, "/edit", method="POST",
+                       data=_form(BASE_GROUPS, BASE_BOTS, csrf))
+    assert st == 200, body[:300]
+    assert "已保存" in body
+    assert cfgp.is_file(), "文件应当真的写出来了"
+    saved = json.loads(cfgp.read_text(encoding="utf-8"))
+    assert [g["cid"] for g in saved["groups"]] == [CID_A, CID_ROSE]
+
+
+def test_nopassword_mode_can_roll_back(edit_server_nopw):
+    base, cfgp = edit_server_nopw
+    csrf = _csrf_from(_req(base, "/edit")[1])
+    assert _req(base, "/edit", method="POST",
+                data=_form(BASE_GROUPS, BASE_BOTS, csrf))[0] == 200
+    # 第二次保存会留下第一版的备份
+    csrf = _csrf_from(_req(base, "/edit")[1])
+    g2 = [dict(BASE_GROUPS[0], alias="改过的"), BASE_GROUPS[1]]
+    assert _req(base, "/edit", method="POST",
+                data=_form(g2, BASE_BOTS, csrf))[0] == 200
+    backups = cs.backup_dir().glob("config-*.json")
+    name = sorted(p.name for p in backups)[-1]
+    st, body, _ = _req(base, "/edit/rollback", method="POST",
+                       data={"csrf": csrf, "name": name})
+    assert st == 200, body[:200]
+    assert "已回滚" in body
+    saved = json.loads(cfgp.read_text(encoding="utf-8"))
+    assert saved["groups"][0]["alias"] == "认证妹子群"
+
+
+def test_nopassword_mode_backup_diff_is_reachable(edit_server_nopw):
+    base, _cfgp = edit_server_nopw
+    csrf = _csrf_from(_req(base, "/edit")[1])
+    _req(base, "/edit", method="POST", data=_form(BASE_GROUPS, BASE_BOTS, csrf))
+    csrf = _csrf_from(_req(base, "/edit")[1])
+    g2 = [dict(BASE_GROUPS[0], alias="新别名"), BASE_GROUPS[1]]
+    _req(base, "/edit", method="POST", data=_form(g2, BASE_BOTS, csrf))
+    name = sorted(p.name for p in cs.backup_dir().glob("config-*.json"))[-1]
+    st, page, _ = _req(base, "/edit/backup?name=" + name)
+    assert st == 200
+    assert "逐行" in page or "差异" in page
+    assert "新别名" in page, "差异里要能看到改了什么"
+    assert "回滚到这一版" in page
+
+
+# ---------------------------------------------------------------- 备份：列全与差异
+
+def test_list_backups_returns_all_by_default(dbdir):
+    bd = dbdir / "config_backups"
+    bd.mkdir()
+    for i in range(15):
+        (bd / "config-202609{:02d}-000000.json".format(i + 1)).write_text(
+            "{}", encoding="utf-8")
+    assert len(ui.list_backups(bd)) == 15, "默认必须列全（曾经只列 10 份）"
+    assert len(ui.list_backups(bd, 5)) == 5
+    assert ui.list_backups(bd)[0].endswith("15-000000.json"), "新的在前"
+
+
+def test_backup_path_rejects_traversal_and_junk(dbdir):
+    bd = dbdir / "config_backups"
+    bd.mkdir()
+    (bd / "config-20260925-000000.json").write_text("{}", encoding="utf-8")
+    for bad in ("../secret.json", "/etc/passwd", "config-x.txt", "", "secret.json"):
+        with pytest.raises(FileNotFoundError):
+            ui.backup_path(bd, bad)
+    assert ui.backup_path(bd, "config-20260925-000000.json").name == \
+        "config-20260925-000000.json"
+
+
+def test_unified_diff_marks_added_and_removed():
+    lines = ui.unified_diff('{\n  "a": 1\n}', '{\n  "a": 2\n}')
+    assert any(x.startswith("-") and "1" in x for x in lines)
+    assert any(x.startswith("+") and "2" in x for x in lines)
+
+
+def test_backup_detail_page_escapes_and_shows_summary():
+    old = {"version": 1, "groups": [{"cid": CID_A, "alias": "<b>x</b>"}], "bots": []}
+    cur = {"version": 1, "groups": [{"cid": CID_A, "alias": "y"}], "bots": []}
+    html = ui.render_backup_detail("config-1.json", old, cur,
+                                   '{"alias": "<b>x</b>"}', '{"alias": "y"}',
+                                   csrf="tok")
+    assert "&lt;b&gt;" in html and "<b>x</b>" not in html
+    assert "回滚到这一版" in html and "config-1.json" in html
+
+
+def test_edit_page_links_to_backup_diff(edit_server):
+    base, _cfgp = edit_server
+    cookie = _login(base)
+    csrf = _csrf_from(_req(base, "/edit", headers=cookie)[1])
+    _req(base, "/edit", method="POST", headers=cookie,
+         data=_form(BASE_GROUPS, BASE_BOTS, csrf))
+    _req(base, "/edit", method="POST", headers=cookie,
+         data=_form([dict(BASE_GROUPS[0], alias="x"), BASE_GROUPS[1]],
+                    BASE_BOTS, csrf))
+    page = _req(base, "/edit", headers=cookie)[1]
+    assert "/edit/backup?name=config-" in page, "备份要能点进去看差异"
+
+
+def test_edit_page_shows_effective_persona(edit_server):
+    """人设空格子要写清"留空 = 会用哪个"，并把可用的人设名列出来。
+
+    这个字段曾经（a）填了不起作用、（b）名单要用户自己猜。
+    现在：留空 → placeholder 显示实际会用的人设；名字列在表头下方。
+    """
+    base, _cfgp = edit_server
+    cookie = _login(base)
+    page = _req(base, "/edit", headers=cookie)[1]
+    assert "留空 = nuo" in page
+    assert "人设（填人设名）" in page
+    assert "nuo" in page and "rose_butler" in page
+    # Bot 表不再有"人设"列（Bot 只是通道，人设按群配）
+    import re
+    assert not re.search(r"bots\[\d+\]\[persona\]", page)
 
 
 def test_unseen_deletions_unit():

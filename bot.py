@@ -45,7 +45,8 @@ _GROUP_ALIASES = {
 }
 
 # 房间群（独立人设 + 屋主权限）：配置见 personas.ROOMS
-from personas import (ROOMS, apply_persona, set_cid as set_persona_cid,
+from personas import (ROOMS, PERSONAS, apply_persona, set_cid as set_persona_cid,
+                      set_config_personas, config_personas,
                       ROOM_GREET_TEMPLATE, ROOM_GREET_ITEMS, ROOM_GREET_LINES,
                       ROOM_GUEST_REFUSE, ROOM_ORDER_VERBS, ROOM_MENU_WORDS,
                       ROOM_LEWD_WORDS, ROOM_FLOWER_WORDS, ROOM_FLOWER_NOUNS,
@@ -72,10 +73,18 @@ try:
         "push": _PUSH_CIDS_DEFAULT,
         "aliases": _GROUP_ALIASES,
         "bots": _BOTS_DEFAULT,
-        "personas": ("nuo", "rose_butler"),
+        # 人设白名单取自 personas.PERSONAS 本身（唯一真源）。
+        # 原先是硬编码的 ("nuo", "rose_butler")：加一个人设要改两处，
+        # 而运维后台读不到那份硬编码 ⇒ 页面上能存进一个不存在的人设名，
+        # 运行期又静默回落默认（"看起来配了、其实没生效"）。
+        "personas": tuple(PERSONAS),
     })
 except config_store.ConfigError as _e:
     raise SystemExit("配置不合法，拒绝启动：{}".format(_e))
+
+# 把配置里指定的按群人设注入 personas 层（覆盖 ROOMS 硬编码）。
+# 必须在下面任何一次 apply_persona / p() 之前完成。
+set_config_personas({s.cid: s.persona for s in _CFG.group_specs.values()})
 
 GROUPS = list(_CFG.groups)
 MUTE_CIDS = set(_CFG.mute)
@@ -1909,6 +1918,12 @@ def _log_runtime_status() -> None:
             log("P11: Bot key={} name={} cid={} token={}".format(
                 b.key, b.name, (b.cid or "")[:8],
                 "已设置" if b.resolve_token() else "**未设置**"))
+        # 人设自证：配置里指定的按群人设到底生效了没有。
+        # （这个字段曾经"画在页面上但运行期没人读"，不打印就不出来）
+        _cp = config_personas()
+        log("P11: 人设 配置指定={} 生效群数={}".format(len(_cp), len(GROUPS)))
+        for _cid, _key in sorted(_cp.items()):
+            log("P11: 人设 cid={} -> {}".format(_cid[:8], _key))
     except Exception as e:                                 # noqa: BLE001
         log("P11: 配置状态未知（" + str(e)[:60] + "）")
 

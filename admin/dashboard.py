@@ -562,8 +562,7 @@ def section_config():
         for s in cfg.group_specs.values()]
     out["bots"] = [
         {"key": b.key, "name": b.name, "short": b.short, "cid": b.cid,
-         "persona": b.persona, "enabled": b.enabled,
-         "token_env": b.token_env,
+         "enabled": b.enabled, "token_env": b.token_env,
          # token 只报"有没有"，**绝不回显值**
          "token_set": bool(b.resolve_token())}
         for b in cfg.bots]
@@ -960,11 +959,38 @@ def _cookie_sid(handler):
 # 边界这么划是为了让"只读"这条性质仍然可验证：源码扫描那两条测试
 # （每处 sqlite3.connect 都带 mode=ro、不得出现写库语句）继续成立。
 
+def _persona_effective(raw):
+    """每一群"留空时实际会用哪个人设"（来自代码的 ROOMS/默认）。
+
+    只在**这一格是空的**时候才有意义 —— 页面上把它放进 placeholder，
+    免得"空着"变成"不知道会怎样"。
+    """
+    try:
+        from personas import persona_key_for
+        return {str(g.get("cid")): persona_key_for(str(g.get("cid")))
+                for g in (raw.get("groups") or []) if g.get("cid")}
+    except Exception:                                           # noqa: BLE001
+        return {}
+
+
+def _persona_names():
+    """可用的人设名（唯一真源 = `personas.PERSONAS`）。
+
+    页面上要把它列出来，否则用户只能靠猜；而**猜错的名字会被静默回落成默认人设**
+    （看起来配了、其实没生效）。校验也用这一份，见 `_config_defaults()`。
+    """
+    try:
+        from personas import PERSONAS
+        return tuple(PERSONAS)
+    except Exception:                                           # noqa: BLE001
+        return ()
+
+
 def _config_defaults():
     """给 config_store 用的默认值：AST 取 `_*_DEFAULT`，不 import bot。"""
     import ast
     from runtime import config_store
-    out = {"personas": (), "unresolved": []}
+    out = {"personas": _persona_names(), "unresolved": []}
     try:
         tree = ast.parse((ROOT / "bot.py").read_text(encoding="utf-8"))
     except Exception as e:                                      # noqa: BLE001
@@ -1083,6 +1109,10 @@ class Handler(BaseHTTPRequestHandler):
         if u.path in ("/edit", "/config"):
             self._send(200, self._render_edit_page(), "text/html; charset=utf-8")
             return
+        if u.path == "/edit/backup":
+            self._send(200, self._render_backup_page(u.query),
+                       "text/html; charset=utf-8")
+            return
         try:
             data = collect()
         except Exception as e:                                  # noqa: BLE001
@@ -1100,15 +1130,50 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found\n", "text/plain; charset=utf-8")
 
     # ------------------------------------------------ 配置编辑
+    def _csrf_key(self):
+        """CSRF token 挂在哪个键上：有会话用 sid，没会话用 "-"。
+
+        ⚠️ **键怎么算只能有这一处**。原来渲染表单时存的是 `sid or "-"`，
+        校验时查的却是 `sid` —— 在"未配密码"的模式下（`_require_session()`
+        直接放行，所以永远没有 session cookie，`sid` 恒为空串），两边键对不上：
+        配置页**能打开，但保存和回滚一律 400「CSRF 校验失败」**。
+        生产环境配了密码所以从没暴露；隧道/回环模式一改就撞。
+        """
+        return _cookie_sid(self) or "-"
+
     def _csrf(self):
         """与会话绑定的 CSRF token（没有会话时用一个短命的一次性 token）。"""
-        sid = _cookie_sid(self)
-        rec = _csrf_tokens.get(sid) if sid else None
+        key = self._csrf_key()
+        rec = _csrf_tokens.get(key)
         if not rec or rec[0] < time.time():
             tok = secrets.token_urlsafe(24)
-            _csrf_tokens[sid or "-"] = (time.time() + 3600, tok)
+            _csrf_tokens[key] = (time.time() + 3600, tok)
             return tok
         return rec[1]
+
+    def _csrf_ok(self, form) -> bool:
+        """校验表单里的 csrf 是否与本会话（或本次进程）的 token 一致。"""
+        want = (_csrf_tokens.get(self._csrf_key()) or (0, ""))[1]
+        got = (form.get("csrf") or [""])[0]
+        return bool(want) and hmac.compare_digest(got, want)
+
+    def _render_backup_page(self, query=""):
+        """单份备份的详情：人话摘要 + 逐行差异 + 回滚按钮。"""
+        from admin import config_ui
+        from runtime import config_store
+        name = (parse_qs(query or "").get("name") or [""])[0]
+        defaults = _config_defaults()
+        try:
+            old_raw = config_ui.restore_backup(config_store.backup_dir(), name)
+            old_text = config_ui.backup_path(
+                config_store.backup_dir(), name).read_text(encoding="utf-8")
+            cur_raw = _raw_from_store(defaults)
+            p = config_store.config_path()
+            cur_text = p.read_text(encoding="utf-8") if p.is_file() else ""
+        except Exception as e:                                  # noqa: BLE001
+            return self._render_edit_page(error="打不开备份：{}".format(e))
+        return config_ui.render_backup_detail(
+            name, old_raw, cur_raw, old_text, cur_text, self._csrf())
 
     def _render_edit_page(self, error="", notice="", raw=None, changes=()):
         from admin import config_ui
@@ -1129,7 +1194,9 @@ class Handler(BaseHTTPRequestHandler):
             backups=config_ui.list_backups(config_store.backup_dir()),
             audit=config_ui.read_audit(config_store.audit_path()),
             unsupported=_token_unsupported_notes(raw, defaults),
-            changes=changes)
+            changes=changes,
+            persona_names=_persona_names(),
+            persona_effective=_persona_effective(raw))
 
     def _read_form(self):
         try:
@@ -1149,9 +1216,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, self._render_edit_page(error="请求格式不对"),
                               "text/html; charset=utf-8")
         sid = _cookie_sid(self)
-        want = (_csrf_tokens.get(sid) or (0, ""))[1]
-        got = (form.get("csrf") or [""])[0]
-        if not want or not hmac.compare_digest(got, want):
+        if not self._csrf_ok(form):
             print("[admin] 配置保存被拒：CSRF token 不匹配", flush=True)
             return self._send(400, self._render_edit_page(error="CSRF 校验失败，请重新打开页面"),
                               "text/html; charset=utf-8")
@@ -1199,9 +1264,7 @@ class Handler(BaseHTTPRequestHandler):
         form = self._read_form()
         if form is None:
             return self._send(400, "bad request\n", "text/plain; charset=utf-8")
-        sid = _cookie_sid(self)
-        want = (_csrf_tokens.get(sid) or (0, ""))[1]
-        if not want or not hmac.compare_digest((form.get("csrf") or [""])[0], want):
+        if not self._csrf_ok(form):
             return self._send(400, self._render_edit_page(error="CSRF 校验失败"),
                               "text/html; charset=utf-8")
         name = (form.get("name") or [""])[0]

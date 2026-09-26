@@ -114,6 +114,32 @@ ROOMS = {
 # 群 → 人设
 CID_PERSONA = {cid: cfg["persona"] for cid, cfg in ROOMS.items()}
 
+# 配置文件（config.json 的 groups[].persona）指定的按群人设。
+# 由 `bot.py` 在启动时用 `set_config_personas()` 注入 —— **覆盖** ROOMS 的硬编码。
+#
+# 为什么要有这一层：`config.json` 里一直有 `groups[].persona` 字段、运维后台也
+# 一直把它画在页面上，但运行期**从来没人读它**（人设只认上面那个 ROOMS 派生表）
+# ⇒ 页面上"选人设"是个装饰品。2026-09-25 盘点时发现并接通。
+# 优先级：**配置 > ROOMS 硬编码 > 默认**，这样"页面上能改的"就一定是"真生效的"。
+_CONFIG_PERSONA = {}
+
+
+def set_config_personas(mapping) -> None:
+    """由 bot.py 注入「配置文件里指定的按群人设」。空值忽略（=没指定）。"""
+    global _CONFIG_PERSONA
+    _CONFIG_PERSONA = {str(c): str(v) for c, v in (mapping or {}).items() if v}
+
+
+def config_personas() -> dict:
+    """当前由配置指定的人设（cid -> key），供自证行/面板使用。"""
+    return dict(_CONFIG_PERSONA)
+
+
+def persona_key_for(cid: str = None) -> str:
+    """某群最终用哪个人设：配置 > ROOMS > 默认。**唯一判定点**。"""
+    cid = cid if cid is not None else current_cid()
+    return _CONFIG_PERSONA.get(cid) or CID_PERSONA.get(cid) or "nuo"
+
 
 # ---------------------------------------------------------------- 房间文案
 
@@ -234,13 +260,12 @@ ROOM_LEWD_WORDS = ["抱抱", "抱一下", "亲一口", "亲亲", "舔", "摸", "
 
 def persona_for(cid: str = None) -> dict:
     """取某个群的人设（没注册的群 → 默认小小糯）."""
-    key = CID_PERSONA.get(cid if cid is not None else current_cid(), "nuo")
-    return PERSONAS.get(key) or PERSONAS["nuo"]
+    return PERSONAS.get(persona_key_for(cid)) or PERSONAS["nuo"]
 
 
 def is_default(cid: str = None) -> bool:
-    cid = cid if cid is not None else current_cid()
-    return cid not in CID_PERSONA
+    """这个群是不是用默认人设（= 没有任何一层指定了别的）。"""
+    return persona_key_for(cid) == "nuo"
 
 
 def apply_persona(system_prompt: str, cid: str = None) -> str:
@@ -319,8 +344,9 @@ PHRASES = {
 
 def p(key: str, cid: str = None, **kw) -> str:
     """取当前群的固定话术（本群没有就回落默认人设；都没有返回空串）."""
-    who = cid if cid is not None else current_cid()
-    d = PHRASES.get(CID_PERSONA.get(who, "nuo")) or {}
+    # 用 persona_key_for 而不是 CID_PERSONA：配置指定的人设也要拿到它自己的话术，
+    # 否则会出现"人设换成了房间管家、固定话术还是默认那套"的半吊子状态。
+    d = PHRASES.get(persona_key_for(cid)) or {}
     s = d.get(key)
     if s is None:
         s = PHRASES["nuo"].get(key) or ""

@@ -127,8 +127,7 @@ import json
 # 和 config_ui.diff_summary 一样：字段没写 = 取默认值，别把"补默认值"当改动
 GD = {"alias": "", "enabled": True, "mute": False, "screen": False, "push": False,
       "persona": ""}
-BD = {"name": "", "short": "", "cid": "", "token_env": "", "persona": "",
-      "enabled": True}
+BD = {"name": "", "short": "", "cid": "", "token_env": "", "enabled": True}
 
 def norm(x, d):
     x = dict(x or {})
@@ -149,10 +148,13 @@ for c in sorted(set(ga) | set(gb)):
     for k in sorted(set(x) | set(y)):
         if x.get(k) != y.get(k):
             diffs.append((c[:8], k, x.get(k), y.get(k)))
-ba = {x['key']: norm(x, BD) for x in a.get('bots') or []}
-bb = {x['key']: norm(x, BD) for x in b.get('bots') or []}
-if ba != bb:
-    diffs.append(('bots', 'changed', ba, bb))
+# Bot 只比**已知字段**：P12-0 起保存会丢掉历史遗留的 `bots[].persona`
+# （那一份从来没生效过 —— 人设一律按群配），这是有意的规范化，不算"改动"。
+def _bots(x):
+    return {b_['key']: {f: norm(b_, BD).get(f) for f in sorted(BD)}
+            for b_ in x.get('bots') or []}
+if _bots(a) != _bots(b):
+    diffs.append(('bots', 'changed', _bots(a), _bots(b)))
 for d in diffs:
     print("   ", d)
 bad = [d for d in diffs if d[1] != 'alias']

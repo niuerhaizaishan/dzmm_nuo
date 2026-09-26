@@ -30,7 +30,8 @@ from pathlib import Path
 
 __all__ = ["render_edit", "parse_form", "diff_summary", "audit_log",
            "pending_change", "list_backups", "restore_backup",
-           "unseen_deletions"]
+           "unseen_deletions", "backup_path", "unified_diff",
+           "render_backup_detail"]
 
 AUDIT_NAME = "config_audit.log"
 
@@ -39,7 +40,7 @@ AUDIT_NAME = "config_audit.log"
 _GROUP_DEFAULTS = {"alias": "", "enabled": True, "mute": False,
                    "screen": False, "push": False, "persona": ""}
 _BOT_DEFAULTS = {"name": "", "short": "", "cid": "", "token_env": "",
-                 "persona": "", "enabled": True}
+                 "enabled": True}
 
 _CSS = """
 body{font:13px/1.6 -apple-system,Segoe UI,Roboto,'Noto Sans CJK SC',sans-serif;
@@ -81,8 +82,19 @@ def _e(v):
 
 
 def render_edit(cfg_raw, error="", notice="", csrf="", pending=False,
-                backups=(), audit=(), unsupported=(), changes=()):
-    """把配置渲染成可编辑的表单。"""
+                backups=(), audit=(), unsupported=(), changes=(),
+                persona_names=(), persona_effective=None):
+    """把配置渲染成可编辑的表单。
+
+    `persona_names` = 代码里可用的人设名（来自 `personas.PERSONAS`）。
+    页面上必须把它列出来 —— 否则用户只能靠猜，猜错了运行期会静默回落默认，
+    又变成"看起来配了、其实没生效"。校验也会拒（见 config_store._parse）。
+
+    `persona_effective` = {cid: 人设名}：**留空时实际会用哪个人设**（来自代码）。
+    填进输入框的 placeholder，这样"这一格是空的"不等于"不知道会怎样"。
+    """
+    persona_hint = "、".join(persona_names) if persona_names else "(读取失败)"
+    eff = dict(persona_effective or {})
     groups = cfg_raw.get("groups") or []
     bots = cfg_raw.get("bots") or []
     # 多留两行空行，方便"加一个"
@@ -96,19 +108,23 @@ def render_edit(cfg_raw, error="", notice="", csrf="", pending=False,
     g_html = []
     for i, g in enumerate(group_rows):
         p = "groups[{}]".format(i)
+        _cid = str(g.get("cid") or "")
+        # placeholder 显示"留空时会用哪个人设"（代码里的默认），避免空格子含义不明
+        _eff = eff.get(_cid, "")
+        _ph = "留空 = " + _eff if (not g.get("persona") and _eff) else "（默认）"
         g_html.append(
             "<tr>"
             "<td><input type=text name='{p}[cid]' value='{cid}' placeholder='群 id'></td>"
             "<td><input type=text name='{p}[alias]' value='{alias}' placeholder='别名（只用于显示）'></td>"
             "<td>{en}</td><td>{mu}</td><td>{sc}</td><td>{pu}</td>"
-            "<td><input type=text class=narrow name='{p}[persona]' value='{pe}' placeholder='（默认）'></td>"
+            "<td><input type=text class=narrow name='{p}[persona]' value='{pe}' placeholder='{ph}'></td>"
             "</tr>".format(
                 p=p, cid=_e(g.get("cid", "")), alias=_e(g.get("alias", "")),
                 en=cb(p + "[enabled]", g.get("enabled", True)),
                 mu=cb(p + "[mute]", g.get("mute", False)),
                 sc=cb(p + "[screen]", g.get("screen", False)),
                 pu=cb(p + "[push]", g.get("push", False)),
-                pe=_e(g.get("persona", ""))))
+                pe=_e(g.get("persona", "")), ph=_e(_ph)))
 
     b_html = []
     for i, b in enumerate(bot_rows):
@@ -120,12 +136,11 @@ def render_edit(cfg_raw, error="", notice="", csrf="", pending=False,
             "<td><input type=text class=narrow name='{p}[short]' value='{s}' placeholder='简称'></td>"
             "<td><input type=text name='{p}[cid]' value='{c}' placeholder='绑定的群 id'></td>"
             "<td><input type=text name='{p}[token_env]' value='{te}' placeholder='DZMM_BOT_TOKEN_XXX'></td>"
-            "<td><input type=text class=narrow name='{p}[persona]' value='{pe}' placeholder='（默认）'></td>"
             "<td>{en}</td>"
             "</tr>".format(
                 p=p, k=_e(b.get("key", "")), n=_e(b.get("name", "")),
                 s=_e(b.get("short", "")), c=_e(b.get("cid", "")),
-                te=_e(b.get("token_env", "")), pe=_e(b.get("persona", "")),
+                te=_e(b.get("token_env", "")),
                 en=cb(p + "[enabled]", b.get("enabled", True))))
 
     msg = ""
@@ -163,11 +178,14 @@ def render_edit(cfg_raw, error="", notice="", csrf="", pending=False,
                 .format("<br>".join(_e(x) for x in unsupported)))
 
     bk = "".join(
-        "<li><span class='mono'>{}</span> &nbsp; <form method=post action='/edit/rollback' "
+        "<li><span class='mono'>{}</span> &nbsp; "
+        "<a href='/edit/backup?name={n}'>看差异</a> &nbsp; "
+        "<form method=post action='/edit/rollback' "
         "style='display:inline'><input type=hidden name='csrf' value='{c}'>"
         "<input type=hidden name='name' value='{n}'>"
         "<button class=ghost type=submit>回滚到这一版</button></form></li>".format(
-            _e(n), c=_e(csrf), n=_e(n)) for n in backups) or "<li class='dim'>（还没有备份）</li>"
+            _e(n), c=_e(csrf), n=_e(n)) for n in backups) \
+        or "<li class='dim'>（还没有备份）</li>"
 
     au = "".join("<li class='mono'>{}</li>".format(_e(x)) for x in audit[-15:]) \
         or "<li class='dim'>（还没有改动记录）</li>"
@@ -187,15 +205,19 @@ def render_edit(cfg_raw, error="", notice="", csrf="", pending=False,
             "<input type=hidden name='__bots_seen' value='{seen_b}'>"
             "<h2>群（{n} 个）—— 空行会被忽略；cid 填了就新增</h2>"
             "<table><tr><th>群 id</th><th>别名</th><th>启用</th><th>静默</th>"
-            "<th>入群筛查</th><th>定时推送</th><th>人设</th></tr>{g}</table>"
+            "<th>入群筛查</th><th>定时推送</th><th>人设（填人设名）</th></tr>{g}</table>"
             "<div class='dim'>静默 = 只读不回（不回复/不接指令/不筛查/不推送/不同步档案）；"
-            "取消勾选「启用」= 完全不管这个群。</div>"
+            "取消勾选「启用」= 完全不管这个群。"
+            "人设留空 = 用默认；可用的人设名：<span class='mono'>{plist}</span>"
+            "（由代码里的人设表决定，填不存在的名字会被拒绝）。</div>"
             "<h2>Bot（{m} 个）—— 空行会被忽略</h2>"
             "<table><tr><th>key</th><th>平台显示名</th><th>简称</th><th>绑定的群</th>"
-            "<th>token 环境变量名</th><th>人设</th><th>启用</th></tr>{b}</table>"
+            "<th>token 环境变量名</th><th>启用</th></tr>{b}</table>"
             "<div class='dim'>token <b>不填在这里</b> —— 填它所在的<u>环境变量名</u>"
             "（如 DZMM_BOT_TOKEN），值留在服务器的 .env 里。"
-            "一个群只能绑一个 Bot；两个 Bot 不能绑同一个群。</div>"
+            "一个群只能绑一个 Bot；两个 Bot 不能绑同一个群。"
+            "<br>人设<b>按群配</b>（见上表）：Bot 只是把文本送进群的通道，"
+            "所以它自己没有单独的人设。</div>"
             "<div style='margin-top:16px'><button type=submit>保存配置</button> "
             "<a href='/edit' style='margin-left:10px'>放弃改动重新载入</a></div>"
             "</form>"
@@ -204,7 +226,7 @@ def render_edit(cfg_raw, error="", notice="", csrf="", pending=False,
             "</main><footer>配置改动<b>需要重启容器</b>才生效 · "
             "写入前自动备份 · 校验失败不落盘</footer></body></html>").format(
         css=_CSS, msg=msg, csrf=_e(csrf), g="".join(g_html), b="".join(b_html),
-        au=au, bk=bk, n=len(groups), m=len(bots),
+        au=au, bk=bk, n=len(groups), m=len(bots), plist=_e(persona_hint),
         seen_g=_e(",".join(str(g.get("cid") or "") for g in groups if g.get("cid"))),
         seen_b=_e(",".join(str(b.get("key") or "") for b in bots if b.get("key"))))
 
@@ -294,7 +316,6 @@ def parse_form(form) -> dict:
             "short": _s(form, p + "[short]"),
             "cid": _s(form, p + "[cid]"),
             "token_env": _s(form, p + "[token_env]"),
-            "persona": _s(form, p + "[persona]"),
             "enabled": _flag(form, p + "[enabled]"),
         }
         token = _s(form, p + "[token]")
@@ -302,7 +323,8 @@ def parse_form(form) -> dict:
             bot["token"] = token
         bots.append(bot)
 
-    return {"version": 1, "groups": groups, "bots": bots}
+    from runtime.config_store import SCHEMA_VERSION
+    return {"version": SCHEMA_VERSION, "groups": groups, "bots": bots}
 
 
 def diff_summary(old: dict, new: dict) -> list:
@@ -350,7 +372,7 @@ def diff_summary(old: dict, new: dict) -> list:
         elif b is None:
             out.append("删除 Bot {}".format(k))
         else:
-            for f in ("name", "short", "cid", "token_env", "persona", "enabled"):
+            for f in ("name", "short", "cid", "token_env", "enabled"):
                 if a.get(f) != b.get(f):
                     out.append("Bot {} {} : {!r} -> {!r}".format(
                         k, f, a.get(f), b.get(f)))
@@ -393,16 +415,89 @@ def pending_change(config_path: Path, bot_started_epoch) -> bool:
         return False
 
 
-def list_backups(backup_dir: Path, n: int = 10) -> list:
+def list_backups(backup_dir: Path, n: int = 0) -> list:
+    """列出备份（新→旧）。
+
+    `n=0`（默认）= **全部**。原来默认只列 10 份、而磁盘上留 20 份 ——
+    改人设这种长文本会频繁写备份，"看得见的只有一半"等于把回滚点藏起来了一半。
+    """
     try:
-        return [p.name for p in sorted(Path(backup_dir).glob("config-*.json"))[-n:]][::-1]
+        items = sorted(Path(backup_dir).glob("config-*.json"))
+        if n and n > 0:
+            items = items[-n:]
+        return [p.name for p in items][::-1]
     except Exception:                                           # noqa: BLE001
         return []
 
 
+def backup_path(backup_dir: Path, name: str) -> Path:
+    """把备份名安全地解析成路径（**只取 basename**，防目录穿越）。"""
+    base = os.path.basename(str(name or ""))
+    if not base or not base.startswith("config-") or not base.endswith(".json"):
+        raise FileNotFoundError("备份名不合法：{!r}".format(name))
+    p = Path(backup_dir) / base
+    if not p.is_file():
+        raise FileNotFoundError("找不到备份 {}".format(base))
+    return p
+
+
 def restore_backup(backup_dir: Path, name: str):
     """读一版备份的内容（调用方负责校验后再 save）。"""
-    p = Path(backup_dir) / os.path.basename(name or "")
-    if not p.is_file():
-        raise FileNotFoundError("找不到备份 {}".format(name))
-    return json.loads(p.read_text(encoding="utf-8"))
+    return json.loads(backup_path(backup_dir, name).read_text(encoding="utf-8"))
+
+
+def unified_diff(old_text: str, new_text: str,
+                 old_label: str = "备份", new_label: str = "当前") -> list:
+    """逐行差异（unified diff）。
+
+    为什么要有：备份列表只能说"回滚到这一版"，看不到**差在哪**。
+    改人设/文案会天天写备份，没有差异就只能靠猜 —— 长文本尤其不能靠猜。
+    """
+    import difflib
+    return list(difflib.unified_diff(
+        str(old_text or "").splitlines(), str(new_text or "").splitlines(),
+        fromfile=old_label, tofile=new_label, lineterm="", n=2))
+
+
+def render_backup_detail(name: str, old_raw: dict, cur_raw: dict,
+                         old_text: str, cur_text: str, csrf: str) -> str:
+    """单份备份的详情页：人话改动摘要 + 逐行差异 + 「回滚到这一版」。"""
+    summary = diff_summary(old_raw, cur_raw)
+    lines = unified_diff(old_text, cur_text, "备份 " + name, "当前配置")
+
+    def cls(ln):
+        if ln.startswith("+++") or ln.startswith("---"):
+            return "dim"
+        if ln.startswith("@@"):
+            return "hunk"
+        if ln.startswith("+"):
+            return "add"
+        if ln.startswith("-"):
+            return "del"
+        return ""
+
+    body = "".join(
+        "<span class='{c}'>{t}</span>".format(c=cls(ln), t=_e(ln)) or "&nbsp;"
+        for ln in (lines or ["（这一版与当前配置**逐字节相同**）"]))
+    summ = "".join("<li class='mono'>{}</li>".format(_e(x)) for x in summary) \
+        or "<li class='dim'>（人话摘要：无差异）</li>"
+    return ("<!doctype html><html lang='zh'><head><meta charset='utf-8'>"
+            "<title>备份 {n} · 小小糯</title><style>{css}"
+            ".diff{{background:#0f1218;padding:8px;border-radius:6px;"
+            "white-space:pre-wrap;word-break:break-all;font-size:12px;"
+            "font-family:ui-monospace,Consolas,monospace}}"
+            ".add{{color:#7ee2a8}}.del{{color:#ff8b9a}}.hunk{{color:#7aa2f7}}"
+            ".dim{{color:#6c7686}}</style></head><body>"
+            "<header><h1>备份 {n}</h1><span style='margin-left:auto'>"
+            "<a href='/edit'>← 回配置页</a></span></header><main>"
+            "<h2>这个备份与当前配置的差异</h2><ul>{summ}</ul>"
+            "<div class='diff'>{body}</div>"
+            "<form method=post action='/edit/rollback' style='margin-top:14px'>"
+            "<input type=hidden name='csrf' value='{csrf}'>"
+            "<input type=hidden name='name' value='{n}'>"
+            "<button type=submit>回滚到这一版（当前配置会被覆盖，且先自动备份）</button>"
+            "</form>"
+            "<p class='dim'>回滚也要<b>重启容器</b>才生效。"
+            "回滚本身同样会先备份当前配置，所以回滚也能再回滚。</p>"
+            "</main></body></html>").format(
+        n=_e(name), css=_CSS, summ=summ, body=body, csrf=_e(csrf))

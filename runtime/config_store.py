@@ -86,8 +86,11 @@ class BotSpec:
     short: str = ""
     token: str = ""           # 内联 token（不推荐）
     token_env: str = ""       # 指向环境变量的名字（推荐）
-    persona: str = ""
     enabled: bool = True
+    # 刻意**没有** `persona`：Bot 只是"把已经生成好的文本送进某个群"的**通道**，
+    # 而人设是在生成那一刻、按**群**决定的（`personas.persona_key_for(cid)`）。
+    # 曾经两边都留了 persona ⇒ Bot 上那份永远不生效，页面上却是可填的
+    # （又一个"看起来能配、实际不生效"）。人设一律按群配 `groups[].persona`。
 
     def resolve_token(self, env=None) -> str:
         """取 token：环境变量优先，其次内联。"""
@@ -114,7 +117,6 @@ def default_bots_from_env(default_cid: str) -> list:
         "short": (os.environ.get("DZMM_BOT_SHORT") or "小小糯").strip(),
         "cid": (os.environ.get("DZMM_BOT_CID") or "").strip() or default_cid,
         "token_env": "DZMM_BOT_TOKEN",
-        "persona": "nuo",
     }]
 
 
@@ -156,8 +158,7 @@ class Config:
                         "persona": g.persona}
                        for g in self.group_specs.values()],
             "bots": [{"key": b.key, "name": b.name, "short": b.short, "cid": b.cid,
-                      "token_env": b.token_env, "persona": b.persona,
-                      "enabled": b.enabled,
+                      "token_env": b.token_env, "enabled": b.enabled,
                       **({"token": b.token} if b.token else {})}
                      for b in self.bots],
         }
@@ -248,10 +249,8 @@ def _parse(raw: dict, defaults: dict) -> Config:
                  "{} 绑定的群 {} 不在 groups 里".format(where, cid[:8]))
         _require(cid not in seen_cids,
                  "两个 Bot 绑了同一个群 {}：无法决定走哪个通道".format(cid[:8]))
-        persona = str(b.get("persona") or "").strip()
-        if persona and known_personas:
-            _require(persona in known_personas,
-                     "{} 的 persona={!r} 不存在".format(where, persona))
+        # 老配置里可能有 `persona` 键（Bot 上的那份从来没生效过）——
+        # 忽略它即可（不报错，免得旧文件起不来）；人设一律看 groups[].persona。
         tokens = [bool((b.get("token") or "").strip()),
                   bool((b.get("token_env") or "").strip())]
         _require(any(tokens),
@@ -266,7 +265,6 @@ def _parse(raw: dict, defaults: dict) -> Config:
             cid=cid,
             token=str(b.get("token") or "").strip(),
             token_env=str(b.get("token_env") or "").strip(),
-            persona=persona,
             enabled=bool(b.get("enabled", True)),
         ))
 
