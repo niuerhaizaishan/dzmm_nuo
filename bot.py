@@ -335,16 +335,29 @@ def get_cached_cookie() -> str:
 
 
 def _set_active_cid(cid: str) -> None:
-    """设置「当前正在处理的群」。
+    """设置「当前正在处理的群」（**当前上下文**的那一份）。
 
-    P8 第 4 步起 `_ACTIVE_CID` 有两个消费者：bot.py 自己（24 个读点，保持不变）
-    和 `runtime/ctx`（搬出去的模块从那里读）。**唯一**允许写它的地方就是这里 ——
+    P8 第 4 步起 `_ACTIVE_CID` 有两个消费者：bot.py 自己和 `runtime/ctx`
+    （搬出去的模块从那里读）。**唯一**允许写它的地方就是这里 ——
     镜像与真源一起更新，写点分散就会出现"搬出去的模块读到旧的群"这种隐性错。
     一致性由 tests/test_p8s4_split.py 与部署闸门钉住。
+
+    P12-I（按群并行）：真源是 `runtime/ctx` 里的 ContextVar；这里的
+    `_ACTIVE_CID` 只是给外部脚本/测试看的**遗留镜像**（并行时它只反映
+    最近一次设置，不可作为判断依据）。读点一律走 `_active_cid()`。
     """
     global _ACTIVE_CID
     _ACTIVE_CID = cid
     ctx.set_active_cid(cid)
+
+
+def _active_cid() -> str:
+    """当前正在处理的群 —— **上下文局部**，按群并行时每个任务看自己那份。
+
+    P12-I 起所有读点都走这里，不要再直接读模块全局 `_ACTIVE_CID`：
+    并行后那个全局会被另一个群的任务覆盖（Rose 的房间逻辑读到认证群的 cid）。
+    """
+    return ctx.get_active_cid() or _ACTIVE_CID
 
 
 class Sender:
@@ -746,7 +759,7 @@ def _strip_at(text: str, cid: str = None) -> str:
 
 def get_group_name() -> str:
     """查询群名（5分钟缓存，按群隔离）."""
-    cid = _ACTIVE_CID
+    cid = _active_cid()
     cache = _group_name_cache.get(cid, {"name": "", "ts": 0.0})
     if time.time() - cache["ts"] < 300 and cache["name"]:
         return cache["name"]
@@ -864,7 +877,7 @@ def _extract_xp(profile_text: str) -> list:
 
 def register_user(query: str, sender_uid: str) -> str:
     """注册用户，返回结果文本."""
-    msgs = get_messages_all(_ACTIVE_CID)  # 拉一次，找用户+发言都复用
+    msgs = get_messages_all(_active_cid())  # 拉一次，找用户+发言都复用
     if query:
         # 代注册：只允许糯糯（群主）
         if sender_uid != OWNER_UID:
@@ -881,7 +894,7 @@ def register_user(query: str, sender_uid: str) -> str:
     if existing:
         return "✅ " + full + " 已经注册过啦～不用重复注册哦，发 /查 " + full + " 就能看档案啦～"
 
-    u = get_user(_ACTIVE_CID, uid)
+    u = get_user(_active_cid(), uid)
     profile_text = _member_profile_text(uid, full, msgs)
     summary = generate_profile_summary(profile_text)
     xp = _extract_xp(profile_text)
@@ -919,7 +932,7 @@ def is_rank_cmd(cmd: str) -> bool:
 
 def rank_summary() -> str:
     """生成骚度排行（高潮次数为主，发情值为辅，活跃度不参与排名，排除小小糯）."""
-    cid = _ACTIVE_CID
+    cid = _active_cid()
     group_state = (load_state() or {}).get(cid) or {}
     heat = group_state.get("heat_value") or {}
     counts = group_state.get("msg_count") or {}
@@ -967,9 +980,9 @@ def _climax_hits(group_state: dict, cid: str = None):
     """检测发情值≥阈值，返回 (hits, changed)。changed=有跨天重置或高潮（需写回磁盘）.
 
     `cid` 用来取**按群**的参数（阈值/扣减可调）；不传就用当前处理中的群
-    （调用点在主循环里，`_ACTIVE_CID` 一定已设置）。
+    （调用点在主循环里，`_active_cid()` 一定已设置）。
     """
-    cid = cid or _ACTIVE_CID
+    cid = cid or _active_cid()
     heat = group_state.get("heat_value") or {}
     climax = group_state.get("heat_climax") or {}
     today_climax = group_state.get("heat_climax_today") or {}
@@ -1342,7 +1355,7 @@ def archive_query(query: str):
         _refresh_profile_latest(uid, profile)
         return _archive_text_from_profile(profile), True
     # 未注册：实时查（fallback）
-    msgs = get_messages_all(_ACTIVE_CID)
+    msgs = get_messages_all(_active_cid())
     uid2, full = _find_user_in_msgs(query, msgs)
     if not uid2:
         return "", False
@@ -1366,7 +1379,7 @@ def _insult_resolve(query: str, sender_uid: str):
     if uid:
         _refresh_profile_latest(uid, profile)
         return uid, _live_insult_text(uid, profile), "", True
-    msgs = get_messages_all(_ACTIVE_CID)
+    msgs = get_messages_all(_active_cid())
     uid2, full = _find_user_in_msgs(query, msgs)
     if uid2:
         return uid2, _member_profile_text(uid2, full, msgs), "", True
@@ -1393,7 +1406,7 @@ def _insult_material(query: str, sender_uid: str):
         uid, profile = _find_in_profiles(query)
         if uid:
             return _live_insult_text(uid, profile), True
-        msgs = get_messages_all(_ACTIVE_CID)
+        msgs = get_messages_all(_active_cid())
         uid2, full = _find_user_in_msgs(query, msgs)
         if not uid2:
             return "", False
@@ -1413,7 +1426,7 @@ def _insult_target_uid(query: str):
     uid, _ = _find_in_profiles(query)
     if uid:
         return uid
-    msgs = get_messages_all(_ACTIVE_CID)
+    msgs = get_messages_all(_active_cid())
     uid2, _ = _find_user_in_msgs(query, msgs)
     return uid2
 
@@ -1834,7 +1847,7 @@ def parse_time_range(cmd: str):
 def summarize_chat(cmd: str) -> str:
     """拉取群聊记录并总结."""
     from datetime import timezone, timedelta
-    msgs = get_messages_all(_ACTIVE_CID)
+    msgs = get_messages_all(_active_cid())
     if not msgs:
         return "群聊记录为空，没有可总结的内容。"
 
@@ -2330,29 +2343,24 @@ def _wrap_with_outbox(sender, dry: bool):
         return inner
 
 
-async def main_loop(interval: float, dry: bool, once: bool):
-    global _ACTIVE_CID, _captcha_active, _captcha_notified
-    sender = _wrap_with_outbox(Sender(), dry)
-    if not dry:
-        _log_runtime_status()
-        try:
-            await sender.start()
-        except Exception as e:
-            log("sender init failed: " + str(e)[:80])
-        # P12-H：给"配置里没写 uid"的 Bot 从群成员表里认一次身份。
-        # 放在 sender.start() **之后**：这一步要用登录态调 getMembers，
-        # 启动最初那一刻 cookie 还没准备好，太早查只会白失败一次。
-        try:
-            _resolved = await asyncio.to_thread(_resolve_bot_uids)
-            for _k, _uid in (_resolved or {}).items():
-                log("P11: Bot {} 的身份 = {}".format(
-                    _k, ("已认到 " + _uid[:8]) if _uid else
-                    "**没认到**（Bot 可能还没被拉进群；进群后发出第一条消息时会自动认）"))
-        except Exception as e:                                 # noqa: BLE001
-            log("P11: Bot 身份识别失败（不影响运行）：" + str(e)[:80])
+async def main_loop(interval: float, dry: bool, once: bool, *,
+                    groups: list = None, sender, state: dict,
+                    subscriber, is_primary: bool = True):
+    """主循环。
 
-    state = load_state()
-    log("start  dry=" + str(dry) + " interval=" + str(interval) + " groups=" + str(len(GROUPS)))
+    P12-I（按群并行）：为了不改动这 900 行循环体，改成"**每个群一个实例**" ——
+    `groups` 只放一个群，每个实例跑同一份代码、各管自己的群。
+    跨群共享的东西一律由调用方（`_run_all`）建好传进来，**只建一份**：
+      · `sender`      —— 共用一个常驻页面（1.8G 主机跑不了两个 Playwright 机器人）
+      · `state`       —— 共用同一份 dict（各自 load 会在 `save_state` 时互相覆盖）
+      · `subscriber`  —— 共用一个 Socket.IO 订阅器（按群分队列，drain 各自取）
+    `is_primary` 的实例额外负责**全局**工作（热加载、验证码恢复、每日档案扫描、
+    定时问候、骰子超时、私聊）—— 这些是进程级/跨群的，不能被跑 N 遍。
+    """
+    global _ACTIVE_CID, _captcha_active, _captcha_notified
+    groups = list(groups or GROUPS)
+    log("start  dry=" + str(dry) + " interval=" + str(interval)
+        + " groups=" + str(len(groups)) + ("（从实例）" if not is_primary else ""))
 
     captcha_cooldown_until = 0.0  # captcha 冷却截止时间戳
     http_backoff_until = 0.0  # 撞验证码后 HTTP 兜底退避截止时间戳（收发不受影响，继续）
@@ -2360,14 +2368,10 @@ async def main_loop(interval: float, dry: bool, once: bool):
     _alerted_unauthorized = False  # unauthorized 告警防重（cookie 恢复后重置）
     _unauth_streak = 0  # 连续 unauthorized 次数（第 1 次即触发自动恢复）
     _recovering = False  # 是否正在自动恢复中
-    group_meta = {cid: {"interval": FAST_INTERVAL, "last_poll": 0.0} for cid in GROUPS}
+    group_meta = {cid: {"interval": FAST_INTERVAL, "last_poll": 0.0} for cid in groups}
 
-    # Socket.IO 订阅器（读消息主通道）：后台长连接监听 message:new，实时推送
-    from sio_subscribe import SioSubscriber
-    subscriber = SioSubscriber(GROUPS)
-    sub_task = asyncio.create_task(subscriber.start())
     HTTP_FALLBACK_INTERVAL = 600  # HTTP 兜底对账间隔（秒）；断线补拉不受此限
-    last_http_fallback = {cid: 0.0 for cid in GROUPS}
+    last_http_fallback = {cid: 0.0 for cid in groups}
     _was_sio_connected = False  # 上一次 Socket.IO 连接状态（恢复检测用边沿：断→连）
     _last_scan_day = str(_scan_load().get("day") or "")  # 上次档案扫描日期（每天 06:00 一次）
 
@@ -2379,7 +2383,10 @@ async def main_loop(interval: float, dry: bool, once: bool):
         set_persona_cid("")
         # P12-F：热加载检查。便宜的那一段（一次 stat）每轮都做，
         # 只有真改了文件才会做完整解析 + 应用（见 runtime/hotload.py）。
-        hot_reload_check()
+        # P12-I：**只有主实例**做 —— 它是全局的（改人设/参数/开关），
+        # 两个实例同时应用会互相踩。
+        if is_primary:
+            hot_reload_check()
         # 检测 renew_token 连续失败信号，主动退出交给 entrypoint 重启
         if (ROOT / "token.emergency").exists():
             try:
@@ -2391,7 +2398,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
         # 撞验证码恢复检测：Socket.IO 从「断→连」的边沿 = 风控解除，触发恢复
         # （用边沿而非单次检查，避免 Socket.IO 短暂波动导致时序竞态漏掉恢复）
         is_conn = subscriber.is_connected
-        if _captcha_active and is_conn and not _was_sio_connected:
+        if is_primary and _captcha_active and is_conn and not _was_sio_connected:
             _captcha_active = False
             _captcha_notified.clear()
             for _cid in GROUPS:
@@ -2406,7 +2413,10 @@ async def main_loop(interval: float, dry: bool, once: bool):
         _was_sio_connected = is_conn
         # 每天 06:00 后首次循环：全群扫描昵称/简介/签名变化，有变化就在群里说一声
         _today = time.strftime("%Y-%m-%d")
-        if time.localtime().tm_hour >= _tune("schedule.scan_hour") and _last_scan_day != _today:
+        # P12-I：下面四块是**跨群/进程级**的（全群档案扫描、全群定时问候、
+        # 全局骰子局超时、私聊队列），只有主实例做 —— 否则会被跑 N 遍。
+        if is_primary and time.localtime().tm_hour >= _tune("schedule.scan_hour") \
+                and _last_scan_day != _today:
             _last_scan_day = _today  # 先占位，避免扫描期间循环重入
             try:
                 _notices = await asyncio.to_thread(_daily_profile_scan)
@@ -2420,20 +2430,21 @@ async def main_loop(interval: float, dry: bool, once: bool):
         # 定时问候 / 记忆汇报：用主 sender（页面常驻、秒发）发出，不再靠独立进程的冷浏览器
         # （2026-09-16 事故：22:00 的晚安因独立进程冷启浏览器 + 平台抖动，整页加载超时全失败，
         #   认证群整晚没收到问候）
-        try:
-            await _scheduled_pushes(sender, dry)
-        except Exception as _e:
-            log("定时推送异常: " + str(_e)[:80])
+        if is_primary:
+            try:
+                await _scheduled_pushes(sender, dry)
+            except Exception as _e:
+                log("定时推送异常: " + str(_e)[:80])
         # 吹牛骰子超时跳过（3 分钟无动作 → 移到顺序最后，游戏继续）
         _dg = _dice_state()
         _dice_cid = str(_dg.get("cid") or "")
-        if (_dg.get("active") and _dg.get("phase") == "calling"
-                and _feat_on(_dice_cid, "dice_timeout")
-                and time.time() - _dg.get("last_action_ts", 0) > _tune("dice.timeout", _dice_cid)):
+        if is_primary and (_dg.get("active") and _dg.get("phase") == "calling"
+                           and _feat_on(_dice_cid, "dice_timeout")
+                           and time.time() - _dg.get("last_action_ts", 0) > _tune("dice.timeout", _dice_cid)):
             _dcur = _dice_current_player(_dg)
             if _dcur:
                 _dmsg = _dice_skip_cmd(_dcur)
-                _dcid = _dg.get("cid") or GROUPS[0]  # 广播只发发起群
+                _dcid = _dg.get("cid") or groups[0]  # 广播只发发起群
                 if _dmsg:
                     await _send(sender, _dcid, "🤖 " + _dmsg, dry)
                     log("⏱️ 骰子局超时跳过：" + get_name(_dcur))
@@ -2455,7 +2466,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
         except Exception as _pe:
             log("私聊消息处理异常: " + str(_pe)[:80])
         captcha_hit = False
-        for cid in GROUPS:
+        for cid in groups:
             _set_active_cid(cid)  # 同时更新 bot.py 镜像与 runtime/ctx（搬出去的模块读它）
             set_persona_cid(cid)  # 分群人设：本轮所有 AI 调用都按这个群的人设走
             meta = group_meta[cid]
@@ -3364,7 +3375,86 @@ async def main_loop(interval: float, dry: bool, once: bool):
             wait = 0.2  # 小睡，每群按自己的 interval 判断轮询时间
         await asyncio.sleep(wait)
 
-    await sender.close()
+    # 退出：只关自己开的东西。共享的 sender / subscriber 由 `_run_all` 统一收尾
+    # （P12-I：从实例退出时把主实例的页面关掉会让另一个群瞬间失联）。
+
+
+def _parallel_groups_on() -> bool:
+    """P12-I：按群并行（进程级开关，改它要重启；默认关 = 老行为）。
+
+    为什么不用 tuning：它决定**进程结构**（起几个主循环实例），
+    运行期改不了；放 env 里更诚实（改了就重启）。
+    """
+    return str(os.environ.get("DZMM_PARALLEL_GROUPS") or "").strip().lower() \
+        in ("1", "on", "true", "yes", "y")
+
+
+async def _run_all(interval: float, dry: bool, once: bool) -> None:
+    """建**唯一一份**共享资源（sender / state / 订阅器），再决定起几个主循环。
+
+    串行（默认）= 一个实例管全部群，与 P12-I 之前逐字相同；
+    并行（`DZMM_PARALLEL_GROUPS=on`）= 每个群一个实例，各管自己的群，
+    一个群的长任务不再堵住另一个群（主实例额外负责全局工作）。
+    """
+    sender = _wrap_with_outbox(Sender(), dry)
+    if not dry:
+        _log_runtime_status()
+        try:
+            await sender.start()
+        except Exception as e:
+            log("sender init failed: " + str(e)[:80])
+        # P12-H：给"配置里没写 uid"的 Bot 从群成员表里认一次身份。
+        # 放在 sender.start() **之后**：这一步要用登录态调 getMembers，
+        # 启动最初那一刻 cookie 还没准备好，太早查只会白失败一次。
+        try:
+            _resolved = await asyncio.to_thread(_resolve_bot_uids)
+            for _k, _uid in (_resolved or {}).items():
+                log("P11: Bot {} 的身份 = {}".format(
+                    _k, ("已认到 " + _uid[:8]) if _uid else
+                    "**没认到**（Bot 可能还没被拉进群；进群后发出第一条消息时会自动认）"))
+        except Exception as e:                                 # noqa: BLE001
+            log("P11: Bot 身份识别失败（不影响运行）：" + str(e)[:80])
+
+    state = load_state()
+    # Socket.IO 订阅器（读消息主通道）：后台长连接监听 message:new，实时推送。
+    # 按群分队列，所以多个主循环实例各自 drain 自己的群是安全的。
+    from sio_subscribe import SioSubscriber
+    subscriber = SioSubscriber(GROUPS)
+    sub_task = asyncio.create_task(subscriber.start())
+
+    try:
+        if _parallel_groups_on() and len(GROUPS) > 1:
+            log("P12-I: 按群并行=开，每群一个主循环实例（共 {} 个）".format(len(GROUPS)))
+            tasks = [
+                asyncio.create_task(main_loop(
+                    interval, dry, once, groups=[cid], sender=sender, state=state,
+                    subscriber=subscriber, is_primary=(i == 0)))
+                for i, cid in enumerate(GROUPS)
+            ]
+            if once:
+                await asyncio.gather(*tasks)
+            else:
+                # 任何一个实例退出（如 token.emergency / 未捕获异常）就收摊，
+                # 不能留下"半个机器人在跑"。
+                done, pending = await asyncio.wait(
+                    tasks, return_when=asyncio.FIRST_COMPLETED)
+                for t in pending:
+                    t.cancel()
+                for t in pending:
+                    try:
+                        await t
+                    except (asyncio.CancelledError, Exception):   # noqa: BLE001
+                        pass
+        else:
+            log("P12-I: 按群并行=关（串行处理全部群）")
+            await main_loop(interval, dry, once, groups=GROUPS, sender=sender,
+                            state=state, subscriber=subscriber, is_primary=True)
+    finally:
+        sub_task.cancel()
+        try:
+            await sender.close()
+        except Exception:                                      # noqa: BLE001
+            pass
 
 
 
@@ -3637,7 +3727,7 @@ def _build_profile_text(profile: dict) -> str:
 
 def sync_profiles() -> str:
     """增量同步：拉新消息 → 提取注册人发言 → 更新档案 → 推进游标."""
-    cid = _ACTIVE_CID
+    cid = _active_cid()
     state = load_state()
     group_state = state.get(cid) or {}
     since = group_state.get("last_sync_at")
@@ -3807,7 +3897,7 @@ def main():
         asyncio.run(memory_report_once())
         return 0
     try:
-        asyncio.run(main_loop(args.interval, args.dry, args.once))
+        asyncio.run(_run_all(args.interval, args.dry, args.once))
     except KeyboardInterrupt:
         pass
     return 0

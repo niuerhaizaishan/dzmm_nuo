@@ -38,6 +38,9 @@ services:
       # ---- P3/P4/P5：以下键原先**没有透传**，所以配了也不生效 ----
       # 出站队列（P3）。off = 退回直发
       DZMM_OUTBOX: "${DZMM_OUTBOX:-on}"
+      # P12-I 按群并行：on = 每群一个主循环实例（一个群的长任务不再堵住另一个群）。
+      # 决定的是**进程结构**（起几个实例），所以只能重启生效，默认 off = 老行为。
+      DZMM_PARALLEL_GROUPS: "${DZMM_PARALLEL_GROUPS:-off}"
       # 官方 Bot 群文本通道（P4）。off = 只接线不上线
       DZMM_BOT_ROUTING: "${DZMM_BOT_ROUTING:-off}"
       DZMM_BOT_TOKEN: "${DZMM_BOT_TOKEN:-}"
