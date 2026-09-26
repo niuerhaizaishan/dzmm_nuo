@@ -89,3 +89,22 @@ if rows:
         print("[{:>3.0f}s|{}] {:<4} {}: {}  →  {}".format(dt, k, name, who, q, a))
 else:
     print("（窗口内没有配得上对的问答）")
+
+# ---------------- 机器人自己的归因行（P12-I 新增） ----------------
+# `⏱️ [cid] 投递 X.Xs + 本轮处理 Y.Ys`：投递 = 平台发出 → 我们看见；
+# 本轮处理 = 我们看见 → 回复发出。有这两行就能分清"平台/推送慢"还是"我们慢"。
+try:
+    LOGF = "/app/bot.log"
+    diag = []
+    for ln in open(LOGF, encoding="utf-8", errors="replace").read().splitlines():
+        if "⏱️" in ln and ("投递" in ln or "平台读消息超时" in ln):
+            diag.append(ln.strip())
+    print()
+    print("=== 机器人自证行（bot.log 尾部，最近 12 条 / 共 {} 条）===".format(len(diag)))
+    for ln in diag[-12:]:
+        print("  " + ln[:110])
+    if not diag:
+        print("  （还没有：只有慢的时候才打；或 bot.log 不可见）")
+except Exception as e:                                       # noqa: BLE001
+    print()
+    print("（读不到 bot.log：{}）".format(str(e)[:60]))
