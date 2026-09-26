@@ -133,6 +133,7 @@ def pdir(monkeypatch, dbdir):
     monkeypatch.setenv("DZMM_PROMPT_DIR", str(d))
     monkeypatch.delenv("DZMM_PROMPTS", raising=False)
     monkeypatch.setattr(rp, "_sources", {})
+    rp.clear_cache()          # P12-F 的 mtime 缓存：每个用例都从干净状态开始
     return d
 
 
@@ -187,3 +188,46 @@ def test_load_uses_env_dir(monkeypatch, dbdir):
 
 def test_default_dir_is_repo_prompts():
     assert rp.DEFAULT_DIR == ROOT / "prompts"
+
+
+# --------------------------------------------------------------- mtime 缓存（P12-F）
+
+def test_cache_avoids_rereading_and_notices_edits(pdir):
+    """缓存按 (路径, mtime, 大小) 判定：没改就不重读，改了立刻看到新内容。"""
+    rp.clear_cache()
+    (pdir / "X_PROMPT.md").write_text("第一版", encoding="utf-8")
+    assert rp.load("X_PROMPT", "默认值") == "第一版"
+    c1 = rp.cache_stats()
+    assert rp.load("X_PROMPT", "默认值") == "第一版"
+    c2 = rp.cache_stats()
+    assert c2["hits"] == c1["hits"] + 1, "第二次应当命中缓存"
+    assert c2["misses"] == c1["misses"]
+
+    # 改写文件：mtime 变了 ⇒ 必须重读（显式推一下 mtime，别指望文件系统粒度）
+    import os
+    import time
+    (pdir / "X_PROMPT.md").write_text("第二版", encoding="utf-8")
+    t = time.time() + 2
+    os.utime(str(pdir / "X_PROMPT.md"), (t, t))
+    assert rp.load("X_PROMPT", "默认值") == "第二版"
+    assert rp.cache_stats()["misses"] == c2["misses"] + 1
+
+
+def test_cache_notices_creation_and_deletion(pdir):
+    """文件从无到有、从有到无，都要被发现（"不存在"也要进缓存）。"""
+    rp.clear_cache()
+    assert rp.load("X_PROMPT", "默认值") == "默认值"
+    (pdir / "X_PROMPT.md").write_text("后来加的", encoding="utf-8")
+    assert rp.load("X_PROMPT", "默认值") == "后来加的"
+    (pdir / "X_PROMPT.md").unlink()
+    assert rp.load("X_PROMPT", "默认值") == "默认值"
+    assert rp.sources()["X_PROMPT"] == "code"
+
+
+def test_empty_file_edit_still_falls_back(pdir):
+    """把文件改成空的：缓存要跟着变，语义仍然是"退回默认值"。"""
+    rp.clear_cache()
+    (pdir / "X_PROMPT.md").write_text("有内容", encoding="utf-8")
+    assert rp.load("X_PROMPT", "默认值") == "有内容"
+    (pdir / "X_PROMPT.md").write_text("", encoding="utf-8")
+    assert rp.load("X_PROMPT", "默认值") == "默认值"

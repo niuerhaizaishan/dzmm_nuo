@@ -18,8 +18,11 @@ CMD_PROMPT = _p("CMD_PROMPT", \"\"\"<原来的字符串>\"\"\")
 
 ### 生效时机
 
-`brains.py` 在 **import 时**调用 `load()`，所以改了 prompt 文件需要**重启进程**才生效
-（不引入运行中热更，避免"一半旧一半新"的中间态）。
+`brains.py` 在 **import 时**调用 `load()`，所以只改文件不重启是不生效的。
+P12-F 加了**热加载**：`brains.refresh_prompts()` 会把 39 个 prompt 常量按磁盘上
+的文件重算一遍（`_p()` 里登记了每个 prompt 的代码默认值，见 `brains._PROMPT_DEFAULTS`）。
+`load()` 自己带**mtime 缓存**（同一文件没动就不重复读盘），
+所以"每轮循环检查一次有没有改"是很便宜的。
 """
 import os
 from pathlib import Path
@@ -28,8 +31,11 @@ _ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DIR = _ROOT / "prompts"
 
 _sources: dict[str, str] = {}          # name -> "file" | "code"
+# name -> (path, mtime_ns, size, content)：文件没动就直接用缓存
+_cache: dict[str, tuple] = {}
 
-__all__ = ["load", "stats", "sources", "prompt_dir", "DEFAULT_DIR"]
+__all__ = ["load", "stats", "sources", "prompt_dir", "DEFAULT_DIR",
+           "clear_cache", "cache_stats"]
 
 
 def prompt_dir() -> Path:
@@ -41,6 +47,19 @@ def _enabled() -> bool:
     return v not in ("off", "0", "no", "false")
 
 
+def clear_cache() -> None:
+    """丢掉 mtime 缓存（改了文件想立刻重读时用）。"""
+    _cache.clear()
+
+
+def cache_stats() -> dict:
+    return {"cached": len(_cache),
+            "hits": _hits[0], "misses": _hits[1]}
+
+
+_hits = [0, 0]
+
+
 def load(name: str, default: str) -> str:
     """返回该 prompt 的实际内容。
 
@@ -48,17 +67,38 @@ def load(name: str, default: str) -> str:
 
     注意：返回的是文件的**原始内容**（不做 strip）—— 字面量可能有意义的
     首尾换行，strip 会改变 prompt。
+
+    缓存按 **(路径, mtime, 大小)** 判定：content 变了就重读。
+    文件"不存在"也会被缓存（mtime=-1），一旦有人创建它，mtime 就变了。
     """
     if not _enabled():
         _sources[name] = "code"
         return default
     try:
         p = prompt_dir() / (name + ".md")
-        if p.is_file():
-            raw = p.read_text(encoding="utf-8")
-            if raw.strip():            # 空文件 = 没覆盖，退回默认值（不要静默变空）
+        try:
+            st = p.stat()
+            sig = (str(p), st.st_mtime_ns, st.st_size)
+        except OSError:
+            sig = (str(p), -1, -1)
+        hit = _cache.get(name)
+        if hit is not None and hit[:3] == sig:
+            _hits[0] += 1
+            if hit[3] is not None:
                 _sources[name] = "file"
-                return raw
+                return hit[3]
+            _sources[name] = "code"
+            return default
+        _hits[1] += 1
+        raw = None
+        if sig[1] >= 0:
+            txt = p.read_text(encoding="utf-8")
+            if txt.strip():            # 空文件 = 没覆盖，退回默认值（不要静默变空）
+                raw = txt
+        _cache[name] = (sig[0], sig[1], sig[2], raw)
+        if raw is not None:
+            _sources[name] = "file"
+            return raw
     except Exception:
         pass
     _sources[name] = "code"

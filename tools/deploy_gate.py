@@ -479,5 +479,69 @@ except Exception as e:                                      # noqa: BLE001
     check("人设文本自检", False, "{}: {}".format(type(e).__name__, e))
 
 print()
+print("热加载（P12-F）:")
+try:
+    from runtime import hotload as _hot
+    from runtime import features as _F2
+    from runtime import tuning as _T2
+
+    check("bot.py 主循环里接了热加载检查",
+          "hot_reload_check()" in inspect.getsource(bot.main_loop))
+    check("bot.py 在启动后注册了热加载状态",
+          "_hotload.configure(" in (GATE_ROOT / "bot.py").read_text(encoding="utf-8"))
+    check("运行期来源与启动同一条路（无第二份注入实现）",
+          "hotload" in inspect.getsource(bot.apply_config_overrides))
+
+    # 真跑一次：不加改动 ⇒ 必须什么都不做；然后改一份配置喂给它 ⇒ 必须真的换掉
+    _hot.configure(dict(bot._FEATURES_DEFAULT_KW), bot._live_structural)
+    check("无改动时是 no-op", _hot.maybe_reload() is None)
+
+    import copy as _copy
+    import json as _json2
+    _cfg_now = _cs.load(_dash._config_defaults())
+    _before = _F2.overrides()
+    _flip = "insult" if _F2.on("gate-cid", "insult") else "vote"
+    _cfg2 = _copy.copy(_cfg_now)
+    _cfg2.features = {_flip: not _F2.on("gate-cid", _flip)}
+    _rep = _hot.apply_cfg(_cfg2, source="gate")
+    check("apply_cfg 真的改了开关",
+          _F2.on("gate-cid", _flip) == _cfg2.features[_flip], _rep.get("errors"))
+    check("apply_cfg 报告了改动", bool(_rep["changes"]["features"]))
+    # 复原（很重要：闸门不能把运行期状态带跑偏）
+    _hot.apply_cfg(_cfg_now, source="gate-restore")
+    check("复原后与配置一致", _F2.overrides() == _cfg_now.feature_map(),
+          _F2.overrides())
+    del _before
+
+    # 坏配置不许半途生效
+    _raw_bad = _dash._raw_from_store(_dash._config_defaults())
+    _raw_bad = _copy.deepcopy(_raw_bad)
+    _raw_bad["features"] = {"no_such_feature_xyz": True}
+    _tmpcfg = _tmpdir("gate-badcfg-") / "config.json"
+    import os as _os2
+    _old_cfg_env = _os2.environ.get("DZMM_CONFIG")
+    _tmpcfg.write_text(_json2.dumps(_raw_bad, ensure_ascii=False), encoding="utf-8")
+    _os2.environ["DZMM_CONFIG"] = str(_tmpcfg)
+    _cs._cache = None
+    _snap = _F2.overrides()
+    _bad = _hot.reload_now()
+    check("坏配置被拒（invalid）", _bad.get("invalid") is True, _bad.get("errors"))
+    check("坏配置时运行期保持原样", _F2.overrides() == _snap)
+    if _old_cfg_env is None:
+        _os2.environ.pop("DZMM_CONFIG", None)
+    else:
+        _os2.environ["DZMM_CONFIG"] = _old_cfg_env
+    _cs._cache = None
+
+    # 页面状态：三个页面共用同一段话术
+    _ps = _hot.page_state()
+    check("page_state 可用", isinstance(_ps, dict) and "pending" in _ps, _ps)
+    check("三个界面模块都用共用的状态横幅",
+          all("status_block" in (GATE_ROOT / "admin" / f).read_text(encoding="utf-8")
+              for f in ("config_ui.py", "features_ui.py", "personas_ui.py")))
+except Exception as e:                                      # noqa: BLE001
+    check("热加载自检", False, "{}: {}".format(type(e).__name__, e))
+
+print()
 print("FAILED: {}".format(fails) if fails else "ALL CHECKS PASSED")
 raise SystemExit(1 if fails else 0)

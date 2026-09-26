@@ -194,7 +194,7 @@ def persona_preview(cfg_raw, cid, try_msg="", persona_mod=None) -> dict:
 
 def render_personas(cfg_raw, groups, csrf="", error="", notice="", changes=(),
                     pending=False, reset_note="", preview=None, preview_cid="",
-                    preview_msg="", persona_mod=None):
+                    preview_msg="", persona_mod=None, status=None):
     """画人设与话术页。`cfg_raw` 里 `personas` 节 = 要**显示**的那一份（可能是草稿）。"""
     P = persona_mod or _P()
     ovs = _personas_cfg(cfg_raw)
@@ -299,10 +299,10 @@ def render_personas(cfg_raw, groups, csrf="", error="", notice="", changes=(),
                 "<ul>{}</ul></div>".format(
                     len(changes),
                     "".join("<li>{}</li>".format(_e(x)) for x in changes)))
-    if pending:
-        msg += ("<div class='msg warn'>⚠️ <b>有改动尚未生效</b>：配置文件比 bot 进程新。"
-                "改完要重启容器才会加载：<span class='mono'>"
-                "cd /opt/dzmm &amp;&amp; docker compose restart dzmm-bot</span></div>")
+    if pending or status is not None:
+        # P12-F：生效状态（与 /edit、/features 共用同一段话术）
+        from admin import config_ui
+        msg += config_ui.status_block(status, pending=True, csrf=csrf)
 
     pv = ""
     if preview is not None:
@@ -356,8 +356,8 @@ def render_personas(cfg_raw, groups, csrf="", error="", notice="", changes=(),
             "<div class='dim'>清掉这个人设的全部文本/话术覆盖，回到代码里写的那份。"
             "（只动人设，不影响群、Bot、功能开关）</div>"
             "<div style='margin-top:6px'>{rforms}</div>"
-            "</main><footer>人设与话术需要重启容器才生效 · 写入前自动备份 · "
-            "校验失败不落盘 · 没有 JavaScript 也能完成全部操作</footer>"
+            "</main><footer>人设与话术改完约 1 秒自动生效（热加载，不用重启）· "
+            "写入前自动备份 · 校验失败不落盘 · 没有 JavaScript 也能完成全部操作</footer>"
             "</body></html>").format(
         css=_CSS, msg=msg, pv=pv, csrf=_e(csrf), blocks="".join(blocks),
         opts="".join(opts),

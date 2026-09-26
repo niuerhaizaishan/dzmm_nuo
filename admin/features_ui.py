@@ -115,7 +115,7 @@ def _radio(name, value, cur, label, title=""):
 
 def render_features(cfg_raw, registry, params, scopes, categories,
                     features_obj, tuning_obj, error="", notice="", changes=(),
-                    csrf="", pending=False, reset_note=""):
+                    csrf="", pending=False, reset_note="", status=None):
     """画功能与参数页。
 
     `registry` = `runtime/features.py::registry()` 的结果（含每个功能的参数定义）
@@ -285,10 +285,11 @@ def render_features(cfg_raw, registry, params, scopes, categories,
                     len(changes),
                     "".join("<li class='mono'>{}</li>".format(_e(x))
                             for x in changes)))
-    if pending:
-        msg += ("<div class='msg warn'>⚠️ <b>有改动尚未生效</b>：配置文件比 bot 进程新。"
-                "改完要重启容器才会加载：<span class='mono'>"
-                "cd /opt/dzmm &amp;&amp; docker compose restart dzmm-bot</span></div>")
+    if pending or status is not None:
+        # P12-F：生效状态（已生效 / 下一轮自动生效 / 需要重启 / 文件坏了）
+        # 与 `/edit`、`/personas` 共用同一段话术，三页不能各说各的。
+        from admin import config_ui
+        msg += config_ui.status_block(status, pending=True, csrf=csrf)
 
     return ("<!doctype html><html lang='zh'><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -323,7 +324,7 @@ def render_features(cfg_raw, registry, params, scopes, categories,
             "<div style='margin-top:16px'><button type=submit>保存</button> "
             "<a href='/features' style='margin-left:10px'>放弃改动重新载入</a>"
             "</div></form>{reset_block}"
-            "</main><footer>三节覆盖需要重启容器才生效 · 写入前自动备份 · "
+            "</main><footer>功能/参数/集合改完约 1 秒自动生效（热加载，不用重启）· "
             "校验失败不落盘 · 没有 JavaScript 也能完成全部操作</footer>"
             "</body></html>").format(
         css=_CSS, msg=msg, csrf=_e(csrf), head=head, rows="".join(rows),

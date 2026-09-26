@@ -111,16 +111,85 @@ _FEATURES_DEFAULT_KW = {
 
 
 def apply_config_overrides(cfg=None) -> None:
-    """把（可能是刚升级过的）配置里的三块覆盖注入运行期。
+    """把配置里的热配置（功能/参数/集合/人设）注入运行期。
+
+    P12-F 起这里**只有一份实现**：`runtime/hotload.py`（热加载与启动走同一条路，
+    免得"启动时生效的"和"热加载生效的"慢慢长成两套）。
 
     `_features` / `_tuning` 在**运行时导入**那块才出现，所以这个函数
-    必须在那边之后调用（见 `apply_config_overrides()` 的调用点）。
+    必须在那边之后调用。
     """
     c = cfg if cfg is not None else _CFG
+    try:
+        from runtime import hotload as _hotload
+        _hotload.apply_cfg(c, source="startup")
+        return
+    except Exception as e:                                     # noqa: BLE001
+        # hotload 不可用（老版本/异常）时退回逐项注入：**行为不变优先**
+        log("P12: hotload 不可用（{}），退回逐项注入".format(str(e)[:60]))
     _features.set_overrides(c.feature_map())
     _tuning.set_overrides(c.tuning_map())
     _tuning.set_scopes(c.scopes)
     set_persona_texts(c.personas)          # P12-E：人设文本/话术覆盖
+    set_config_personas({s.cid: s.persona for s in c.group_specs.values()})
+
+
+def _live_structural() -> dict:
+    """交给 `hotload`：**启动时定下来**的结构性配置（用来判断要不要重启）。
+
+    只读 bot 里的运行期镜像（`GROUPS`/`MUTE_CIDS`/…），不是文件 —— 这正是要点：
+    文件里改了群/Bot，运行期是不知道的，页面要如实说"需要重启"。
+    """
+    return {
+        "groups": tuple(GROUPS),
+        "mute": tuple(sorted(MUTE_CIDS)),
+        "screen": tuple(sorted(SCREEN_CIDS)),
+        "push": tuple(PUSH_CIDS),
+        "bots": tuple((b.key, b.cid) for b in _CFG.bots if b.enabled),
+    }
+
+
+def hot_reload_check() -> None:
+    """主循环每轮调一次（P12-F）：配置/提示词改了就地生效，不用重启。
+
+    出错不抛（热加载的问题绝不能让机器人停摆），只在日志里说清楚。
+    """
+    try:
+        from runtime import hotload as _hotload
+        rep = _hotload.maybe_reload()
+    except Exception as e:                                     # noqa: BLE001
+        log("P12: 热加载检查异常（不影响运行）：" + str(e)[:100])
+        return
+    if not rep:
+        return
+    _log_hotload(rep)
+
+
+def _log_hotload(rep) -> None:
+    """热加载自证：**改了什么、什么时候、要不要重启**，一行说清。"""
+    ch = rep.get("changes") or {}
+    n = sum(len(v or []) for v in ch.values())
+    if rep.get("invalid") or not rep.get("ok", True):
+        log("P12: 热加载 **未生效**（配置文件不合法，运行期保持原样）：{}".format(
+            "；".join(rep.get("errors") or [])[:200]))
+        return
+    if n:
+        for cat, items in ch.items():
+            for line in (items or []):
+                log("P12: 热加载 {} · {}".format(_HOT_CAT.get(cat, cat), line))
+    _c = rep.get("counts") or {}
+    log("P12: 热加载完成 来源={} 改动={} 项 生效 功能={} 参数={} 集合={} 人设={} prompts={}".format(
+        rep.get("source"), n,
+        _c.get("features", "-"), _c.get("tuning", "-"), _c.get("scopes", "-"),
+        _c.get("personas", "-"), len(rep.get("prompts") or [])))
+    for line in (rep.get("structural") or []):
+        log("P12: ⚠️ 需要重启才生效 · " + line)
+    for line in (rep.get("errors") or []):
+        log("P12: 热加载有异常（已跳过）· " + line)
+
+
+_HOT_CAT = {"features": "功能", "tuning": "参数", "scopes": "按群集合",
+            "personas": "人设", "prompts": "提示词"}
 
 
 def migrate_config_file() -> None:
@@ -178,6 +247,18 @@ apply_config_overrides()
 
 # 旧版配置升级落盘（必须在运行时导入之后 —— 这里才拿得到 log）
 migrate_config_file()
+
+# P12-F：热加载的初始化 —— 记下"启动时那份配置/提示词"的指纹，
+# 主循环靠它判断有没有人改过（改了就就地生效，不用重启）。
+# ⚠️ 必须在 `migrate_config_file()` **之后**：升级会重写 config.json（mtime 变了），
+# 先注册指纹的话，主循环第一轮就会把"刚才那次升级"当成一次新改动重放一遍。
+try:
+    from runtime import hotload as _hotload
+    _hotload.configure(dict(_FEATURES_DEFAULT_KW), _live_structural)
+    log("P12: 热加载={}（改完配置/提示词就地生效；群与 Bot 仍需重启）".format(
+        "启用" if _hotload.status()["enabled"] else "已关闭"))
+except Exception as _e:                                        # noqa: BLE001
+    log("P12: 热加载未启用（" + str(_e)[:80] + "）")
 from runtime.heat import _add_heat, HEAT_SCENE_PICK, HEAT_SCENE_CONTINUE_TARGET, HEAT_SCENE_CONTINUE_SENDER, HEAT_INSULT_TARGET, HEAT_INSULT_SENDER, HEAT_FASAO_PICK, HEAT_DIAOJIAO_ROUND, HEAT_VOTE_STARTER, HEAT_VOTE_VOTER, HEAT_STORY_VOTER, HEAT_STORY_PROTAGONIST  # P8 第 4 步：搬到 runtime/heat.py
 from runtime.memory import _extract_names, _extract_keywords, _fast_rank, _ai_filter, _retrieve_memory, _append_memory_ref, _extract_remember, is_remember_cmd, is_recall_cmd, _record_history, _on_rename, _refresh_profile_latest, MEMORY_TRIGGERS, MEMORY_FILTER_PROMPT  # P8 第 4 步：搬到 runtime/memory.py
 from runtime.poem import is_poem_cmd, poem, _do_poem, _poem_text, _poem_resolve, _record_poem, _get_poem_history, _parse_poem_style, POEM_STYLE_KEYWORDS  # P8 第 4 步：搬到 runtime/poem.py
@@ -2220,6 +2301,9 @@ async def main_loop(interval: float, dry: bool, once: bool):
         # 广播文案（问候/记忆汇报）就会被写成房间管家口吻。
         # —— 2026-09-17 事故：研讨群的早安变成了"（推开玫瑰房的窗…）Vv姐姐、糯糯姐，早上好"
         set_persona_cid("")
+        # P12-F：热加载检查。便宜的那一段（一次 stat）每轮都做，
+        # 只有真改了文件才会做完整解析 + 应用（见 runtime/hotload.py）。
+        hot_reload_check()
         # 检测 renew_token 连续失败信号，主动退出交给 entrypoint 重启
         if (ROOT / "token.emergency").exists():
             try:

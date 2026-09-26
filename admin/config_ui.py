@@ -31,7 +31,7 @@ from pathlib import Path
 __all__ = ["render_edit", "parse_form", "diff_summary", "audit_log",
            "pending_change", "list_backups", "restore_backup",
            "unseen_deletions", "backup_path", "unified_diff",
-           "render_backup_detail"]
+           "render_backup_detail", "status_block"]
 
 AUDIT_NAME = "config_audit.log"
 
@@ -81,9 +81,73 @@ def _e(v):
     return html.escape("" if v is None else str(v))
 
 
+def status_block(status=None, pending=False, csrf="") -> str:
+    """配置生效状态横幅（P12-F）：**已生效 / 下一轮自动生效 / 需要重启 / 文件坏了**。
+
+    三个写配置的页面（`/edit`、`/features`、`/personas`）共用这一段，
+    免得一处说"要重启"、另一处说"已生效" —— 那就等于没说。
+
+    `status` 来自 `runtime.hotload.page_state()`（**在 bot 进程内**读运行期状态）；
+    返回 None 表示这个进程没启用热加载（例如本地单独跑 dashboard），
+    那就退回 P12-D 的旧提示：要重启。
+    """
+    btn = ("<form method=post action='/reload' style='display:inline'>"
+           "<input type=hidden name='csrf' value='{c}'>"
+           "<button type='submit' style='padding:2px 8px;font-size:11px;"
+           "margin-left:8px'>立即热加载</button></form>").format(c=_e(csrf))
+    if status is None:
+        if not pending:
+            return ""
+        # ★ 这里**不能**写 `up -d`：改的只是挂载进去的 config.json，
+        # compose 的"配置没变"判定只看 compose 文件/镜像，看不出挂载文件变了，
+        # 于是 `up -d` 会打印 "Container ... Running" 然后**什么都不做** ——
+        # 用户以为重启了，其实没生效。这是真踩过的坑，所以固定用 restart。
+        return ("<div class='msg warn'>⚠️ <b>有改动尚未生效</b>：配置文件比 bot 进程新。"
+                "改完要重启容器才会加载：<span class='mono'>"
+                "cd /opt/dzmm &amp;&amp; docker compose restart dzmm-bot</span>"
+                "<br><span class='dim'>用 <span class='mono'>up -d</span> 没用 —— "
+                "改的是挂载文件，compose 看不出变化就直接跳过。"
+                "改的是 <span class='mono'>.env</span> 时才需要 "
+                "<span class='mono'>up -d --force-recreate</span>。"
+                "重启会把你从这个后台登出（会话在进程内存里），重新登录即可。</span></div>")
+    if status.get("invalid") or status.get("error"):
+        return ("<div class='msg bad'>❌ <b>磁盘上的配置现在不合法</b>，运行期保持原样"
+                "（没有半新半旧）：<span class='mono'>{}</span>"
+                "<br><span class='dim'>在页面上改回去，或者从备份回滚，就会自动恢复。</span>"
+                "</div>").format(_e(status.get("error")))
+    if not status.get("enabled"):
+        return ("<div class='msg warn'>热加载已关闭（<span class='mono'>{}"
+                "</span>）：改完要重启容器才生效。</div>").format(
+                    _e("DZMM_HOTLOAD=off"))
+    if status.get("structural"):
+        # 结构性改动**永远不会**被热加载应用 ⇒ 只要还有差异就一直提示，
+        # 与"待生效"（会自己消失）不同。这里两种情况分开说，别让人误会。
+        pend = status.get("pending")
+        return ("<div class='msg warn'>⚠️ <b>磁盘上有「需要重启」的改动</b>{}："
+                "<ul>{}</ul>"
+                "<div class='dim'>功能开关 / 参数 / 人设文本与话术 / 提示词是热加载的，"
+                "上面这些不是（它们决定 Socket.IO 订阅哪些群、主循环跑哪些群，"
+                "启动时就固定了）。</div></div>").format(
+                    "（还没处理，但热加载也不会应用它们）" if pend else "",
+                    "".join("<li>{}</li>".format(_e(x))
+                            for x in status["structural"]))
+    if status.get("pending"):
+        return ("<div class='msg chg'>✅ <b>改动已保存，正在热加载</b>："
+                "下一次循环就会生效（约 1 秒），<b>不用重启</b>。{}"
+                "</div>").format(btn)
+    at = status.get("at_text") or ""
+    return ("<div class='msg ok'>✅ <b>已生效</b>{}{}"
+            "</div>").format(
+                "（最近一次热加载 {}{}）".format(
+                    _e(at), "，共 {} 次".format(status["count"])
+                    if status.get("count") else "") if at else "",
+                btn)
+
+
+
 def render_edit(cfg_raw, error="", notice="", csrf="", pending=False,
                 backups=(), audit=(), unsupported=(), changes=(),
-                persona_names=(), persona_effective=None):
+                persona_names=(), persona_effective=None, status=None):
     """把配置渲染成可编辑的表单。
 
     `persona_names` = 代码里可用的人设名（来自 `personas.PERSONAS`）。
@@ -160,19 +224,10 @@ def render_edit(cfg_raw, error="", notice="", csrf="", pending=False,
                 .format(len(changes),
                         "".join("<li class='mono'>{}</li>".format(_e(x))
                                 for x in changes)))
-    if pending:
-        # ★ 这里**不能**写 `up -d`：改的只是挂载进去的 config.json，
-        # compose 的"配置没变"判定只看 compose 文件/镜像，看不出挂载文件变了，
-        # 于是 `up -d` 会打印 "Container ... Running" 然后**什么都不做** ——
-        # 用户以为重启了，其实没生效。这是真踩过的坑，所以固定用 restart。
-        msg += ("<div class='msg warn'>⚠️ <b>有改动尚未生效</b>：配置文件比 bot 进程新。"
-                "改完要重启容器才会加载：<span class='mono'>"
-                "cd /opt/dzmm &amp;&amp; docker compose restart dzmm-bot</span>"
-                "<br><span class='dim'>用 <span class='mono'>up -d</span> 没用 —— "
-                "改的是挂载文件，compose 看不出变化就直接跳过。"
-                "改的是 <span class='mono'>.env</span> 时才需要 "
-                "<span class='mono'>up -d --force-recreate</span>。"
-                "重启会把你从这个后台登出（会话在进程内存里），重新登录即可。</span></div>")
+    if pending or status is not None:
+        # P12-F：状态横幅交给共用函数（三个页面同一套话术）。
+        # 有 status（bot 进程内读到运行期状态）时以它为准，`pending` 只是兜底。
+        msg += status_block(status, pending=True, csrf=csrf)
     if unsupported:
         msg += ("<div class='msg warn'>⚠️ <b>这些改动暂时不会生效</b>：<br>{}</div>"
                 .format("<br>".join(_e(x) for x in unsupported)))
@@ -225,7 +280,7 @@ def render_edit(cfg_raw, error="", notice="", csrf="", pending=False,
             "</form>"
             "<h2>最近改动</h2><ul>{au}</ul>"
             "<h2>备份（可回滚）</h2><ul>{bk}</ul>"
-            "</main><footer>配置改动<b>需要重启容器</b>才生效 · "
+            "</main><footer>功能/参数/人设改完自动热加载；<b>群与 Bot 需要重启容器</b> · "
             "写入前自动备份 · 校验失败不落盘</footer></body></html>").format(
         css=_CSS, msg=msg, csrf=_e(csrf), g="".join(g_html), b="".join(b_html),
         au=au, bk=bk, n=len(groups), m=len(bots), plist=_e(persona_hint),

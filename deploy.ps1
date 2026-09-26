@@ -150,8 +150,19 @@ function Get-CodeFiles {
 #   below implement that. The pin stays (it is a good default and the AEAD
 #   suite avoids the "Corrupted MAC" class of failures).
 $SshCipherOpts = @('-o', 'Ciphers=aes128-gcm@openssh.com')
-$SshAttempts = 5
+# 重试次数/间隔可以用环境变量调（2026-09-26 实测最坏的时候成功率约 1/5，
+# 5 次不够用；一次 `-Action exec` 里跑长命令时尤其难受，所以给个旋钮）。
+#   $env:DZMM_SSH_ATTEMPTS = 20 ; .\deploy.ps1 -Action upload
+$SshAttempts = 10
 $SshRetryDelaySec = 6
+if ($env:DZMM_SSH_ATTEMPTS) {
+    $n = 0
+    if ([int]::TryParse($env:DZMM_SSH_ATTEMPTS, [ref]$n) -and $n -gt 0) { $SshAttempts = $n }
+}
+if ($env:DZMM_SSH_RETRY_DELAY) {
+    $n = 0
+    if ([int]::TryParse($env:DZMM_SSH_RETRY_DELAY, [ref]$n) -and $n -ge 0) { $SshRetryDelaySec = $n }
+}
 
 function Invoke-Ssh([string]$cmd) {
     # ServerAlive* : a long build/extract over one connection must not be dropped

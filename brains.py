@@ -4,10 +4,46 @@ from runtime.tuning import get as _tune          # P12-B：可调参数（唯一
 
 # P8 第 3 步：prompt 可被 prompts/<NAME>.md 覆盖（见 runtime/prompts.py）。
 # runtime 包缺失时退化为"永远用代码里的默认值"，绝不让 prompt 变空。
+#
+# P12-F：`_p()` 顺带把每个 prompt 的**代码默认值**登记进 `_PROMPT_DEFAULTS`，
+# 于是 `refresh_prompts()` 能把 39 个常量按磁盘上的文件整体重算一遍（热加载），
+# 不需要把 39 份默认值再抄第二遍（抄一遍就一定会漂移）。
+_PROMPT_DEFAULTS: dict = {}
+
+
+def _p(name, default):
+    _PROMPT_DEFAULTS[name] = default
+    try:
+        return _p_load(name, default)
+    except Exception:                                      # noqa: BLE001
+        return default
+
+
+def refresh_prompts() -> list:
+    """按磁盘上的 prompt 文件重算所有 prompt 常量（P12-F 热加载）。
+
+    返回**内容变了的** prompt 名列表（自证/日志用）。
+
+    ⚠️ 只改 prompt 常量，不动任何逻辑。所有读取点都是"调用时查模块全局"，
+    所以下一次生成就会用新文案（没有谁把 prompt 当默认参数捕获过 ——
+    这一点由 `test_hotload.py` 静态扫源码钉住）。
+    """
+    changed = []
+    for name, default in list(_PROMPT_DEFAULTS.items()):
+        try:
+            new = _p_load(name, default)
+        except Exception:                                  # noqa: BLE001
+            continue
+        if globals().get(name) != new:
+            changed.append(name)
+            globals()[name] = new
+    return sorted(changed)
+
+
 try:
-    from runtime.prompts import load as _p
+    from runtime.prompts import load as _p_load
 except Exception:                                          # noqa: BLE001
-    def _p(name, default):
+    def _p_load(name, default):
         return default
 
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"

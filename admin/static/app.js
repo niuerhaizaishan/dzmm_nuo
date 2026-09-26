@@ -62,12 +62,13 @@
     });
 
     // d. 提交前确认（只提醒一次，避免打断正常流程）
+    //    只挂 /features 这一张表单：它整表提交、爆炸半径最大。
     var form = document.querySelector("form[action='/features']");
     if (form) {
       form.addEventListener("submit", function (ev) {
         if (dirty === 0) { return; }
         var ok = window.confirm("要保存这 " + dirty + " 项改动吗？" +
-                                "（写入前会自动备份，且需要重启容器才生效）");
+                                "（写入前会自动备份；保存后约 1 秒自动生效，不用重启）");
         if (!ok) { ev.preventDefault(); }
       });
     }

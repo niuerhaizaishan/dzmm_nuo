@@ -541,7 +541,7 @@ def section_config():
     except Exception:                                          # noqa: BLE001
         out["path_is_dir"] = False
     out["note"] = ("source=defaults 表示没有 config.json，用的是 bot.py 里的默认值；"
-                   "配置改动**需要重启容器**才生效")
+                   "功能/参数/人设改完会自动热加载，**群与 Bot 需要重启容器**")
     if out["path_is_dir"]:
         out["note"] = ("⚠️ {} 存在但**是个目录**（bind mount 的源文件当初不存在，"
                        "Docker 建了目录）：配置其实没生效。删掉这个目录、"
@@ -596,6 +596,35 @@ def section_config():
     return out
 
 
+def _hot_load_json():
+    """热加载状态（P12-F）：`/api/summary` 里带一份，验收脚本可以机械地断言。
+
+    只放**能公开**的东西（时间/次数/改动条数/是否需要重启），
+    不放人设原文 —— 那份内容在配置页上，不该从只读接口漏出去。
+    """
+    try:
+        from runtime import hotload
+        defaults = _config_defaults()
+        hotload.set_defaults(defaults)
+        st = hotload.page_state(defaults) or {}
+        return {
+            "enabled": st.get("enabled"),
+            "configured": hotload.configured(),
+            "count": st.get("count") or 0,
+            "at": st.get("at_text") or "",
+            "error": st.get("error") or "",
+            "invalid": bool(st.get("invalid")),
+            "pending": bool(st.get("pending")),
+            "out_of_process": bool(st.get("out_of_process")),
+            "last_source": st.get("source") or "",
+            "last_changes": sum(len(v or [])
+                                for v in (st.get("last_changes") or {}).values()),
+            "structural": st.get("structural") or [],
+        }
+    except Exception as e:                                      # noqa: BLE001
+        return {"error": "{}: {}".format(type(e).__name__, e)}
+
+
 SECTIONS = [
     ("process", "进程与内存", section_process),
     ("boot", "启动自证行", section_boot_proof),
@@ -606,6 +635,7 @@ SECTIONS = [
     ("storage", "存储与 WAL", section_storage),
     ("groups", "群状态", section_groups),
     ("config", "群配置", section_config),
+    ("hotload", "配置热加载", _hot_load_json),
 ]
 
 
@@ -613,6 +643,7 @@ def collect():
     """跑所有 section。**每段单独 try** —— 一段坏了不该让整页变白。"""
     result = {"generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
               "version": VERSION,
+              "hotload": _hot_load_json(),
               "sections": {}}
     for key, title, fn in SECTIONS:
         t0 = time.time()
@@ -967,6 +998,24 @@ def _cookie_sid(handler):
 # 边界这么划是为了让"只读"这条性质仍然可验证：源码扫描那两条测试
 # （每处 sqlite3.connect 都带 mode=ro、不得出现写库语句）继续成立。
 
+def _hot_status():
+    """运行期生效状态（P12-F），**两个进程都能用**：
+
+    - 面板进程（生产就是这个）→ `hotload` 没接管运行期，`page_state()` 会读
+      机器人写的 `config/hotload_status.json`；
+    - 万一面板和机器人同进程 → 直接读内存。
+
+    返回 None ⇒ 页面退回旧的"要重启"提示（宁可保守，也不能谎报已生效）。
+    """
+    try:
+        from runtime import hotload
+        defaults = _config_defaults()
+        hotload.set_defaults(defaults)      # 只给解析用；不接管应用
+        return hotload.page_state(defaults)
+    except Exception:                                           # noqa: BLE001
+        return None
+
+
 def _persona_effective(raw):
     """每一群"留空时实际会用哪个人设"（来自代码的 ROOMS/默认）。
 
@@ -1240,6 +1289,27 @@ class Handler(BaseHTTPRequestHandler):
         return config_ui.render_backup_detail(
             name, old_raw, cur_raw, old_text, cur_text, self._csrf())
 
+    def _broken_config_page(self, err):
+        """磁盘上的配置**现在不合法**时，三个页面都要说清楚同一件事。
+
+        早先这里直接回一个 `<pre>读配置失败</pre>` —— 用户看不出"运行期其实
+        还在正常跑、只是这次改坏了"（P12-F 之后尤其重要：热加载会拒绝坏配置，
+        bot 一点都不受影响）。所以做成一页带红色横幅的说明 + 去备份页的链接。
+        """
+        from admin import config_ui
+        body = config_ui.status_block(
+            {"invalid": True, "error": str(err)}, csrf=self._csrf())
+        return ("<!doctype html><html lang='zh'><head><meta charset='utf-8'>"
+                "<title>配置读不了 · 小小糯 运维后台</title><style>{css}</style>"
+                "</head><body><header><h1>小小糯 · 配置读不了</h1>"
+                "<span style='margin-left:auto'><a href='/'>← 只读面板</a> · "
+                "<a href='/edit/backup'>备份与回滚</a> · "
+                "<a href='/logout'>退出</a></span></header><main>{body}"
+                "<p class='dim'>机器人<b>没有受影响</b>：热加载遇到不合法的配置会"
+                "拒绝应用，运行期继续用上一次成功的配置。改回去（或从备份回滚）"
+                "就会自动恢复。</p></main></body></html>").format(
+                    css=config_ui._CSS, body=body)
+
     def _render_features_page(self, error="", notice="", changes=(), reset_note=""):
         """功能与参数页（P12-D）。"""
         from admin import config_ui, features_ui
@@ -1248,14 +1318,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             raw = _raw_from_store(defaults)
         except Exception as e:                                  # noqa: BLE001
-            return "<pre>读配置失败：{}</pre>".format(_e(e))
+            return self._broken_config_page(e)
         pending = config_ui.pending_change(
             config_store.config_path(), section_process().get("bot_started_epoch"))
         return features_ui.render_features(
             raw, feats.registry(), tune.registry(),
             tuple(tune.SCOPE_DEFAULTS.items()), feats.CATEGORIES,
             feats, tune, error=error, notice=notice, changes=changes,
-            csrf=self._csrf(), pending=pending, reset_note=reset_note)
+            csrf=self._csrf(), pending=pending, reset_note=reset_note,
+            status=_hot_status())
 
     def _render_personas_page(self, error="", notice="", changes=(), reset_note="",
                               preview=None, preview_cid="", preview_msg="",
@@ -1270,7 +1341,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             raw = _raw_from_store(defaults)
         except Exception as e:                                  # noqa: BLE001
-            return "<pre>读配置失败：{}</pre>".format(_e(e))
+            return self._broken_config_page(e)
         if shown is not None:
             raw = json.loads(json.dumps(raw, ensure_ascii=False))
             if shown:
@@ -1286,7 +1357,7 @@ class Handler(BaseHTTPRequestHandler):
             raw, raw.get("groups") or [], csrf=self._csrf(), error=error,
             notice=notice, changes=changes, pending=pending,
             reset_note=reset_note, preview=preview, preview_cid=preview_cid,
-            preview_msg=preview_msg)
+            preview_msg=preview_msg, status=_hot_status())
 
     def _render_edit_page(self, error="", notice="", raw=None, changes=()):
         from admin import config_ui
@@ -1297,7 +1368,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             raw = raw if raw is not None else _raw_from_store(defaults)
         except Exception as e:                                  # noqa: BLE001
-            return "<pre>读配置失败：{}</pre>".format(_e(e))
+            return self._broken_config_page(e)
         from runtime import config_store
         pending = config_ui.pending_change(
             config_store.config_path(), section_process().get("bot_started_epoch"))
@@ -1309,7 +1380,8 @@ class Handler(BaseHTTPRequestHandler):
             unsupported=_token_unsupported_notes(raw, defaults),
             changes=changes,
             persona_names=_persona_names(),
-            persona_effective=_persona_effective(raw))
+            persona_effective=_persona_effective(raw),
+            status=_hot_status())
 
     def _read_form(self):
         try:
@@ -1369,7 +1441,9 @@ class Handler(BaseHTTPRequestHandler):
         print("[admin] 配置已保存 来源 {} 改动 {} 项".format(
             _client_ip(self), len(summary)), flush=True)
         return self._send(200, self._render_edit_page(
-            notice="已保存（{} 项改动）。**需要重启容器才生效**".format(len(summary)),
+            notice=("已保存（{} 项改动）。人设选择会自动热加载；"
+                    "**群清单 / Bot 注册表 / 静默·筛查·推送需要重启容器**"
+                    ).format(len(summary)),
             changes=summary),
             "text/html; charset=utf-8")
 
@@ -1427,7 +1501,8 @@ class Handler(BaseHTTPRequestHandler):
         print("[admin] 功能/参数已保存 来源 {} 改动 {} 项".format(
             _client_ip(self), len(summary)), flush=True)
         return self._send(200, self._render_features_page(
-            notice="已保存（{} 项改动）。**需要重启容器才生效**".format(len(summary)),
+            notice="已保存（{} 项改动），约 1 秒后自动生效（热加载，不用重启）".format(
+                len(summary)),
             changes=summary), "text/html; charset=utf-8")
 
     def _post_reset(self):
@@ -1452,6 +1527,49 @@ class Handler(BaseHTTPRequestHandler):
         config_ui.audit_log(__import__("runtime.config_store", fromlist=["audit_path"]).audit_path(),
                             _client_ip(self), [note])
         return self._send(200, self._render_features_page(reset_note=note),
+                          "text/html; charset=utf-8")
+
+    def _post_reload(self):
+        """立即热加载（P12-F）：让**机器人进程**把 config.json + prompts 重读一遍。
+
+        **不做任何写操作** —— 它只让运行期跟上磁盘上的配置，所以
+        "谁在什么时候改了什么"仍然只由配置页写的那几次决定（审计还在那边）。
+
+        ⚠️ 面板和机器人是**两个进程**：面板改不了机器人进程的内存。所以
+        - 在机器人进程里（CLI/测试）→ 直接 `reload_now()`；
+        - 在面板进程里 → 写一个请求文件（`config/hotload_request`），
+          主循环下一轮（≤1 秒）消费掉并强制重读。所以按钮是**异步**的，
+          页面上也如实这么写。
+        """
+        from runtime import hotload
+        form = self._read_form()
+        if form is None or not self._csrf_ok(form):
+            return self._send(400, self._render_edit_page(error="CSRF 校验失败"),
+                              "text/html; charset=utf-8")
+        if hotload.configured():
+            try:
+                rep = hotload.reload_now()
+            except Exception as e:                              # noqa: BLE001
+                return self._send(500, self._render_edit_page(
+                    error="热加载失败：{}".format(e)), "text/html; charset=utf-8")
+            n = sum(len(v or []) for v in (rep.get("changes") or {}).values())
+            if rep.get("invalid") or not rep.get("ok", True):
+                note = "热加载**未生效**（配置不合法，运行期保持原样）：{}".format(
+                    "；".join(rep.get("errors") or [])[:200])
+            elif n:
+                note = "已热加载（{} 项改动生效，**没有重启**）。".format(n)
+            else:
+                note = "已热加载：磁盘上的配置与运行期一致，没有变化。"
+            struct = rep.get("structural") or []
+            if struct:
+                note += " ⚠️ 另有需要重启的部分：" + "；".join(struct)
+        else:
+            ok = hotload.request_reload()
+            note = ("已请求机器人进程立即热加载（约 1 秒内生效，**不用重启**）。"
+                    if ok else "请求失败：写不进 config/ 目录，请看容器日志。")
+        print("[admin] 热加载请求 来源 {} 就地={}".format(
+            _client_ip(self), hotload.configured()), flush=True)
+        return self._send(200, self._render_edit_page(notice=note),
                           "text/html; charset=utf-8")
 
     def _post_personas(self):
@@ -1508,7 +1626,8 @@ class Handler(BaseHTTPRequestHandler):
         print("[admin] 人设/话术已保存 来源 {} 改动 {} 项".format(
             _client_ip(self), len(summary)), flush=True)
         return self._send(200, self._render_personas_page(
-            notice="已保存（{} 项改动）。**需要重启容器才生效**".format(len(summary)),
+            notice="已保存（{} 项改动），约 1 秒后自动生效（热加载，不用重启）".format(
+                len(summary)),
             changes=summary), "text/html; charset=utf-8")
 
     def _post_personas_reset(self):
@@ -1551,7 +1670,8 @@ class Handler(BaseHTTPRequestHandler):
         config_ui.audit_log(config_store.audit_path(), _client_ip(self), [note])
         print("[admin] " + note + " 来源 " + _client_ip(self), flush=True)
         return self._send(200, self._render_personas_page(
-            reset_note=note + "。**需要重启容器才生效**"), "text/html; charset=utf-8")
+            reset_note=note + "。约 1 秒后自动生效（热加载）"),
+            "text/html; charset=utf-8")
 
     def _post_rollback(self):
         from admin import config_ui
@@ -1575,7 +1695,8 @@ class Handler(BaseHTTPRequestHandler):
         config_ui.audit_log(config_store.audit_path(), _client_ip(self), summary)
         print("[admin] 配置已回滚到 {} 来源 {}".format(name, _client_ip(self)), flush=True)
         return self._send(200, self._render_edit_page(
-            notice="已回滚到 {name}。**需要重启容器才生效**".format(name=name),
+            notice=("已回滚到 {name}。功能/参数/人设会自动热加载；"
+                    "**群与 Bot 需要重启容器**").format(name=name),
             changes=summary),
             "text/html; charset=utf-8")
 
@@ -1598,6 +1719,10 @@ class Handler(BaseHTTPRequestHandler):
             if not self._require_session():
                 return
             return self._post_features()
+        if u.path == "/reload":
+            if not self._require_session():
+                return
+            return self._post_reload()
         if u.path == "/personas":
             if not self._require_session():
                 return
