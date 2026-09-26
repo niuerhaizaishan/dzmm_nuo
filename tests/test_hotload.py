@@ -175,28 +175,57 @@ def test_whole_table_is_replaced_not_merged(cfgfile):
 
 
 def test_prompt_file_change_takes_effect(cfgfile, monkeypatch, dbdir):
-    """提示词文件改了也要生效：**不用重启、不用改配置**。"""
-    import brains
+    """提示词文件改了也要生效：**不用重启、不用改配置**。
+
+    ⚠️ 重算要写回**持有常量的那个模块**（brains 或 runtime.memory）——
+    所以这里按登记册里的 `module` 去取/还原，而不是假定都在 brains 里。
+    """
+    import sys
+    import runtime.memory  # noqa: F401  确保第 40 个也登记上
     pd = dbdir / "prompts"
     pd.mkdir()
     monkeypatch.setenv("DZMM_PROMPT_DIR", str(pd))
     RP.clear_cache()
-    saved = {n: getattr(brains, n) for n in brains._PROMPT_DEFAULTS}
+    reg = RP.registry()
+    saved = {n: (rec["module"], getattr(sys.modules[rec["module"]], n))
+             for n, rec in reg.items()}
     _boot(cfgfile)
-    name = sorted(brains._PROMPT_DEFAULTS)[0]
-    original = getattr(brains, name)
+    name = sorted(reg)[0]
+    original = saved[name][1]
     try:
         (pd / (name + ".md")).write_text("【热加载测试】" + original, encoding="utf-8")
         H._last_prompt_check[0] = 0.0            # 别等那 5 秒的节流
         H._prompt_sig[0] = ("force", 0, 0.0, 0)
         rep = H.maybe_reload()
         assert rep and rep["source"] == "prompts", rep
-        assert getattr(brains, name).startswith("【热加载测试】")
+        assert getattr(sys.modules[saved[name][0]], name).startswith("【热加载测试】")
         assert name in rep["prompts"]
     finally:
-        for n, v in saved.items():
-            setattr(brains, n, v)
+        for n, (mod, v) in saved.items():
+            setattr(sys.modules[mod], n, v)
         RP.clear_cache()
+
+
+def test_prompt_refresh_writes_back_to_the_owning_module(cfgfile, monkeypatch, dbdir):
+    """第 40 个（runtime/memory）也必须能被热加载 —— 写回它自己那个模块。"""
+    import sys
+    import runtime.memory as MEM
+    pd = dbdir / "prompts"
+    pd.mkdir()
+    monkeypatch.setenv("DZMM_PROMPT_DIR", str(pd))
+    RP.clear_cache()
+    before = MEM.MEMORY_FILTER_PROMPT
+    try:
+        (pd / "MEMORY_FILTER_PROMPT.md").write_text("【改过的筛选提示词】{limit}",
+                                                    encoding="utf-8")
+        changed = RP.refresh()
+        assert "MEMORY_FILTER_PROMPT" in changed
+        assert MEM.MEMORY_FILTER_PROMPT.startswith("【改过的筛选提示词】")
+    finally:
+        (pd / "MEMORY_FILTER_PROMPT.md").unlink()
+        RP.clear_cache()
+        RP.refresh()
+        assert MEM.MEMORY_FILTER_PROMPT == before
 
 
 def test_env_off_disables_everything(cfgfile, monkeypatch):

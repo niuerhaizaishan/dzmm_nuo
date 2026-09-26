@@ -301,6 +301,7 @@ def render_features(cfg_raw, registry, params, scopes, categories,
             "<span style='margin-left:auto'><a href='/'>← 只读面板</a> · "
             "<a href='/edit'>群与 Bot</a> · "
             "<a href='/personas'>🎭 人设与话术</a> · "
+            "<a href='/prompts'>📝 文案模板</a> · "
             "<a href='/logout'>退出</a></span>"
             "</header><main>{msg}"
             "<form method=post action='/features'>"

@@ -328,6 +328,7 @@ def render_personas(cfg_raw, groups, csrf="", error="", notice="", changes=(),
             "（校验不过一个字都不写）</span>"
             "<span style='margin-left:auto'><a href='/'>← 只读面板</a> · "
             "<a href='/edit'>群与 Bot</a> · <a href='/features'>功能与参数</a> · "
+            "<a href='/prompts'>文案模板</a> · "
             "<a href='/logout'>退出</a></span></header><main>{msg}{pv}"
             "<form method=post action='/personas'>"
             "<input type=hidden name='csrf' value='{csrf}'>"

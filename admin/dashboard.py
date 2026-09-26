@@ -391,10 +391,17 @@ def section_prompts():
     这是 P9 上线前在生产镜像里预检时抓到的（本地测试当时只看了字段存在，没看数值）。
     """
     import brains  # noqa: F401  仅为触发 prompt 注册（无网络副作用）
+    import runtime.memory  # noqa: F401  P12-G：第 40 个提示词的持有模块
     import runtime.prompts as prompts
     st = prompts.stats()
     if not st.get("total"):
         st["warning"] = "prompts 注册为空（brains 未成功 import）—— 下面的数字不可信"
+    elif st.get("files_on_disk") != st.get("total"):
+        # P12-G：这一条正是这一段存在的意义 —— "文件与登记册对不上"就是
+        # "有人加了文件但没人读"（或反之），静默漂移最难发现。
+        st["warning"] = ("prompts/ 里 {} 个文件，登记册里 {} 个 —— "
+                         "有文件没人读或反之").format(
+                             st.get("files_on_disk"), st.get("total"))
     st["sample"] = sorted(prompts.sources().items())[:5]
     return st
 
@@ -822,6 +829,7 @@ def render_html(data):
             "<a href='/edit' style='color:#7aa2f7'>⚙ 配置</a> · "
             "<a href='/features' style='color:#7aa2f7'>🧩 功能与参数</a> · "
             "<a href='/personas' style='color:#7aa2f7'>🎭 人设与话术</a> · "
+            "<a href='/prompts' style='color:#7aa2f7'>📝 文案模板</a> · "
             "<a href='/api/summary' style='color:#7aa2f7'>JSON</a> · "
             "<a href='/' style='color:#7aa2f7'>刷新</a> · "
             "<a href='/logout' style='color:#7aa2f7'>退出</a>"
@@ -1208,6 +1216,17 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/personas":
             self._send(200, self._render_personas_page(),
                        "text/html; charset=utf-8")
+            return
+        if u.path == "/prompts":
+            self._send(200, self._render_prompts_page(
+                name=(parse_qs(u.query or "").get("name") or [""])[0]),
+                "text/html; charset=utf-8")
+            return
+        if u.path == "/prompts/history":
+            q = parse_qs(u.query or "")
+            self._send(200, self._render_prompt_history(
+                (q.get("name") or [""])[0], (q.get("version") or [""])[0]),
+                "text/html; charset=utf-8")
             return
         if u.path.startswith("/static/"):
             self._send_static(u.path)
@@ -1678,6 +1697,195 @@ class Handler(BaseHTTPRequestHandler):
             reset_note=note + "。约 1 秒后自动生效（热加载）"),
             "text/html; charset=utf-8")
 
+    def _render_prompts_page(self, name="", error="", notice="", changes=(),
+                             preview=None, preview_user="", draft=None):
+        """文案模板页（P12-G）。
+
+        `draft`：校验/自测失败时要把**用户刚打的字**画回去（不然一次失败白改）。
+        """
+        from admin import prompts_ui
+        from runtime import prompt_tiers as PT
+        from runtime import prompts as RP
+        rows = []
+        for s in PT.all_specs():
+            text = RP.load(s.key, RP.default_of(s.key))
+            rows.append({
+                "key": s.key, "tier": s.tier, "title": s.title, "note": s.note,
+                "source": RP.registry().get(s.key, {}).get("source", "code"),
+                "chars": len(text), "lines": text.count("\n") + 1,
+                "edited": text != RP.default_of(s.key),
+            })
+        selected = None
+        for s in PT.all_specs():
+            if s.key == name:
+                default = RP.default_of(s.key)
+                text = draft if draft is not None else RP.load(s.key, default)
+                selected = {
+                    "spec": s, "text": text, "default_len": len(default),
+                    "source": ("file" if draft is not None else
+                               RP.registry().get(s.key, {}).get("source", "code")),
+                }
+                break
+        st = _hot_status() or {}
+        status_line = ""
+        if st.get("at_text"):
+            status_line = "最近一次热加载 {}（来源 {}）—— 保存后约 1 秒生效，不用重启".format(
+                st["at_text"], st.get("source") or "?")
+        return prompts_ui.render_prompts(
+            rows, selected=selected, error=error, notice=notice, changes=changes,
+            preview=preview, preview_user=preview_user,
+            status_line=status_line, csrf=self._csrf(),
+            history=(prompts_ui.list_backups(name) if name else ()))
+
+    def _post_prompts(self):
+        """保存 / 预览一个文案模板。
+
+        **只写 `prompts/<KEY>.md` 一个文件**（+ 它的历史版本），不碰 config.json，
+        更不碰代码。校验（静态 + C3 自动契约自测）不过 ⇒ **一个字都不写**。
+        """
+        from admin import config_ui, prompts_ui
+        from runtime import hotload
+        from runtime import prompt_tiers as PT
+        form = self._read_form()
+        if form is None:
+            return self._send(400, self._render_prompts_page(error="请求格式不对"),
+                              "text/html; charset=utf-8")
+        if not self._csrf_ok(form):
+            return self._send(400, self._render_prompts_page(error="CSRF 校验失败，请重新打开页面"),
+                              "text/html; charset=utf-8")
+        key = (form.get("key") or [""])[0]
+        text = (form.get("text") or [""])[0].replace("\r\n", "\n").replace("\r", "\n")
+        user = ((form.get("user") or [""])[0] or "").strip()
+        action = (form.get("action") or [""])[0]
+        spec = PT.spec(key)
+        if spec is None:
+            return self._send(400, self._render_prompts_page(error="没有这个提示词：{}".format(key)),
+                              "text/html; charset=utf-8")
+        issues = PT.validate(key, text)
+        if action == "preview":
+            pv = PT.run_selftest(key, text=text, user=user or None)
+            pv["saved"] = False
+            print("[admin] 文案预览 {} 通过={}".format(key, pv.get("ok")), flush=True)
+            return self._send(200, self._render_prompts_page(
+                name=key, preview=pv, preview_user=user, draft=text),
+                "text/html; charset=utf-8")
+        if issues:
+            return self._send(400, self._render_prompts_page(
+                name=key, draft=text, preview_user=user,
+                error="校验没通过，一个字都没写：{}".format("；".join(issues))),
+                "text/html; charset=utf-8")
+        # C3（结构化输出）默认**保存即自测**：契约坏了不是难看，是功能报错
+        need_test = (action == "savetest") or (spec.tier == "C3" and action != "force")
+        pv = None
+        if need_test:
+            pv = PT.run_selftest(key, text=text, user=user or None)
+            if not pv.get("ok") and not pv.get("skipped"):
+                pv["saved"] = False
+                print("[admin] 文案保存被拒（自测不过）{}".format(key), flush=True)
+                return self._send(400, self._render_prompts_page(
+                    name=key, draft=text, preview_user=user, preview=pv,
+                    error=("自测没通过，**没有写入**。看下面的返回内容确认一下；"
+                           "确实要用这一版就点「强制保存」（会记在审计里）。")),
+                    "text/html; charset=utf-8")
+        old = ""
+        try:
+            p = prompts_ui.prompt_file(key)
+            old = p.read_text(encoding="utf-8") if p.is_file() else ""
+        except Exception:                                       # noqa: BLE001
+            old = ""
+        try:
+            prompts_ui.write_prompt(key, text)
+        except Exception as e:                                  # noqa: BLE001
+            return self._send(500, self._render_prompts_page(
+                name=key, draft=text, error="写入失败：{}".format(e)),
+                "text/html; charset=utf-8")
+        # 立刻请机器人进程重算 prompt（面板进程只写请求文件，见 runtime/hotload.py）
+        try:
+            hotload.request_reload()
+        except Exception:                                       # noqa: BLE001
+            pass
+        note = ("已保存 prompts/{}.md（{} 字{}{}）。约 1 秒自动生效（热加载，不用重启）。"
+                ).format(key, len(text),
+                         "，历史版本已留" if old else "",
+                         "，原内容 {} 字".format(len(old)) if old else "")
+        config_ui.audit_log(
+            __import__("runtime.config_store", fromlist=["audit_path"]).audit_path(),
+            _client_ip(self),
+            ["文案模板 {} 已更新（{} 字{}）".format(
+                key, len(text), "，自测通过" if (pv and pv.get("ok")) else "")])
+        print("[admin] 文案已保存 {} 来源 {}".format(key, _client_ip(self)), flush=True)
+        if pv is not None:
+            pv["saved"] = True
+        return self._send(200, self._render_prompts_page(
+            name=key, notice=note, preview=pv, preview_user=user),
+            "text/html; charset=utf-8")
+
+    def _post_prompts_reset(self):
+        """恢复代码默认值 = 删掉覆盖文件（先留一份历史）。"""
+        from admin import config_ui, prompts_ui
+        from runtime import hotload
+        form = self._read_form()
+        if form is None or not self._csrf_ok(form):
+            return self._send(400, self._render_prompts_page(error="CSRF 校验失败"),
+                              "text/html; charset=utf-8")
+        key = (form.get("key") or [""])[0]
+        try:
+            done = prompts_ui.reset_prompt(key)
+        except Exception as e:                                  # noqa: BLE001
+            return self._send(400, self._render_prompts_page(
+                name=key, error="恢复默认失败：{}".format(e)), "text/html; charset=utf-8")
+        try:
+            hotload.request_reload()
+        except Exception:                                       # noqa: BLE001
+            pass
+        note = ("已恢复代码默认值（写回 prompts/{}.md 的默认文本）".format(key) if done
+                else "本来就是代码默认值，没有改动")
+        config_ui.audit_log(
+            __import__("runtime.config_store", fromlist=["audit_path"]).audit_path(),
+            _client_ip(self), ["文案模板 {} {}".format(key, note)])
+        return self._send(200, self._render_prompts_page(name=key, notice=note),
+                          "text/html; charset=utf-8")
+
+    def _render_prompt_history(self, key, version):
+        from admin import prompts_ui
+        from runtime import prompt_tiers as PT
+        spec = PT.spec(key)
+        if spec is None:
+            return self._render_prompts_page(error="没有这个提示词：{}".format(key))
+        try:
+            old = (prompts_ui.backup_dir() / version).read_text(encoding="utf-8")
+        except Exception as e:                                  # noqa: BLE001
+            return self._render_prompts_page(name=key, error="打不开历史版本：{}".format(e))
+        p = prompts_ui.prompt_file(key)
+        cur = p.read_text(encoding="utf-8") if p.is_file() else ""
+        return prompts_ui.render_history(key, spec.title, version, old, cur,
+                                         csrf=self._csrf())
+
+    def _post_prompts_rollback(self):
+        from admin import config_ui, prompts_ui
+        from runtime import hotload
+        form = self._read_form()
+        if form is None or not self._csrf_ok(form):
+            return self._send(400, self._render_prompts_page(error="CSRF 校验失败"),
+                              "text/html; charset=utf-8")
+        key = (form.get("key") or [""])[0]
+        version = (form.get("version") or [""])[0]
+        try:
+            prompts_ui.rollback_prompt(key, version)
+        except Exception as e:                                  # noqa: BLE001
+            return self._send(400, self._render_prompts_page(
+                name=key, error="回滚失败：{}".format(e)), "text/html; charset=utf-8")
+        try:
+            hotload.request_reload()
+        except Exception:                                       # noqa: BLE001
+            pass
+        note = "已回滚到历史版本 {}。约 1 秒自动生效。".format(version)
+        config_ui.audit_log(
+            __import__("runtime.config_store", fromlist=["audit_path"]).audit_path(),
+            _client_ip(self), ["文案模板 {} 回滚到 {}".format(key, version)])
+        return self._send(200, self._render_prompts_page(name=key, notice=note),
+                          "text/html; charset=utf-8")
+
     def _post_rollback(self):
         from admin import config_ui
         from runtime import config_store
@@ -1736,6 +1944,18 @@ class Handler(BaseHTTPRequestHandler):
             if not self._require_session():
                 return
             return self._post_personas_reset()
+        if u.path == "/prompts":
+            if not self._require_session():
+                return
+            return self._post_prompts()
+        if u.path == "/prompts/reset":
+            if not self._require_session():
+                return
+            return self._post_prompts_reset()
+        if u.path == "/prompts/rollback":
+            if not self._require_session():
+                return
+            return self._post_prompts_rollback()
         if u.path == "/edit/reset":
             if not self._require_session():
                 return

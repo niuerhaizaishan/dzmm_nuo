@@ -241,12 +241,19 @@ try:
     if _st["files_on_disk"]:
         _files = {p.stem: p.read_text(encoding="utf-8")
                   for p in _rp.prompt_dir().glob("*.md")}
-        _miss = sorted(set(_decl) - set(_files))
-        _diff = [n for n in _decl if n in _files and _files[n] != _decl[n]]
-        _orph = sorted(set(_files) - set(_decl))
+        # P12-G：以**登记册**为准（40 个，含 runtime/memory 里的第 40 个），
+        # 不能只看 brains.py 里的 AST —— 那样新外置的那个会被当成孤儿文件。
+        import brains as _brains2  # noqa: F401
+        import runtime.memory as _mem2  # noqa: F401
+        _reg2 = _rp.registry()
+        _decl_all = {n: _rp.default_of(n) for n in _reg2}
+        _miss = sorted(set(_decl_all) - set(_files))
+        _diff = [n for n in _decl_all if n in _files and _files[n] != _decl_all[n]]
+        _orph = sorted(set(_files) - set(_decl_all))
         check("prompts/ 文件齐全（{} 个）".format(_st["files_on_disk"]),
               not _miss, _miss[:3])
-        check("文件与代码默认值一致", not _diff, _diff[:3])
+        check("文件与代码默认值一致（{} 个）".format(len(_decl_all)),
+              not _diff, _diff[:3])
         check("无孤儿文件", not _orph, _orph[:3])
     else:
         check("prompts/ 未挂载，全用代码默认值", True, "功能正常，只是不能用文件调 prompt")
@@ -541,6 +548,59 @@ try:
               for f in ("config_ui.py", "features_ui.py", "personas_ui.py")))
 except Exception as e:                                      # noqa: BLE001
     check("热加载自检", False, "{}: {}".format(type(e).__name__, e))
+
+print()
+print("文案模板（P12-G）:")
+try:
+    import brains as _brains3  # noqa: F401  触发 39 个 prompt 登记
+    import runtime.memory as _mem3  # noqa: F401  第 40 个
+    from runtime import prompt_tiers as _PT3
+    from runtime import prompts as _RP3
+
+    _reg = _RP3.registry()
+    check("40 个提示词都登记了（39 + MEMORY_FILTER）", len(_reg) == 40, len(_reg))
+    check("第 40 个已外置（不再是裸字面量）",
+          _reg.get("MEMORY_FILTER_PROMPT", {}).get("module") == "runtime.memory",
+          _reg.get("MEMORY_FILTER_PROMPT"))
+    _miss = sorted(set(_reg) - set(_PT3.SPECS))
+    check("每个提示词都有分档", not _miss, _miss)
+    _orphan = sorted(set(_PT3.SPECS) - set(_reg))
+    check("没有分档孤儿的提示词", not _orphan, _orphan)
+    _tc = _PT3.tier_counts()
+    check("分档数量 C1=23 / C2=11 / C3=6", _tc == {"C1": 23, "C2": 11, "C3": 6}, _tc)
+    _bad = {}
+    for _k in _PT3.SPECS:
+        _issues = _PT3.validate(_k, _RP3.load(_k, _RP3.default_of(_k)))
+        if _issues:
+            _bad[_k] = _issues
+    check("现网文本全部通过静态校验", not _bad, _bad)
+    _st3 = _RP3.stats()
+    check("文件与登记册一一对应（{} 个）".format(_st3["files_on_disk"]),
+          _st3["files_on_disk"] == _st3["total"] == 40, _st3)
+    _dsrc = (GATE_ROOT / "admin" / "dashboard.py").read_text(encoding="utf-8")
+    check("文案页的三条路由都在",
+          all(x in _dsrc for x in ("\"/prompts\"", "/prompts/reset", "/prompts/rollback")))
+    # 用 AST 找**真正的调用**（而不是在注释/文档里搜字符串 —— 第一次就误判了）
+    import ast as _ast3
+    _ptree = _ast3.parse((GATE_ROOT / "admin" / "prompts_ui.py").read_text(encoding="utf-8"))
+    _writes = []
+    for _node in _ast3.walk(_ptree):
+        if isinstance(_node, _ast3.Call):
+            _attr = getattr(_node.func, "attr", "") or ""
+            _mod = getattr(getattr(_node.func, "value", None), "id", "") or ""
+            if _attr == "save" and _mod in ("config_store", "cs"):
+                _writes.append(getattr(_node, "lineno", 0))
+            if _attr in ("write_text", "write_bytes") and _mod in ("config_store", "cs"):
+                _writes.append(getattr(_node, "lineno", 0))
+    check("文案页只写 prompts/（不碰 config.json）", not _writes, _writes)
+    # 契约校验器本身也跑一遍（用假回复，不花钱）
+    check("契约校验：JSON 数组", _PT3.check_contract("XP_PROMPT", '["a"]') == [])
+    check("契约校验：坏 JSON 被拒", bool(_PT3.check_contract("XP_PROMPT", "没有 JSON")))
+    check("契约校验：三选项", _PT3.check_contract(
+        "STORY_STEP_PROMPT", "【1】a【2】b【3】c") == [])
+    check("契约校验：缺选项被拒", bool(_PT3.check_contract("STORY_STEP_PROMPT", "没选项")))
+except Exception as e:                                      # noqa: BLE001
+    check("文案模板自检", False, "{}: {}".format(type(e).__name__, e))
 
 print()
 print("FAILED: {}".format(fails) if fails else "ALL CHECKS PASSED")

@@ -31,14 +31,27 @@ __all__ = [
 MEMORY_TRIGGERS = ["帮我记住", "帮我记", "记住", "记一下", "记着", "别忘了", "牢记"]
 
 
-MEMORY_FILTER_PROMPT = """你是记忆筛选助手。下面给你一个「问题」和若干条「记忆」，判断哪些记忆与问题相关、能帮助回答。
+# P12-G：这是**第 40 个提示词** —— 它原来写死在这里，是外置工程的漏网之鱼
+# （其它 39 个都在 prompts/ 下、能在页面上改，只有它改不了）。
+# 用法与 `brains._p()` 完全一致（`declare` = "我持有这个常量"）：
+# 文件存在且非空才覆盖，否则用代码默认值。
+# 中央登记册会记下"持有这个常量的模块是 runtime.memory"，
+# 所以热加载时它会被写回**这里**，而不是 brains。
+try:
+    from runtime.prompts import declare as _p
+except Exception:                                              # noqa: BLE001
+    def _p(name, default):
+        return default
+
+
+MEMORY_FILTER_PROMPT = _p("MEMORY_FILTER_PROMPT", """你是记忆筛选助手。下面给你一个「问题」和若干条「记忆」，判断哪些记忆与问题相关、能帮助回答。
 
 输出规则：
 - 只输出选中的记忆条目原文，每条一行
 - 不加序号、不加解释、不改写原文
 - 最多选 {limit} 条
 - 一条都不相关就输出：无
-"""
+""")
 
 
 def _extract_names(text: str) -> list:

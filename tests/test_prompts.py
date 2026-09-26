@@ -21,6 +21,7 @@ import brains  # noqa: E402
 import runtime.prompts as rp  # noqa: E402
 
 BRAINS_PY = ROOT / "brains.py"
+MEMORY_PY = ROOT / "runtime" / "memory.py"
 PROMPT_DIR = ROOT / "prompts"
 
 
@@ -55,32 +56,68 @@ def _prompt_files():
 
 ASSIGNS = _assignments()
 FILES = _prompt_files()
+# P12-G：登记册搬到了 runtime/prompts（谁调 load() 谁被登记），
+# 所以"第 40 个"（runtime/memory.py 里的 MEMORY_FILTER_PROMPT）也在里面。
+# ⚠️ 必须先 import 这两个模块，登记册才是满的。
+import runtime.memory  # noqa: E402,F401
+REG = rp.registry()
 
 
 # --------------------------------------------------------------- 结构与计数
 
 def test_brains_has_prompts():
-    assert len(ASSIGNS) == 39, "prompt 数量变了：{}".format(len(ASSIGNS))
+    assert len(ASSIGNS) == 39, "brains.py 里的 prompt 数量变了：{}".format(len(ASSIGNS))
+
+
+def test_registry_has_all_forty():
+    """39 个在 brains + 1 个在 runtime/memory = 40（第 40 个是 P12-G 补上的）。"""
+    assert len(REG) == 40, sorted(REG)
+    assert "MEMORY_FILTER_PROMPT" in REG
+    assert REG["MEMORY_FILTER_PROMPT"]["module"] == "runtime.memory"
+
+
+def test_registry_module_is_the_owner_not_a_later_reader():
+    """登记册记的必须是**持有常量的模块**（`declare`），读它的人不能改写登记。
+
+    页面/自测/闸门都会调 `load()` 读当前内容；如果读了就登记，
+    登记册会变成 `admin.dashboard` —— 热加载把常量写进后台进程，
+    机器人那边永远不更新（完全看不出来）。所以：
+      - `declare()` 登记（只有常量定义处调）；
+      - `load()` **只读不登记**。
+    """
+    for name in ("CMD_PROMPT", "MEMORY_FILTER_PROMPT"):
+        rp.load(name, rp.default_of(name))          # 模拟页面读一遍
+    got = rp.registry()
+    assert got["CMD_PROMPT"]["module"] == "brains"
+    assert got["MEMORY_FILTER_PROMPT"]["module"] == "runtime.memory"
+    rp.load("NOBODY_OWNS_THIS_PROMPT", "x")          # 读一个没人声明的名字
+    assert "NOBODY_OWNS_THIS_PROMPT" not in rp.registry(), \
+        "只有 declare() 才能登记"
+    assert rp.load("NOBODY_OWNS_THIS_PROMPT", "x") == "x"
 
 
 def test_runtime_shim_present():
     """runtime 包缺失时必须还能用代码默认值（本地单文件运行场景）。"""
     src = BRAINS_PY.read_text(encoding="utf-8")
-    assert "from runtime.prompts import load as _p" in src
+    assert "from runtime.prompts import declare as _p_load" in src
     assert "def _p(name, default):" in src
+    mem = MEMORY_PY.read_text(encoding="utf-8")
+    assert "from runtime.prompts import declare as _p" in mem, \
+        "第 40 个提示词也要走同一个机制（declare = 我持有这个常量）"
 
 
 def test_every_prompt_file_matches_code_default():
-    """带出去的文件必须与代码里的默认值**完全相同**。
+    """带出去的文件必须与代码里的默认值**完全相同**（40 个都要）。
 
     这条是本次迁移的核心断言：文件与默认值一旦漂移，说明有人只改了
     一边 —— 而线上到底用哪份取决于挂载成不成功，行为会变得不可预测。
     """
-    missing = sorted(set(ASSIGNS) - set(FILES))
+    missing = sorted(set(REG) - set(FILES))
     assert missing == [], "缺文件: {}".format(missing)
     diff = []
-    for name, default in ASSIGNS.items():
+    for name in REG:
         on_disk = FILES[name].read_text(encoding="utf-8")
+        default = rp.default_of(name)
         if on_disk != default:
             diff.append((name, len(default), len(on_disk)))
     assert diff == [], "文件与默认值不一致: {}".format(diff)
@@ -88,7 +125,7 @@ def test_every_prompt_file_matches_code_default():
 
 def test_no_orphan_prompt_files():
     """`prompts/` 里不该有没人读的文件（改了却毫无效果最容易骗人）。"""
-    orphan = sorted(set(FILES) - set(ASSIGNS))
+    orphan = sorted(set(FILES) - set(REG))
     assert orphan == [], "无对应常量的文件: {}".format(orphan)
 
 
@@ -103,25 +140,48 @@ def test_no_bare_prompt_literals_in_brains():
             assert isinstance(node.value, ast.Call), node.targets[0].id
 
 
+def test_memory_filter_prompt_is_externalised():
+    """第 40 个提示词（P12-G 补）：不许再是裸字面量。"""
+    tree = ast.parse(MEMORY_PY.read_text(encoding="utf-8"))
+    found = False
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "MEMORY_FILTER_PROMPT"):
+            found = True
+            assert isinstance(node.value, ast.Call), \
+                "MEMORY_FILTER_PROMPT 还是裸字面量（改它得改代码）"
+            assert node.value.func.id == "_p", node.value.func.id
+    assert found, "runtime/memory.py 里找不到 MEMORY_FILTER_PROMPT"
+
+
 # --------------------------------------------------------------- 运行期取值
 
 def test_brains_values_non_empty():
     for name in ASSIGNS:
         assert (getattr(brains, name) or "").strip(), name
+    import runtime.memory as _mem
+    assert (_mem.MEMORY_FILTER_PROMPT or "").strip()
 
 
 def test_brains_values_equal_files():
     """import 之后取到的值应当来自文件（本仓库文件齐全的前提下）。"""
     for name in ASSIGNS:
         assert getattr(brains, name) == FILES[name].read_text(encoding="utf-8"), name
+    import runtime.memory as _mem
+    assert _mem.MEMORY_FILTER_PROMPT == FILES[
+        "MEMORY_FILTER_PROMPT"].read_text(encoding="utf-8")
 
 
 def test_stats_reports_files(monkeypatch):
     monkeypatch.setattr(rp, "_sources", dict(rp.sources()))
     st = rp.stats()
     assert st["enabled"] is True
-    assert st["total"] == len(rp.sources())
+    # total = **登记册**里的提示词数（40）；
+    # `sources()` 里可能还有测试自己读过的临时名字，所以不能拿它当分母。
+    assert st["total"] == len(rp.registry()) == 40
     assert st["from_file"] + st["from_code"] == st["total"]
+    assert st["files_on_disk"] >= st["from_file"]
 
 
 # --------------------------------------------------------------- load() 语义

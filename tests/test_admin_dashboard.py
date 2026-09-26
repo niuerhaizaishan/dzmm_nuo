@@ -606,12 +606,25 @@ def test_prompts_section_reports_real_counts_not_zeros():
     这条是补出来的：原来只断言了"字段存在"，结果后台独立进程从不 import
     `brains`，`prompts.stats()` 永远返回 total=0 —— 页面上看着正常、其实毫无意义。
     生产镜像预检时才发现。字段存在 ≠ 数值有意义。
+
+    P12-G：第 40 个（`MEMORY_FILTER`，在 `runtime/memory.py`）外置之后是 **40 个**；
+    `section_prompts()` 会主动 import 所有持有常量的模块，所以后台进程也数得对。
     """
     d = dash.section_prompts()
-    assert d["total"] == 39, d
-    assert d["from_file"] == 39, d
-    assert d["files_on_disk"] == 39, d
+    assert d["total"] == 40, d
+    assert d["from_file"] == 40, d
+    assert d["files_on_disk"] == 40, d
     assert "warning" not in d, d
+
+
+def test_prompts_section_warns_when_files_and_registry_disagree(monkeypatch, dbdir):
+    """文件数 ≠ 登记册数时必须**显式告警**（静默漂移最难发现）。"""
+    import runtime.prompts as rp
+    monkeypatch.setattr(rp, "prompt_dir", lambda: dbdir / "empty-prompts")
+    (dbdir / "empty-prompts").mkdir(exist_ok=True)
+    d = dash.section_prompts()
+    assert d["files_on_disk"] == 0
+    assert "warning" in d, d
 
 
 def test_payload_is_strictly_json_serializable():

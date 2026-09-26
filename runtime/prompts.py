@@ -33,9 +33,16 @@ DEFAULT_DIR = _ROOT / "prompts"
 _sources: dict[str, str] = {}          # name -> "file" | "code"
 # name -> (path, mtime_ns, size, content)：文件没动就直接用缓存
 _cache: dict[str, tuple] = {}
+# **中央登记册**（P12-G）：name -> {"module": 常量所在的模块, "default": 代码默认值}
+# 谁调 `load()` 谁被登记（记的是调用方模块），于是
+#   - `brains` 里的 39 个、
+#   - `runtime/memory.py` 里的第 40 个（MEMORY_FILTER）
+# 都能被 `refresh()` 一起重算并写回**各自的**模块全局 ——
+# 不需要每个模块自己维护一份"默认值清单"（那份清单一定会漂移）。
+_REGISTRY: dict[str, dict] = {}
 
-__all__ = ["load", "stats", "sources", "prompt_dir", "DEFAULT_DIR",
-           "clear_cache", "cache_stats"]
+__all__ = ["load", "declare", "stats", "sources", "prompt_dir", "DEFAULT_DIR",
+           "clear_cache", "cache_stats", "registry", "default_of", "refresh"]
 
 
 def prompt_dir() -> Path:
@@ -60,17 +67,26 @@ def cache_stats() -> dict:
 _hits = [0, 0]
 
 
-def load(name: str, default: str) -> str:
-    """返回该 prompt 的实际内容。
+def registry() -> dict:
+    """登记册：每个 prompt 的代码默认值、所在模块、当前来源。"""
+    out = {}
+    for name, rec in _REGISTRY.items():
+        out[name] = {
+            "name": name,
+            "module": rec.get("module") or "",
+            "default": rec.get("default") or "",
+            "default_len": len(rec.get("default") or ""),
+            "source": _sources.get(name, "code"),
+        }
+    return out
 
-    `prompts/<name>.md` 存在且**非空**则用它；否则用 `default`（代码里的字面量）。
 
-    注意：返回的是文件的**原始内容**（不做 strip）—— 字面量可能有意义的
-    首尾换行，strip 会改变 prompt。
+def default_of(name: str) -> str:
+    return ((_REGISTRY.get(name) or {}).get("default")) or ""
 
-    缓存按 **(路径, mtime, 大小)** 判定：content 变了就重读。
-    文件"不存在"也会被缓存（mtime=-1），一旦有人创建它，mtime 就变了。
-    """
+
+def _read(name: str, default: str) -> str:
+    """真正取值（读文件 / 用默认）——**不登记**，供 `refresh()` 复用。"""
     if not _enabled():
         _sources[name] = "code"
         return default
@@ -105,6 +121,66 @@ def load(name: str, default: str) -> str:
     return default
 
 
+def declare(name: str, default: str) -> str:
+    """**声明**"这个模块持有这个 prompt 常量"（只有常量定义处该调它）。
+
+    ```python
+    CMD_PROMPT = _p("CMD_PROMPT", \"\"\"…默认值…\"\"\")     # brains 里的 _p = declare
+    ```
+
+    ⚠️ 为什么"声明"与"读取"必须分开（P12-G 踩过）：
+    页面、自测、闸门都要**读**当前内容，如果它们也顺手登记，
+    登记册就会变成"最后一个读者"（`admin.dashboard`），于是热加载把常量
+    写进后台进程、机器人那边永远不更新 —— 而且完全看不出来。
+    所以 `load()` 只读不登记。
+    """
+    name = str(name)
+    try:
+        import sys as _sys
+        _mod = _sys._getframe(1).f_globals.get("__name__", "")
+    except Exception:                                          # noqa: BLE001
+        _mod = ""
+    _REGISTRY[name] = {"module": _mod, "default": default}
+    return _read(name, default)
+
+
+def load(name: str, default: str) -> str:
+    """**读取**该 prompt 的实际内容（不登记）。
+
+    `prompts/<name>.md` 存在且**非空**则用它；否则用 `default`（代码里的字面量）。
+
+    注意：返回的是文件的**原始内容**（不做 strip）—— 字面量可能有意义的
+    首尾换行，strip 会改变 prompt。
+
+    缓存按 **(路径, mtime, 大小)** 判定：content 变了就重读。
+    文件"不存在"也会被缓存（mtime=-1），一旦有人创建它，mtime 就变了。
+    """
+    return _read(str(name), default)
+
+
+def refresh() -> list:
+    """把所有已登记的 prompt 重算一遍并**写回各自的模块**（P12-G 热加载）。
+
+    返回内容变了的 prompt 名（自证/日志用）。
+    """
+    import sys
+    changed = []
+    for name, rec in list(_REGISTRY.items()):
+        mod = sys.modules.get(rec.get("module") or "")
+        # 只写回"确实持有这个常量"的模块：`hasattr` 这一条挡住了两类事故 ——
+        # 登记册被污染（记成了读者模块）、有人把常量改名后忘了改登记册。
+        if mod is None or not hasattr(mod, name):
+            continue
+        try:
+            new = _read(name, rec.get("default") or "")
+        except Exception:                                      # noqa: BLE001
+            continue
+        if getattr(mod, name) != new:
+            changed.append(name)
+            setattr(mod, name, new)
+    return sorted(changed)
+
+
 def sources() -> dict:
     """每个 prompt 实际来自哪里：`"file"` 或 `"code"`。"""
     return dict(_sources)
@@ -116,8 +192,8 @@ def stats() -> dict:
     return {
         "dir": str(d),
         "enabled": _enabled(),
-        "total": len(_sources),
+        "total": len(_REGISTRY),
         "from_file": from_file,
-        "from_code": len(_sources) - from_file,
+        "from_code": len(_REGISTRY) - from_file,
         "files_on_disk": len(list(d.glob("*.md"))) if d.is_dir() else 0,
     }
