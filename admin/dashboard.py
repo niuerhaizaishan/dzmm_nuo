@@ -784,6 +784,7 @@ def render_html(data):
             "<span class='dim'>只读</span>"
             "<span style='margin-left:auto'>"
             "<a href='/edit' style='color:#7aa2f7'>⚙ 配置</a> · "
+            "<a href='/features' style='color:#7aa2f7'>🧩 功能与参数</a> · "
             "<a href='/api/summary' style='color:#7aa2f7'>JSON</a> · "
             "<a href='/' style='color:#7aa2f7'>刷新</a> · "
             "<a href='/logout' style='color:#7aa2f7'>退出</a>"
@@ -1064,9 +1065,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         # 没有外链资源；顺手把 Referer 掐掉
         self.send_header("Referrer-Policy", "no-referrer")
-        # 纯自包含页面（无 CDN、无内联 JS），可以直接上严格 CSP
+        # 自包含页面：无 CDN、无内联脚本；脚本只允许**同源文件**（P12-D 起）。
+        # script-src 'self' 是 P12-D 放开的（矩阵页没有 JS 会很难用），
+        # 但内联脚本、CDN、eval 仍然全禁 —— 这是 XSS 的主要入口。
         self.send_header("Content-Security-Policy",
-                         "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
+                         "default-src 'none'; style-src 'unsafe-inline'; "
+                         "script-src 'self'; form-action 'self'; "
+                         "frame-ancestors 'none'; base-uri 'none'")
+        # 老浏览器兜底（CSP 的 frame-ancestors 已经覆盖现代浏览器）
+        self.send_header("X-Frame-Options", "DENY")
         for k, v in extra_headers:
             self.send_header(k, v)
         self.end_headers()
@@ -1078,9 +1085,33 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Location", location)
         self.send_header("Content-Length", "0")
         self.send_header("Cache-Control", "no-store")
+        # 重定向响应也要带安全头（原来漏了 —— 303 是最常见的一跳）
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
         for k, v in extra_headers:
             self.send_header(k, v)
         self.end_headers()
+
+    # 静态资源**白名单**：只服务这几个文件，不做目录遍历。
+    _STATIC = {
+        "/static/app.js": ("application/javascript; charset=utf-8", "app.js"),
+    }
+
+    def _send_static(self, path):
+        got = self._STATIC.get(path)
+        if not got:
+            self._send(404, "not found\n", "text/plain; charset=utf-8")
+            return
+        ctype, name = got
+        p = Path(__file__).resolve().parent / "static" / name
+        try:
+            body = p.read_bytes()
+        except Exception as e:                                  # noqa: BLE001
+            self._send(404, "static missing: {}\n".format(e),
+                       "text/plain; charset=utf-8")
+            return
+        self._send(200, body, ctype)
 
     def _require_session(self):
         """没登录就渲染登录页并返回 False。
@@ -1114,6 +1145,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path in ("/edit", "/config"):
             self._send(200, self._render_edit_page(), "text/html; charset=utf-8")
+            return
+        if u.path == "/features":
+            self._send(200, self._render_features_page(),
+                       "text/html; charset=utf-8")
+            return
+        if u.path.startswith("/static/"):
+            self._send_static(u.path)
             return
         if u.path == "/edit/backup":
             self._send(200, self._render_backup_page(u.query),
@@ -1196,6 +1234,23 @@ class Handler(BaseHTTPRequestHandler):
             return self._render_edit_page(error="打不开备份：{}".format(e))
         return config_ui.render_backup_detail(
             name, old_raw, cur_raw, old_text, cur_text, self._csrf())
+
+    def _render_features_page(self, error="", notice="", changes=(), reset_note=""):
+        """功能与参数页（P12-D）。"""
+        from admin import config_ui, features_ui
+        from runtime import config_store, features as feats, tuning as tune
+        defaults = _config_defaults()
+        try:
+            raw = _raw_from_store(defaults)
+        except Exception as e:                                  # noqa: BLE001
+            return "<pre>读配置失败：{}</pre>".format(_e(e))
+        pending = config_ui.pending_change(
+            config_store.config_path(), section_process().get("bot_started_epoch"))
+        return features_ui.render_features(
+            raw, feats.registry(), tune.registry(),
+            tuple(tune.SCOPE_DEFAULTS.items()), feats.CATEGORIES,
+            feats, tune, error=error, notice=notice, changes=changes,
+            csrf=self._csrf(), pending=pending, reset_note=reset_note)
 
     def _render_edit_page(self, error="", notice="", raw=None, changes=()):
         from admin import config_ui
@@ -1282,6 +1337,87 @@ class Handler(BaseHTTPRequestHandler):
             changes=summary),
             "text/html; charset=utf-8")
 
+    def _post_features(self):
+        """保存功能/参数/按群集合三节。
+
+        **只覆盖这三节**（不碰 groups / bots）：所以这一页的表单再旧，
+        也不可能删掉群或 Bot —— 爆炸半径比 `/edit` 小一截。
+        """
+        from admin import config_ui, features_ui
+        from runtime import config_store, features as feats, tuning as tune
+        form = self._read_form()
+        if form is None:
+            return self._send(400, self._render_features_page(error="请求格式不对"),
+                              "text/html; charset=utf-8")
+        if not self._csrf_ok(form):
+            print("[admin] 功能保存被拒：CSRF token 不匹配", flush=True)
+            return self._send(400, self._render_features_page(error="CSRF 校验失败，请重新打开页面"),
+                              "text/html; charset=utf-8")
+        defaults = _config_defaults()
+        old = _raw_from_store(defaults)
+        parsed = features_ui.parse_features(
+            form, old, feats.registry(), tuple(tune.SCOPE_DEFAULTS.items()),
+            tune.registry())
+        summary = features_ui.features_diff(
+            old, parsed, feats.registry(), tuple(tune.SCOPE_DEFAULTS.items()))
+        if not summary:
+            return self._send(200, self._render_features_page(notice="没有检测到改动"),
+                              "text/html; charset=utf-8")
+        # 合成新配置：三节 + 每个群的覆盖；groups/bots 原样保留
+        new = json.loads(json.dumps(old, ensure_ascii=False))
+        new["features"] = parsed["features"]
+        new["tuning"] = parsed["tuning"]
+        new["scopes"] = parsed["scopes"]
+        for g in new.get("groups") or []:
+            cid = g.get("cid")
+            gf = parsed["group_features"].get(cid) or {}
+            gt = parsed["group_tuning"].get(cid) or {}
+            if gf:
+                g["features"] = gf
+            else:
+                g.pop("features", None)
+            if gt:
+                g["tuning"] = gt
+            else:
+                g.pop("tuning", None)
+        try:
+            config_store.save(new, defaults)      # 校验不过一个字都不写
+        except Exception as e:                    # noqa: BLE001
+            print("[admin] 功能保存被拒：{}".format(str(e)[:120]), flush=True)
+            return self._send(400, self._render_features_page(
+                error="配置不合法，未写入：{}".format(e)),
+                "text/html; charset=utf-8")
+        config_ui.audit_log(config_store.audit_path(), _client_ip(self), summary)
+        print("[admin] 功能/参数已保存 来源 {} 改动 {} 项".format(
+            _client_ip(self), len(summary)), flush=True)
+        return self._send(200, self._render_features_page(
+            notice="已保存（{} 项改动）。**需要重启容器才生效**".format(len(summary)),
+            changes=summary), "text/html; charset=utf-8")
+
+    def _post_reset(self):
+        """强制复位：清掉某个功能在这个群的「进行中」状态（**不改配置**）。"""
+        from admin import config_ui
+        from runtime import features as feats
+        form = self._read_form()
+        if form is None or not self._csrf_ok(form):
+            return self._send(400, self._render_features_page(error="CSRF 校验失败"),
+                              "text/html; charset=utf-8")
+        cid = (form.get("cid") or [""])[0]
+        key = (form.get("key") or [""])[0]
+        try:
+            done = feats.reset_feature(cid, key)
+        except Exception as e:                                  # noqa: BLE001
+            return self._send(400, self._render_features_page(
+                error="复位失败：{}".format(e)), "text/html; charset=utf-8")
+        note = ("已复位 {key} @ {cid}：{done}".format(
+            key=key, cid=(cid or "")[:8],
+            done="、".join(done) if done else "本来就没有进行中的状态"))
+        print("[admin] " + note + " 来源 " + _client_ip(self), flush=True)
+        config_ui.audit_log(__import__("runtime.config_store", fromlist=["audit_path"]).audit_path(),
+                            _client_ip(self), [note])
+        return self._send(200, self._render_features_page(reset_note=note),
+                          "text/html; charset=utf-8")
+
     def _post_rollback(self):
         from admin import config_ui
         from runtime import config_store
@@ -1323,6 +1459,14 @@ class Handler(BaseHTTPRequestHandler):
             if not self._require_session():
                 return
             return self._post_rollback()
+        if u.path == "/features":
+            if not self._require_session():
+                return
+            return self._post_features()
+        if u.path == "/edit/reset":
+            if not self._require_session():
+                return
+            return self._post_reset()
         if u.path == "/edit":
             if not self._require_session():
                 return

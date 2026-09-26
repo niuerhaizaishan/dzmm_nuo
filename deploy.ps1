@@ -117,23 +117,37 @@ function Get-CodeFiles {
         # It must ship; other .md files stay local (they are notes, and the
         # repo root has plenty of them).
         $isPrompt = $rel -like 'prompts\*'
-        ($_.Name -match '\.(py|sh|yml|yaml|service)$') -or
+        # js/css: the admin UI is no longer JS-free (P12-D added
+        # admin/static/app.js). Forgetting them here means the page loads but
+        # the script 404s -- and, worse, it fails silently (the page still works
+        # without JS, so nobody notices the feature is missing).
+        ($_.Name -match '\.(py|sh|yml|yaml|service|js|css)$') -or
         ($isPrompt -and ($_.Name -match '\.md$')) -or
         ($_.Name -in @('Dockerfile', 'requirements.txt'))
     }
 }
 
+# SSH cipher is PINNED on purpose (2026-09-26):
+#   The path to this host corrupts some SSH cipher/MAC combinations.
+#   Symptoms seen: the handshake hangs right after KEXINIT ("Connection to
+#   ... port 22: Connection timed out" although the TCP port is open and the
+#   web UI answers 200), and with aes256-ctr it fails with
+#   "Corrupted MAC on input". aes128-gcm@openssh.com (an AEAD cipher) works
+#   reliably. Without this pin, roughly every other deploy attempt died in
+#   the handshake -- which looked like "the server is down" but was not.
+$SshCipherOpts = @('-o', 'Ciphers=aes128-gcm@openssh.com')
+
 function Invoke-Ssh([string]$cmd) {
     # ServerAlive* : a long build/extract over one connection must not be dropped
     # as an idle socket.
-    ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 `
-        -o ServerAliveCountMax=4 $Remote "$cmd 2>&1"
+    ssh @SshCipherOpts -o BatchMode=yes -o ConnectTimeout=15 `
+        -o ServerAliveInterval=15 -o ServerAliveCountMax=4 $Remote "$cmd 2>&1"
     if ($LASTEXITCODE -ne 0) { throw "SSH failed: $cmd" }
 }
 
 function Invoke-Scp([string]$src, [string]$dst, [switch]$Recurse) {
     $scpArgs = @('-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15',
-                 '-o', 'ServerAliveCountMax=4')
+                 '-o', 'ServerAliveCountMax=4') + $SshCipherOpts
     if ($Recurse) { $scpArgs += '-r' }
     scp @scpArgs $src $dst
     if ($LASTEXITCODE -ne 0) { throw "SCP failed: $src -> $dst" }

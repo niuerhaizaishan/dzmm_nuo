@@ -196,6 +196,7 @@ def render_edit(cfg_raw, error="", notice="", csrf="", pending=False,
             "<header><h1>小小糯 · 配置</h1>"
             "<span class='dim'>写入 config.json（校验不过一个字都不会写）</span>"
             "<span style='margin-left:auto'><a href='/'>← 回只读面板</a> · "
+            "<a href='/features'>🧩 功能与参数</a> · "
             "<a href='/logout'>退出</a></span></header><main>"
             "{msg}"
             "<form method=post action='/edit'>"
