@@ -1,5 +1,6 @@
 """AI reply generation via DeepSeek API."""
 import json, os, random, requests
+from runtime.tuning import get as _tune          # P12-B：可调参数（唯一读口）
 
 # P8 第 3 步：prompt 可被 prompts/<NAME>.md 覆盖（见 runtime/prompts.py）。
 # runtime 包缺失时退化为"永远用代码里的默认值"，绝不让 prompt 变空。
@@ -954,8 +955,8 @@ def generate_perf_novel_chunked(text: str, api_key: str = DEFAULT_KEY) -> str:
     if lines and lines[0].startswith("【被调教方"):
         header = lines[0]
         lines = lines[1:]
-    MAX_CHUNKS = 12  # 硬上限：单次公演最多 12 次模型调用（约 10~20 分钟）
-    N = 5  # 每段最多 5 条消息（更小分段，避免单段 token 不足导致省略细节）
+    MAX_CHUNKS = int(_tune("perf.novel_max_chunks"))  # 硬上限：单次公演最多 12 次模型调用（约 10~20 分钟）
+    N = int(_tune("perf.novel_chunk"))  # 每段最多 5 条消息（更小分段，避免单段 token 不足导致省略细节）
     if len(lines) > N * MAX_CHUNKS:
         N = (len(lines) + MAX_CHUNKS - 1) // MAX_CHUNKS  # 加宽每块，压到上限内
     if len(lines) <= N:

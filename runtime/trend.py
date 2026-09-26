@@ -14,6 +14,7 @@ from runtime.fortune import _fortune_calc
 from runtime.identity import get_full_name, get_name
 from runtime.obs import log
 import state_store
+from runtime.tuning import (get as _tune, in_scope as _tune_scope)  # P12-B：可调参数 + 按群集合
 
 __all__ = [
     "is_trend_cmd", "is_trend_board_cmd", "_trend_days", "_trend_spark",
@@ -138,7 +139,7 @@ def _md_cn(date_str: str) -> str:
 
 async def week_trend(cid: str, uid: str, days: int = TREND_DEFAULT_DAYS) -> str:
     """过去 N 天的真实运势趋势卡（只显示真实记录，没算的留空）."""
-    if cid not in TREND_CIDS:
+    if not _tune_scope("trend", cid):
         return ""
     pairs = _trend_days(cid, uid, days)
     st = _trend_stats(pairs)
@@ -203,7 +204,7 @@ async def week_trend(cid: str, uid: str, days: int = TREND_DEFAULT_DAYS) -> str:
 
 async def week_trend_board(cid: str, days: int = TREND_DEFAULT_DAYS) -> str:
     """群运势榜：过去 N 天谁的平均分最高（只统计有记录的天，至少 2 天才上榜）."""
-    if cid not in TREND_CIDS:
+    if not _tune_scope("trend", cid):
         return ""
     fh = (state_store.load_state().get(cid) or {}).get("fortune_history") or {}
     today = datetime.now()

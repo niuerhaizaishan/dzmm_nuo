@@ -14,6 +14,7 @@ from runtime.ctx import PRIMARY_CID
 from runtime.identity import _load_member_names, get_full_name, get_name, is_self
 from runtime.obs import log
 import state_store
+from runtime.tuning import (get as _tune, in_scope as _tune_scope)  # P12-B：可调参数 + 按群集合
 
 __all__ = [
     "is_recap_cmd", "_recap_intent", "_recap_window", "_day0", "_msg_ts",
@@ -62,11 +63,11 @@ def _recap_window(cid: str, uid: str, text: str):
           "八": 8, "九": 9, "十": 10}
     m = re.search(r"(\d+)\s*(小时|钟头)", t)
     if m:
-        h = min(int(m.group(1)), RECAP_MAX_HOURS)
+        h = min(int(m.group(1)), int(_tune("recap.max_hours", cid)))
         return (now - h * 3600, now, "最近 " + str(h) + " 小时")
     m = re.search(r"([一两二三四五六七八九十])\s*(小时|钟头)", t)
     if m:
-        h = min(cn.get(m.group(1), 1), RECAP_MAX_HOURS)
+        h = min(cn.get(m.group(1), 1), int(_tune("recap.max_hours", cid)))
         return (now - h * 3600, now, "最近 " + str(h) + " 小时")
     if "半天" in t:
         return (now - 12 * 3600, now, "最近半天")
@@ -141,7 +142,7 @@ def _recap_window(cid: str, uid: str, text: str):
     prev = (gs.get("prev_speak") or {}).get(uid)
     last = (gs.get("last_speak") or {}).get(uid)
     since = prev or last
-    if since and now - since <= RECAP_MAX_HOURS * 3600:
+    if since and now - since <= _tune("recap.max_hours", cid) * 3600:
         return (since, now, "")
     return (now - 6 * 3600, now, "最近 6 小时")
 
@@ -204,7 +205,7 @@ def _recap_transcript(msgs: list) -> tuple:
 
 async def recap_absent(cid: str, uid: str, text: str = "") -> str:
     """「我不在的时候群里发生了什么」——返回 ≤10 行的回顾."""
-    if cid not in RECAP_CIDS:
+    if not _tune_scope("recap", cid):
         return ""
     gs = (state_store.load_state().get(cid) or {})
     since, until, wlabel = _recap_window(cid, uid, text)
@@ -213,7 +214,8 @@ async def recap_absent(cid: str, uid: str, text: str = "") -> str:
     cd = gs.get("recap_ts") or {}
     last = cd.get(uid) or {}
     if isinstance(last, dict) and last.get("key") == wkey \
-            and time.time() - float(last.get("ts") or 0) < RECAP_COOLDOWN:
+            and time.time() - float(last.get("ts") or 0) \
+            < _tune("recap.cooldown", cid):
         return "这一段刚给你说完呢～换个时间段问（比如「昨天」「上午」），或者过一会儿再问嘛～"
     try:
         since_utc = datetime.utcfromtimestamp(since).strftime("%Y-%m-%d %H:%M:%S")
@@ -235,7 +237,7 @@ async def recap_absent(cid: str, uid: str, text: str = "") -> str:
     total = len(msgs)
     if total == 0:
         return "（翻了翻小本子）" + (wlabel or "你不在的这段时间") + "群里一条消息都没有，安静得像没人～"
-    kept = msgs[-RECAP_MAX_MSGS:]
+    kept = msgs[-int(_tune("recap.max_msgs", cid)):]
     transcript, n_shown = _recap_transcript(kept)
     hits, who, sample = _recap_mentions(msgs, uid)
     end_show = until if (until and until < time.time() - 60) else time.time()

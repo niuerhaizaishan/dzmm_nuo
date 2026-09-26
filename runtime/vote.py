@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 
 from brains import generate_vote_options
 from dzmm import get_messages_all
+from runtime.tuning import get as _tune   # P12-B：可调参数（唯一读口）
 from runtime.group_state import _get_vote_state, _set_vote_state
 from runtime.heat import HEAT_VOTE_STARTER, HEAT_VOTE_VOTER, _add_heat
 from runtime.identity import get_name, is_self
@@ -102,7 +103,8 @@ def start_vote(cid: str, cmd: str, sender_uid: str) -> str:
         "options": options,
         "votes": {},
         "starter": sender_uid,
-        "deadline": time.time() + (deadline_secs or VOTE_DEFAULT_SECONDS),
+        "deadline": time.time() + (deadline_secs
+                                       or _tune("vote.default_seconds", cid)),
         "last_remind": time.time(),
     })
     lines = ["📊 投票：" + title]
@@ -152,10 +154,10 @@ def _finish_vote(cid: str) -> str:
         lines.append("【" + str(i) + "】" + opt + "　" + str(n) + "票(" + str(pct) + "%)　" + voter_str)
     starter = vote.get("starter", "")
     if starter and not is_self(starter):
-        _add_heat(cid, starter, HEAT_VOTE_STARTER)
+        _add_heat(cid, starter, _tune("heat.vote_starter", cid))
     for uid in votes.keys():
         if uid and not is_self(uid) and uid != starter:
-            _add_heat(cid, uid, HEAT_VOTE_VOTER)
+            _add_heat(cid, uid, _tune("heat.vote_voter", cid))
     _set_vote_state(cid, {})
     lines.append("🎉 结算：发起人 +8，投票的人各 +5")
     return "\n".join(lines)

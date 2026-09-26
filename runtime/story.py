@@ -14,6 +14,7 @@ import random
 
 from brains import generate_story_end, generate_story_start, generate_story_step
 from dzmm import get_messages_all
+from runtime.tuning import get as _tune   # P12-B：可调参数（唯一读口）
 from runtime.group_state import _get_story_state, _set_story_state
 from runtime.heat import HEAT_STORY_PROTAGONIST, HEAT_STORY_VOTER, _add_heat
 from runtime.identity import get_full_name, is_self
@@ -89,18 +90,19 @@ def start_story(cid: str, cmd: str, sender_uid: str) -> str:
         "active": True,
         "phase": "等投票",
         "round": 1,
-        "max_round": STORY_MAX_ROUND,
+        "max_round": _tune("story.max_round", cid),
         "protagonist_uid": protagonist_uid,
         "protagonist": protagonist,
         "custom": custom,
         "votes": {},
-        "vote_deadline": time.time() + STORY_VOTE_SECONDS,
+        "vote_deadline": time.time() + _tune("story.vote_seconds", cid),
         "remind_30": False,
         "remind_10": False,
         "history": [opening],
     })
     header = "🎬 剧情开始！女主：" + protagonist
-    footer = "（" + str(STORY_VOTE_SECONDS) + "秒内 /选 1/2/3 或 /1/2/3 投票，可改票～）"
+    footer = "（" + str(int(_tune("story.vote_seconds", cid))) \
+            + "秒内 /选 1/2/3 或 /1/2/3 投票，可改票～）"
     return header + "\n" + opening + "\n" + footer
 
 
@@ -138,9 +140,9 @@ def _finish_story(cid: str) -> str:
     protagonist = story.get("protagonist", "")
     for uid in votes.keys():
         if uid and not is_self(uid):
-            _add_heat(cid, uid, HEAT_STORY_VOTER)
+            _add_heat(cid, uid, _tune("heat.story_voter", cid))
     if protagonist_uid and not is_self(protagonist_uid):
-        _add_heat(cid, protagonist_uid, HEAT_STORY_PROTAGONIST)
+        _add_heat(cid, protagonist_uid, _tune("heat.story_protagonist", cid))
     _set_story_state(cid, {})
     lines = ["🎬 剧情结束！女主：" + protagonist]
     if ending:
@@ -156,7 +158,7 @@ def _advance_story(cid: str) -> str:
     if not story.get("active"):
         return ""
     round_no = story.get("round", 1)
-    max_round = story.get("max_round", STORY_MAX_ROUND)
+    max_round = story.get("max_round") or _tune("story.max_round", cid)
     history = story.get("history") or []
     choice = _story_vote_result(cid)
     choice_label = "选项" + choice
@@ -176,11 +178,12 @@ def _advance_story(cid: str) -> str:
     story["history"] = history + [next_part]
     story["round"] = round_no + 1
     story["votes"] = {}
-    story["vote_deadline"] = time.time() + STORY_VOTE_SECONDS
+    story["vote_deadline"] = time.time() + _tune("story.vote_seconds", cid)
     story["remind_30"] = False
     story["remind_10"] = False
     _set_story_state(cid, story)
-    footer = "（" + str(STORY_VOTE_SECONDS) + "秒内 /选 1/2/3 或 /1/2/3 投票，可改票～）"
+    footer = "（" + str(int(_tune("story.vote_seconds", cid))) \
+            + "秒内 /选 1/2/3 或 /1/2/3 投票，可改票～）"
     return next_part + "\n" + footer
 
 

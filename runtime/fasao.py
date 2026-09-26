@@ -15,6 +15,7 @@ from brains import (generate_heat_fasao, generate_scene, generate_scene_continue
                     generate_scene_end, generate_scene_rewrite)
 from dzmm import get_messages_all
 from profiles import get_profile
+from runtime.tuning import get as _tune   # P12-B：可调参数（唯一读口）
 from runtime import ctx
 from runtime.group_state import (_get_fasao_state, _set_fasao_state,
                                  _set_last_action)
@@ -94,7 +95,7 @@ def fasao(cmd: str) -> str:
     text = (text or "").strip().replace("🤖", "")
     if not text:
         text = full + "，发个骚给主人看看～"
-    _add_heat(cid, uid, HEAT_FASAO_PICK)
+    _add_heat(cid, uid, _tune("heat.fasao_pick", cid))
     return "🎯 点中 " + full + "！\n" + text
 
 
@@ -139,7 +140,8 @@ def scene(cmd: str) -> str:
         selected_uid = _random_member_uid()
         full = get_full_name(selected_uid) if selected_uid else "姐姐"
     if selected_uid:
-        _add_heat(ctx.get_active_cid(), selected_uid, HEAT_SCENE_PICK)
+        _cid = ctx.get_active_cid()
+        _add_heat(_cid, selected_uid, _tune("heat.scene_pick", _cid))
     glabel = _gender_label(selected_uid) if selected_uid else "未知"
     # 读取目标 XP + 资料（签名/简介/画像，供增加上下文）
     xp = []
@@ -209,7 +211,7 @@ def _check_fasao_timeout(cid: str):
     if not fs.get("active"):
         return None
     last_ts = fs.get("last_ts") or 0
-    if last_ts and time.time() - last_ts > FASAO_TIMEOUT:
+    if last_ts and time.time() - last_ts > _tune("scene.timeout", cid):
         log("⏱️ [" + cid[:8] + "] 发骚超时自动结束")
         return end_fasao(cid)
     return None

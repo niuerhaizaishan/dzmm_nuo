@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 
 from brains import generate_diaojiao, generate_diaojiao_end
 from profiles import get_profile
+from runtime.tuning import get as _tune   # P12-B：可调参数（唯一读口）
 from runtime import ctx
 from runtime.fasao import _parse_scene_target
 from runtime.features import on as _feat_on     # P12-A：功能开关（唯一判定点）
@@ -101,7 +102,7 @@ def _check_diaojiao(cid: str, pending: list) -> str:
     target_uid = dj.get("target_uid")
     now = time.time()
     # 5分钟超时结束
-    if now - dj.get("last_activity", now) > 300:
+    if now - dj.get("last_activity", now) > _tune("diaojiao.timeout", cid):
         end_text = _dj_end_text(target_uid, dj)
         _set_dj_state(cid, {"active": False})
         msg = "⏱️ 调教结束啦（5分钟没动静）～"
@@ -120,14 +121,14 @@ def _check_diaojiao(cid: str, pending: list) -> str:
                     dj["last_activity"] = now
                     dj["round"] = dj.get("round", 0) + 1
                     _set_dj_state(cid, dj)
-                    _add_heat(cid, target_uid, HEAT_DIAOJIAO_ROUND)  # 被调教一轮
+                    _add_heat(cid, target_uid, _tune("heat.diaojiao_round", cid))  # 被调教一轮
                     return "目标回应啦～谁想发下一条命令？发 /命令 xxx 或直接 /xxx 都行（目标自己也能发哦～）30秒没人发我就自己来～"
         return None
     if phase == "等命令":
         # 30秒冷场 → 催一句 + 自编命令
         # P12-A：`diaojiao_idle` 关掉时**不做自编**：状态推进到"等回应"照旧
         # （否则这一局会永远卡在"等命令"），只是不再自动生成新命令。
-        if now - dj.get("ask_at", now) > 30:
+        if now - dj.get("ask_at", now) > _tune("diaojiao.idle_seconds", cid):
             dj["phase"] = "等回应"
             dj["last_activity"] = now
             dj["round"] = dj.get("round", 0) + 1

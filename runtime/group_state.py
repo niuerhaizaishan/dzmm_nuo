@@ -11,6 +11,7 @@
 import time
 
 import state_store
+from runtime.tuning import get as _tune   # P12-B：可调参数
 
 
 __all__ = [
@@ -85,7 +86,8 @@ def _remember(cid: str, text: str, from_name: str) -> None:
         mem = state_store.group_get(cid, "memory", []) or []
         mem.append({"text": text, "from": from_name,
                     "at": time.strftime("%Y-%m-%d %H:%M")})
-        state_store.group_set(cid, "memory", mem[-MEMORY_MAX:])
+        state_store.group_set(cid, "memory",
+                             mem[-int(_tune("memory.max", cid)):])
     except Exception:
         pass
 

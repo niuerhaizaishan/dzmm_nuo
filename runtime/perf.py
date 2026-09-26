@@ -27,6 +27,7 @@ from runtime.novel import _extract_novel_title, _novel_save_path
 from runtime.obs import log
 from runtime.text import _is_stop_word, _squash
 import state_store
+from runtime.tuning import get as _tune          # P12-B：可调参数（唯一读口）
 
 
 __all__ = [
@@ -289,7 +290,7 @@ async def _handle_perf_end(sender, cid: str, dry: bool):
         log("🎬 [{}] 公演结束（未生成小说：perf_novel 已关闭）".format((cid or "")[:8]))
         return
     await _perf_send(sender, "📝 想补充收尾的姐妹还有 20 秒哦～20 秒后我开始生成小说～", cid, dry)
-    await asyncio.sleep(20)
+    await asyncio.sleep(_tune("perf.ending_wait", cid))
     content = await asyncio.to_thread(_get_perf_content, cid, start_id)
 
     # 2. 提示生成中
@@ -353,7 +354,7 @@ def _check_perf_interact(cid: str, msgs: list) -> str:
     # 触发条件：距上次互动 ≥ 10 分钟（600秒），且期间有新消息
     now = time.time()
     elapsed = now - perf.get("last_interact_ts", 0)
-    if elapsed < 600:
+    if elapsed < _tune("perf.enrich_seconds", cid):
         return ""
 
     perf["last_interact_id"] = msgs[-1]["message_id"]

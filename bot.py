@@ -58,6 +58,8 @@ from personas import (ROOMS, PERSONAS, apply_persona, set_cid as set_persona_cid
                       ROSE_SIGN_YI, ROSE_SIGN_JI, ROSE_MOONS, p)
 ROOM_CIDS = set(ROOMS.keys())
 
+from runtime.tuning import get as _tune   # P12-B：可调参数（唯一读口）
+from runtime import tuning as _tuning     # P12-B：参数层自证/注入
 from runtime import config_store  # P11 A 期：群清单/Bot 注册表的外部配置
 
 # Bot 注册表的默认值：与现状等价（单个 Bot，绑认证群）。
@@ -85,6 +87,13 @@ except config_store.ConfigError as _e:
 # 把配置里指定的按群人设注入 personas 层（覆盖 ROOMS 硬编码）。
 # 必须在下面任何一次 apply_persona / p() 之前完成。
 set_config_personas({s.cid: s.persona for s in _CFG.group_specs.values()})
+
+# P12-B：参数覆盖与按群集合的**注入点**。
+# 现在没有任何来源 ⇒ 全部走代码默认值（= 今天的行为）；
+# P12-C 起这两个调用会吃 config.json 里的 tuning / scopes 两节。
+# 留成显式调用（而不是省略）是为了让"参数从哪来"这条线在代码里看得见。
+_tuning.set_overrides(_CFG.tuning if hasattr(_CFG, "tuning") else {})
+_tuning.set_scopes(_CFG.scopes if hasattr(_CFG, "scopes") else {})
 
 GROUPS = list(_CFG.groups)
 MUTE_CIDS = set(_CFG.mute)
@@ -803,8 +812,13 @@ def _rollback_last_id(cid: str, old_last_id: str) -> None:
     save_state(state)
 
 
-def _climax_hits(group_state: dict):
-    """检测发情值≥100，返回 (hits, changed)。changed=有跨天重置或高潮（需写回磁盘）."""
+def _climax_hits(group_state: dict, cid: str = None):
+    """检测发情值≥阈值，返回 (hits, changed)。changed=有跨天重置或高潮（需写回磁盘）.
+
+    `cid` 用来取**按群**的参数（阈值/扣减可调）；不传就用当前处理中的群
+    （调用点在主循环里，`_ACTIVE_CID` 一定已设置）。
+    """
+    cid = cid or _ACTIVE_CID
     heat = group_state.get("heat_value") or {}
     climax = group_state.get("heat_climax") or {}
     today_climax = group_state.get("heat_climax_today") or {}
@@ -817,9 +831,9 @@ def _climax_hits(group_state: dict):
         changed = True
     hits = []
     for uid, h in list(heat.items()):
-        if h >= 100:
+        if h >= _tune("heat.climax_threshold", cid):
             hits.append((uid, h))
-            heat[uid] = h - 100
+            heat[uid] = h - _tune("heat.climax_reset", cid)
             climax[uid] = climax.get(uid, 0) + 1
             today_climax[uid] = today_climax.get(uid, 0) + 1
             changed = True
@@ -962,7 +976,7 @@ async def _publish_memory_report(sender, cid: str, dry: bool):
     if not mem:
         return
     total = len(mem)
-    shown = mem[-8:]
+    shown = mem[-_tune("memory.report_items", cid):]
     lines = [f"📝 小小糯今日记忆（共 {total} 条）："]
     for i, m in enumerate(shown, 1):
         at_short = (m.get('at') or '')
@@ -979,7 +993,21 @@ async def _publish_memory_report(sender, cid: str, dry: bool):
         log("✅" if ok else "❌")
 
 
-DICE_TIMEOUT_SEC = 180  # 3 分钟超时弃权
+DICE_TIMEOUT_SEC = 180  # 3 分钟超时弃权（代码默认值；运行期读 tuning）
+
+
+def _rank_hour_set():
+    """定时排行发布的整点（默认 12、18；`schedule.rank_hours` 可配，逗号分隔）.
+
+    配错了（空/非法）就退回默认的 12、18 —— 定时任务不该因为一个笔误彻底不发。
+    """
+    raw = str(_tune("schedule.rank_hours") or "")
+    out = set()
+    for part in raw.replace("，", ",").split(","):
+        part = part.strip()
+        if part.isdigit() and 0 <= int(part) <= 23:
+            out.add(int(part))
+    return out or {12, 18}
 
 
 def profile_summary(query: str) -> str:
@@ -1099,7 +1127,7 @@ def _daily_profile_scan() -> list:
                 old = {"name": str(prof.get("name") or ""),
                        "sig": str(prof.get("signature") or ""),
                        "bio": str(prof.get("bio") or "")}
-                if api_used < PROFILE_SCAN_MAX_API:
+                if api_used < _tune("profile.scan_max_api", cid):
                     api_used += 1
                     u = get_user(cid, uid)
                     if u:
@@ -1153,7 +1181,7 @@ def _daily_profile_scan() -> list:
     log("📇 档案扫描完成：成员 " + str(len(cur)) + "，查简介 " + str(api_used)
         + "，变化 " + str(len(notices))
         + ("（首次运行，只建基线）" if first_run else ""))
-    return notices[:PROFILE_NOTICE_MAX]
+    return notices[:max(1, int(_tune("profile.notice_max", PRIMARY_CID)))]
 
 
 def archive_query(query: str):
@@ -1279,7 +1307,7 @@ def _maybe_devil_roast(cid: str, msgs: list, group_state: dict) -> str:
         return ""
     # 冷却
     now = time.time()
-    if now - group_state.get("devil_last_roast", 0) < DEVIL_COOLDOWN:
+    if now - group_state.get("devil_last_roast", 0) < _tune("devil.cooldown", cid):
         return ""
     # 每日上限（跨天重置）
     today = datetime.now().strftime("%Y-%m-%d")
@@ -1307,16 +1335,16 @@ def _maybe_devil_roast(cid: str, msgs: list, group_state: dict) -> str:
     hot_count = sum(1 for ts in last_speak.values() if now - ts <= DEVIL_HOT_WINDOW)
     hot = hot_count >= DEVIL_HOT_MIN_SPEAKERS
     if hit_sensitive:
-        prob = DEVIL_SENSITIVE_PROB
+        prob = _tune("devil.sensitive_prob", cid)
     elif hot:
-        prob = DEVIL_HOT_PROB
+        prob = _tune("devil.hot_prob", cid)
     else:
-        prob = DEVIL_BASE_PROB
+        prob = _tune("devil.base_prob", cid)
     if random.random() >= prob:
         return ""
     # 命中：决定对事/对人（50/50，对人随机抽成员注入画像）
     target_text = ""
-    if random.random() < 0.5:
+    if random.random() < _tune("devil.about_person_prob", cid):
         uid = _random_member_uid()
         if uid:
             profile = get_profile(uid)
@@ -1348,7 +1376,7 @@ def _maybe_devil_cold_roast(cid: str) -> str:
     if group.get("devil_enabled") is not True:
         return ""
     # 深夜静默：0-8 点不触发
-    if datetime.now().hour < DEVIL_COLD_QUIET_HOUR:
+    if datetime.now().hour < _tune("devil.cold_quiet_hour", cid):
         return ""
     # 互斥：任何 active 状态都不吐
     if (_get_vote_state(cid).get("active") or _get_story_state(cid).get("active")
@@ -1357,7 +1385,7 @@ def _maybe_devil_cold_roast(cid: str) -> str:
         return ""
     # 独立冷却（冷场吐槽专用，30 分钟）
     now = time.time()
-    if now - group.get("devil_cold_last", 0) < DEVIL_COLD_COOLDOWN:
+    if now - group.get("devil_cold_last", 0) < _tune("devil.cold_cooldown", cid):
         return ""
     # 每日上限（跨天重置，与恶魔吐槽共享）
     today = datetime.now().strftime("%Y-%m-%d")
@@ -1371,14 +1399,14 @@ def _maybe_devil_cold_roast(cid: str) -> str:
     if last_msg == 0:
         return ""  # 还没见过消息（刚启动），不算冷场
     idle = now - last_msg
-    if idle < DEVIL_COLD_THRESHOLD:
+    if idle < _tune("devil.cold_threshold", cid):
         return ""
     # 冷清后 roll 一次概率：不中则更新周期标记（30 分钟后再试），这轮安静
-    if random.random() >= DEVIL_COLD_PROB:
+    if random.random() >= _tune("devil.cold_prob", cid):
         group["devil_cold_last"] = now
         state[cid] = group
         save_state(state)
-        log("🎲 [冷场] [" + cid[:8] + "] roll 不中（" + str(int(DEVIL_COLD_PROB * 100)) + "%），30 分钟后再试")
+        log("🎲 [冷场] [" + cid[:8] + "] roll 不中（" + str(int(_tune("devil.cold_prob", cid) * 100)) + "%），30 分钟后再试")
         return ""
     # 命中：生成（吐槽冷清）
     minutes = int(idle // 60)
@@ -1450,9 +1478,9 @@ def continue_last(cid: str, cmd: str = "", sender_uid: str = "") -> str:
             return "续写失败啦，换个指令试试～"
         target_uid = fs.get("uid")
         if target_uid:
-            _add_heat(cid, target_uid, HEAT_SCENE_CONTINUE_TARGET)
+            _add_heat(cid, target_uid, _tune("heat.scene_continue_target", cid))
         if sender_uid and sender_uid != target_uid:
-            _add_heat(cid, sender_uid, HEAT_SCENE_CONTINUE_SENDER)
+            _add_heat(cid, sender_uid, _tune("heat.scene_continue_sender", cid))
         history.append(text)
         fs["history"] = history
         fs["last_ts"] = time.time()
@@ -1478,9 +1506,9 @@ def continue_last(cid: str, cmd: str = "", sender_uid: str = "") -> str:
     # 续写加分（和目标原指令一致：羞辱 +15）
     target_uid = action.get("uid")
     if target_uid:
-        _add_heat(cid, target_uid, HEAT_INSULT_TARGET)
+        _add_heat(cid, target_uid, _tune("heat.insult_target", cid))
     if sender_uid and sender_uid != target_uid:
-        _add_heat(cid, sender_uid, HEAT_INSULT_SENDER)
+        _add_heat(cid, sender_uid, _tune("heat.insult_sender", cid))
     action["output"] = text
     _set_last_action(cid, action)
     return text
@@ -1714,7 +1742,7 @@ async def _scheduled_pushes(sender, dry: bool) -> None:
     changed = False
     for period, hour in (("morning", 8), ("noon", 12), ("evening", 22)):
         # 窗口：[整点, 整点+90 分钟]；超出窗口就不补了（避免半夜恢复时补发早安）
-        if not (hour * 60 <= cur <= hour * 60 + 90):
+        if not (hour * 60 <= cur <= hour * 60 + int(_tune("schedule.greet_window_min"))):
             continue
         # P12-A 闸门：三个问候各自可关（按群由 PUSH_CIDS 决定，这里是功能级开关）。
         # 注意 todo 要按**群**过滤（同一个问候在不同群可以有不同开关）。
@@ -2047,6 +2075,13 @@ def _log_runtime_status() -> None:
             _fs["total"], _fs["wired"], _fs["planned"],
             ",".join(_fs["off_by_default"]) or "无",
             "开" if _fs["env_all_on"] else "关"))
+        # P12-B 自证：参数总共几个、被覆盖了几个、按群集合各几个群。
+        # 与功能自证同一个道理 —— "页面上改了、这里没生效"要能一眼看出来。
+        _ts = _tuning.summary()
+        log("P12: 参数 共={} 已覆盖={} 集合={} 秒退={}".format(
+            _ts["params"], _ts["overridden"],
+            ",".join("{}:{}".format(k, v) for k, v in sorted(_ts["scopes"].items())),
+            "开" if _ts["env_off"] else "关"))
     except Exception as e:                                 # noqa: BLE001
         log("P11: 配置状态未知（" + str(e)[:60] + "）")
 
@@ -2149,7 +2184,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
         _was_sio_connected = is_conn
         # 每天 06:00 后首次循环：全群扫描昵称/简介/签名变化，有变化就在群里说一声
         _today = time.strftime("%Y-%m-%d")
-        if time.localtime().tm_hour >= PROFILE_SCAN_HOUR and _last_scan_day != _today:
+        if time.localtime().tm_hour >= _tune("schedule.scan_hour") and _last_scan_day != _today:
             _last_scan_day = _today  # 先占位，避免扫描期间循环重入
             try:
                 _notices = await asyncio.to_thread(_daily_profile_scan)
@@ -2172,7 +2207,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
         _dice_cid = str(_dg.get("cid") or "")
         if (_dg.get("active") and _dg.get("phase") == "calling"
                 and _feat_on(_dice_cid, "dice_timeout")
-                and time.time() - _dg.get("last_action_ts", 0) > DICE_TIMEOUT_SEC):
+                and time.time() - _dg.get("last_action_ts", 0) > _tune("dice.timeout", _dice_cid)):
             _dcur = _dice_current_player(_dg)
             if _dcur:
                 _dmsg = _dice_skip_cmd(_dcur)
@@ -2285,7 +2320,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                             if cid not in ROOM_CIDS:  # 房间群不攒发情值
                                 buf = pending_buf.get(uid, [])
                                 buf.append(text)
-                                if len(buf) > 10:
+                                if len(buf) > _tune("heat.pending_max", cid):
                                     buf = buf[-10:]
                                 pending_buf[uid] = buf
                     group_state["msg_count"] = counts
@@ -2551,7 +2586,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                 reply = p("mem_empty", cid)
                             else:
                                 total = len(mem)
-                                shown = mem[-8:]
+                                shown = mem[-_tune("memory.report_items", cid):]
                                 lines = [p("mem_list_head", cid).format(n=total)]
                                 for i, m in enumerate(shown, 1):
                                     at_short = (m.get('at') or '')
@@ -2647,7 +2682,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                     reply = p("not_found_insult", cid)
                                 else:
                                     # 被羞辱 → 发情值 +15
-                                    _add_heat(cid, target_uid, HEAT_INSULT_TARGET)
+                                    _add_heat(cid, target_uid, _tune("heat.insult_target", cid))
                                     history = _get_insult_history(target_uid)
                                     text = _append_memory_ref(text, cid, get_full_name(target_uid))
                                     reply, style = await asyncio.to_thread(generate_insult, text, custom, history)
@@ -2731,7 +2766,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                             ctx.append({"sender": get_name(muid), "text": mtxt})
                                     glabel = _gender_label(at_sender)  # 女生/男生/未知
                                     ctx.append({"sender": get_name(at_sender) + ("（" + glabel + "）" if glabel != "未知" else ""), "text": q})
-                                    mem = _retrieve_memory(cid, q, 10)
+                                    mem = _retrieve_memory(cid, q, _tune("memory.inject", cid))
                                     if mem:
                                         mem_lines = "\n".join("- " + m["text"] for m in mem)
                                         ctx.insert(0, {"sender": "记忆", "text": "你之前记住的相关的事：\n" + mem_lines})
@@ -2927,7 +2962,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
 
                     # 批量评定发情值：30分钟周期；有发情值≥80的成员刚发言则立即评定（高潮卡在发言时刻）
                     hot_speaker = any(
-                        (group_state.get("heat_value") or {}).get(m.get("sent_by", ""), 0) >= 80
+                        (group_state.get("heat_value") or {}).get(m.get("sent_by", ""), 0) >= _tune("heat.judge_trigger", cid)
                         for m in pending
                         if m.get("sent_by") and not is_self(m.get("sent_by"))
                         and (m.get("content") or {}).get("text", "").strip()
@@ -2935,7 +2970,8 @@ async def main_loop(interval: float, dry: bool, once: bool):
                     )
                     if (group_state.get("heat_pending") or {}) and cid not in ROOM_CIDS and \
                             _feat_on(cid, "heat") and \
-                            (time.time() - group_state.get("heat_last_judge", 0) >= 1800 or hot_speaker):
+                            (time.time() - group_state.get("heat_last_judge", 0)
+                             >= _tune("heat.judge_interval", cid) or hot_speaker):
                         try:
                             await asyncio.to_thread(_judge_pending, cid)
                         except Exception as e:
@@ -2961,7 +2997,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                         now = datetime.now()
                         today = now.strftime("%Y-%m-%d")
                         has_data = bool((group_state.get("heat_value") or {}) or (group_state.get("msg_count") or {}))
-                        if (now.hour in (12, 18) and cid in PUSH_CIDS
+                        if (now.hour in _rank_hour_set() and cid in PUSH_CIDS
                                 and group_state.get("last_daily_rank_date") != today
                                 and _feat_on(cid, "rank_push") and has_data):
                             group_state["last_daily_rank_date"] = today

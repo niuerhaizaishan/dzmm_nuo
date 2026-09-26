@@ -101,17 +101,34 @@ _FEATURES_RAW = (
     # ---- A. 互动游戏（15）
     Feature("dice", "吹牛骰子", "game",
             resets=("dice_game",), note="群里所有人共享一局；状态是**顶层键**，"
-            "关掉不清会让所有群都开不了新局"),
+            "关掉不清会让所有群都开不了新局", params=(
+                Param("dice.timeout", "弃权超时", 180, "秒", 30, 3600,
+                      note="无动作多久算弃权跳过"),
+            )),
     Feature("dice_timeout", "骰子超时跳过", "game", note="180s 无动作自动跳过"),
-    Feature("scene", "发骚/涩涩场景", "game", resets=("fasao", "last_action")),
+    Feature("scene", "发骚/涩涩场景", "game", resets=("fasao", "last_action"),
+            params=(
+                Param("scene.timeout", "无互动超时", 900, "秒", 60, 7200,
+                      note="多久没人接就自动结束（防状态卡死）"),
+            )),
     Feature("scene_continue", "场景续写", "game"),
     Feature("scene_rewrite", "场景重写", "game"),
     Feature("scene_end", "场景结束", "game"),
     Feature("diaojiao", "调教", "game", resets=("diaojiao",),
-            note="还兼着「未识别斜杠指令」的兜底路径，关掉后那些指令会落到兜底聊天"),
-    Feature("diaojiao_idle", "调教冷场自续", "game"),
-    Feature("vote", "投票", "game", resets=("vote",)),
-    Feature("story", "剧情接龙", "game", resets=("story",)),
+            note="还兼着「未识别斜杠指令」的兜底路径，关掉后那些指令会落到兜底聊天",
+            params=(
+                Param("diaojiao.timeout", "无动静超时", 300, "秒", 30, 7200),
+            )),
+    Feature("diaojiao_idle", "调教冷场自续", "game", params=(
+        Param("diaojiao.idle_seconds", "冷场多久自编一条", 30, "秒", 5, 600),
+    )),
+    Feature("vote", "投票", "game", resets=("vote",), params=(
+        Param("vote.default_seconds", "默认时长", 120, "秒", 10, 86400),
+    )),
+    Feature("story", "剧情接龙", "game", resets=("story",), params=(
+        Param("story.max_round", "最多轮数", 6, "轮", 1, 50),
+        Param("story.vote_seconds", "每轮投票时长", 60, "秒", 5, 3600),
+    )),
     Feature("heat", "发情值系统", "game", params=(
         Param("heat.scene_pick", "抽中发骚骰", 10, "分", 0, 100),
         Param("heat.scene_continue_target", "发骚续写·目标", 10, "分", 0, 100),
@@ -156,9 +173,14 @@ _FEATURES_RAW = (
     # ---- B. 公演与内容生成（12）
     Feature("perf", "公演", "content", resets=("perf",),
             note="今天**没有超时**：中途打断会让该群永久哑掉（P12-A 补超时）"),
-    Feature("perf_enrich", "公演实时互动", "content"),
+    Feature("perf_enrich", "公演实时互动", "content", params=(
+        Param("perf.enrich_seconds", "互动间隔", 600, "秒", 30, 7200,
+              note="两次实时互动之间至少隔多久"),
+    )),
     Feature("perf_review", "公演小说审核", "content", note="只有 OWNER 能审"),
     Feature("perf_novel", "公演改写成小说", "content", params=(
+        Param("perf.ending_wait", "收尾等待", 20, "秒", 0, 300,
+              note="公演结束后等参与者补台词的时长"),
         Param("perf.novel_chunk", "每次生成条数", 5, "条", 1, 50),
         Param("perf.novel_max_chunks", "单次最多分块", 12, "块", 1, 24,
               note="调大堵死主循环（2026-09-14 堵过 37 分钟）"),
