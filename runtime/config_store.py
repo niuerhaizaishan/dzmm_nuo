@@ -53,12 +53,12 @@ __all__ = ["Config", "BotSpec", "GroupSpec", "ConfigError", "load", "save",
            "SCHEMA_VERSION", "SUPPORTED_VERSIONS", "migrate_file",
            "default_bots_from_env"]
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 KEEP_BACKUPS = 20
 
 # 历史版本 → 升级方式。**只做加法**：新版必须有办法读旧版，
 # 且升级过程要留备份（`migrate_file()` 负责）。
-SUPPORTED_VERSIONS = (1, 2, 3)
+SUPPORTED_VERSIONS = (1, 2, 3, 4)
 
 _ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIRNAME = "config"
@@ -96,6 +96,12 @@ class BotSpec:
     token: str = ""           # 内联 token（不推荐）
     token_env: str = ""       # 指向环境变量的名字（推荐）
     enabled: bool = True
+    # P12-H（schema v4）：这个 Bot 在平台上的**用户 id**。
+    # 用途只有一个但很关键 —— `runtime/identity.py` 要靠它把"我自己"认全，
+    # 否则新 Bot 的发言会被当成群友（轻则统计污染，重则自问自答）。
+    # 可以留空：留空时启动会用**成员表里的显示名**去认一次
+    # （`identity.resolve_bot_uids()`），认不到还能在循环里靠名字兜底。
+    uid: str = ""
     # 刻意**没有** `persona`：Bot 只是"把已经生成好的文本送进某个群"的**通道**，
     # 而人设是在生成那一刻、按**群**决定的（`personas.persona_key_for(cid)`）。
     # 曾经两边都留了 persona ⇒ Bot 上那份永远不生效，页面上却是可填的
@@ -126,6 +132,10 @@ def default_bots_from_env(default_cid: str) -> list:
         "short": (os.environ.get("DZMM_BOT_SHORT") or "小小糯").strip(),
         "cid": (os.environ.get("DZMM_BOT_CID") or "").strip() or default_cid,
         "token_env": "DZMM_BOT_TOKEN",
+        # P12-H：env 里已经有这个 Bot 的平台 id 了，顺手带进默认值 ——
+        # 于是"配置文件不存在"的部署也能正确认出自己是哪个身份。
+        **({"uid": os.environ["DZMM_BOT_ID"].strip()}
+           if (os.environ.get("DZMM_BOT_ID") or "").strip() else {}),
     }]
 
 
@@ -154,6 +164,16 @@ class Config:
             if b.cid == cid:
                 return b
         return None
+
+    def bots_for_identity(self) -> list:
+        """给 `runtime.identity.register_bots()` 的形状：**每个启用的 Bot** 一条。
+
+        运行期"我自己"有几个身份完全由这里决定 —— 少一个就会出现
+        "机器人把自己的发言当群友"（重则自问自答）。
+        """
+        return [{"key": b.key, "name": b.name, "short": b.short,
+                 "cid": b.cid, "uid": b.uid}
+                for b in self.bots if b.enabled]
 
     def group(self, cid: str):
         return self.group_specs.get(cid)
@@ -208,6 +228,8 @@ class Config:
                        for g in self.group_specs.values()],
             "bots": [{"key": b.key, "name": b.name, "short": b.short, "cid": b.cid,
                       "token_env": b.token_env, "enabled": b.enabled,
+                      # 只写非空的 uid：它本来就可以空着（启动时按名字认）
+                      **({"uid": b.uid} if getattr(b, "uid", "") else {}),
                       **({"token": b.token} if b.token else {})}
                      for b in self.bots],
         }
@@ -511,6 +533,8 @@ def _parse(raw: dict, defaults: dict) -> Config:
             token=str(b.get("token") or "").strip(),
             token_env=str(b.get("token_env") or "").strip(),
             enabled=_strict_bool(b.get("enabled", True), where + ".enabled"),
+            # P12-H：可选。空 = 启动时按成员表里的名字认（见 identity.resolve_bot_uids）
+            uid=str(b.get("uid") or "").strip(),
         ))
 
     mute = frozenset(cid for cid, s in specs.items() if s.mute)

@@ -603,5 +603,36 @@ except Exception as e:                                      # noqa: BLE001
     check("文案模板自检", False, "{}: {}".format(type(e).__name__, e))
 
 print()
+print("多 Bot 身份（P12-H）:")
+try:
+    from runtime import identity as _ident
+    from runtime.identity import is_self as _is_self
+
+    # 配置对象用 bot 自己那份（同一个进程里就是运行期真源）
+    _bots = bot._CFG.bots_for_identity() if hasattr(bot._CFG, "bots_for_identity") else []
+    print("     配置里的 Bot：{}".format(
+        ", ".join("{}({})->{}".format(b["key"], b["name"] or "-", b["cid"][:8])
+                  for b in _bots) or "无"))
+    check("配置里的 Bot 都能取到 token",
+          all(any(bb.key == b["key"] and bb.resolve_token() for bb in bot._CFG.bots)
+              for b in _bots), [b["key"] for b in _bots])
+    _ident.register_bots(_bots)
+    _missing = [b["key"] for b in _bots if not b["uid"]]
+    check("每个 Bot 都有身份（uid 或能按名字认）",
+          all(b["uid"] or b["name"] or b["short"] for b in _bots), _missing)
+    check("每个 Bot 的 uid 都算「我自己」",
+          all(_is_self(b["uid"]) for b in _bots if b["uid"]),
+          [b["key"] for b in _bots if b["uid"] and not _is_self(b["uid"])])
+    check("侧车账号仍是「我自己」", _is_self(_ident.NUO_UID) is True)
+    # 发送链必须**按配置**装配（P12-H 之前只读 env，加 Bot 不生效）
+    _senders = bot._bot_senders()
+    check("发送链为每个启用的 Bot 造了发送器（{} 个）".format(len(_senders)),
+          len(_senders) == len([b for b in bot._CFG.bots if b.enabled
+                                and b.resolve_token()]), sorted(_senders))
+    print("     bot 路由覆盖群：" + (", ".join(c[:8] for c in _senders) or "无"))
+except Exception as e:                                      # noqa: BLE001
+    check("多 Bot 身份自检", False, "{}: {}".format(type(e).__name__, e))
+
+print()
 print("FAILED: {}".format(fails) if fails else "ALL CHECKS PASSED")
 raise SystemExit(1 if fails else 0)

@@ -40,7 +40,7 @@ AUDIT_NAME = "config_audit.log"
 _GROUP_DEFAULTS = {"alias": "", "enabled": True, "mute": False,
                    "screen": False, "push": False, "persona": ""}
 _BOT_DEFAULTS = {"name": "", "short": "", "cid": "", "token_env": "",
-                 "enabled": True}
+                 "uid": "", "enabled": True}
 
 _CSS = """
 body{font:13px/1.6 -apple-system,Segoe UI,Roboto,'Noto Sans CJK SC',sans-serif;
@@ -200,11 +200,14 @@ def render_edit(cfg_raw, error="", notice="", csrf="", pending=False,
             "<td><input type=text class=narrow name='{p}[short]' value='{s}' placeholder='简称'></td>"
             "<td><input type=text name='{p}[cid]' value='{c}' placeholder='绑定的群 id'></td>"
             "<td><input type=text name='{p}[token_env]' value='{te}' placeholder='DZMM_BOT_TOKEN_XXX'></td>"
+            # P12-H：Bot 在平台上的用户 id。留空也行（启动时按成员表里的名字认），
+            # 但**必须能填**：它是"这条消息是不是我发的"判定的输入，填了就确定。
+            "<td><input type=text name='{p}[uid]' value='{u}' placeholder='留空=按名字认'></td>"
             "<td>{en}</td>"
             "</tr>".format(
                 p=p, k=_e(b.get("key", "")), n=_e(b.get("name", "")),
                 s=_e(b.get("short", "")), c=_e(b.get("cid", "")),
-                te=_e(b.get("token_env", "")),
+                te=_e(b.get("token_env", "")), u=_e(b.get("uid", "")),
                 en=cb(p + "[enabled]", b.get("enabled", True))))
 
     msg = ""
@@ -383,6 +386,9 @@ def parse_form(form, base=None) -> dict:
             "token_env": _s(form, p + "[token_env]"),
             "enabled": _flag(form, p + "[enabled]"),
         }
+        uid = _s(form, p + "[uid]")
+        if uid:
+            bot["uid"] = uid          # P12-H：留空就不写（启动时按名字认）
         token = _s(form, p + "[token]")
         if token:
             bot["token"] = token
@@ -443,7 +449,7 @@ def diff_summary(old: dict, new: dict) -> list:
         elif b is None:
             out.append("删除 Bot {}".format(k))
         else:
-            for f in ("name", "short", "cid", "token_env", "enabled"):
+            for f in ("name", "short", "cid", "token_env", "enabled", "uid"):
                 if a.get(f) != b.get(f):
                     out.append("Bot {} {} : {!r} -> {!r}".format(
                         k, f, a.get(f), b.get(f)))

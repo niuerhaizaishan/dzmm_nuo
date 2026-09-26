@@ -1,11 +1,17 @@
 """双身份 + 昵称解析（P8 第 4 步从 bot.py 拆出的叶子工具）。
 
-P4 起「我自己」有**两个**身份，全项目必须一致地认这两个：
+P4 起「我自己」有两个身份，全项目必须一致地认这两个：
   NUO_UID —— 侧车账号（登录态持有者）：私聊 / 图片 / 分享 / 历史数据里的旧发言
   BOT_UID —— 官方 Bot：群文本发送（P4.1 的 RoutingSender）
 
 回声过滤与「排除自己」必须同时认这两个账号，否则 Bot 的发言会被当成群友 ——
 轻则统计污染，重则自触发循环。
+
+P12-H 起「我自己」是**一串** Bot：`config.json` 的 `bots[]` 里每个启用的 Bot
+都是我自己（`register_bots()`），因为每个群的 Bot 是不同的平台身份。
+配置里没写 uid 时，可以用**成员表里的显示名**把它认出来
+（`resolve_bot_uids()` 启动时查一次；`learn_bot_uid()` 在循环里用缓存兜底）——
+否则新 Bot 的第一条发言会被当成群友，可能自问自答。
 
 昵称解析（`get_full_name`/`get_name`）也放这里：判定「@的是不是我」需要它，
 而它又是几乎所有模块都要用的东西。原始昵称来自成员表，查不到时兜底读档案。
@@ -29,26 +35,34 @@ BOT_NAME_SHORT = (os.environ.get("DZMM_BOT_SHORT") or "小小糯").strip()
 # 昵称缓存（uid -> 昵称），跨轮次复用
 _name_cache: dict = {}
 
+# P12-H：配置里的所有 Bot（key -> {key,uid,name,short,cid}）。
+# 由 `register_bots()` 注入；`_BOT_UIDS`/`_BOT_NAMES` 是它的两个派生集合。
+_BOTS: dict = {}
+_BOT_UIDS: set = set()
+_BOT_NAMES: set = set()
+
 __all__ = [
     "NUO_UID", "BOT_UID", "BOT_NAME", "BOT_NAME_SHORT",
     "self_uids", "is_self", "self_names", "self_names_longest_first",
     "_name_cache", "_load_member_names", "get_full_name", "get_name", "is_at_me",
+    "register_bots", "bots", "bot_uids", "bot_names", "learn_bot_uid",
+    "resolve_bot_uids",
 ]
 
 
 def self_uids() -> set:
-    """全部「我自己」的 uid。"""
-    ids = {NUO_UID}
+    """全部「我自己」的 uid：侧车账号 + 所有配置里的 Bot。"""
+    ids = {NUO_UID} | set(_BOT_UIDS)
     if BOT_UID:
         ids.add(BOT_UID)
     return ids
 
 
 def is_self(uid) -> bool:
-    """这条消息是不是我自己发的（侧车账号或官方 Bot）。"""
+    """这条消息是不是我自己发的（侧车账号或任意一个官方 Bot）。"""
     if not uid:
         return False
-    return uid == NUO_UID or (bool(BOT_UID) and uid == BOT_UID)
+    return uid in self_uids()
 
 
 def self_names() -> set:
@@ -56,11 +70,149 @@ def self_names() -> set:
 
     账号名查成员表；Bot 名**读配置**（Bot API 没有成员接口，查不到）。
     """
-    names = {get_full_name(NUO_UID), get_name(NUO_UID)}
+    names = {get_full_name(NUO_UID), get_name(NUO_UID)} | set(_BOT_NAMES)
     if BOT_UID:
         names.add(BOT_NAME)
         names.add(BOT_NAME_SHORT)
     return {n for n in names if n}
+
+
+# ---------------------------------------------------------------- 多 Bot（P12-H）
+
+def register_bots(bots_list) -> dict:
+    """把配置里的**所有** Bot 注册成「我自己」。返回 `{key: uid}`（自证用）。
+
+    接受 dict 或 dataclass（`config_store.BotSpec`）；只有带 `key` 的才算。
+    """
+    global _BOTS, _BOT_UIDS, _BOT_NAMES
+    reg, uids, names = {}, set(), set()
+    for b in (bots_list or ()):
+        if isinstance(b, dict):
+            get = b.get
+        else:
+            get = lambda k, d="", _b=b: getattr(_b, k, d)      # noqa: E731
+        key = str(get("key") or "").strip()
+        if not key:
+            continue
+        uid = str(get("uid") or "").strip()
+        rec = {"key": key, "uid": uid,
+               "name": str(get("name") or "").strip(),
+               "short": str(get("short") or "").strip(),
+               "cid": str(get("cid") or "").strip()}
+        reg[key] = rec
+        if uid:
+            uids.add(uid)
+        for nm in (rec["name"], rec["short"]):
+            if nm:
+                names.add(nm)
+    _BOTS, _BOT_UIDS, _BOT_NAMES = reg, uids, names
+    return {k: v["uid"] for k, v in reg.items()}
+
+
+def bots() -> list:
+    return [dict(v) for v in _BOTS.values()]
+
+
+def bot_uids() -> set:
+    return set(_BOT_UIDS)
+
+
+def bot_names() -> set:
+    return set(_BOT_NAMES)
+
+
+def _name_matches_bot(name: str) -> str:
+    """成员显示名像不像某个 Bot？像就返回那个 Bot 的 key，否则返回 ""。
+
+    匹配规则刻意收紧：**必须整体相等**，或只差一个常见的 bot 后缀
+    （`薇丝` / `薇丝-bot` / `薇丝bot` / `薇丝～`）。
+    不能写成"以 Bot 名开头" —— 侧车账号叫「小小糯～」、Bot 叫「小小糯」，
+    那样会把账号自己也匹配进来（虽然它已经是 self，但规则一旦松就会误伤真人）。
+    """
+    nm = (name or "").strip()
+    if not nm:
+        return ""
+    for key, rec in _BOTS.items():
+        for cand in (rec["name"], rec["short"]):
+            if not cand:
+                continue
+            if nm == cand:
+                return key
+            tail = nm[len(cand):] if nm.startswith(cand) else None
+            if tail is not None and tail.strip(" -_～~·").lower() in ("", "bot", "机器人"):
+                return key
+    return ""
+
+
+def learn_bot_uid(uid, name=None) -> bool:
+    """把一个"名字对得上配置里的 Bot"的 uid 认成自己。
+
+    只在**成员表缓存**里查名字（不发 API、不进循环的慢路径）。
+    返回 True 表示这次真的新认出来了一个（调用方可以打一行日志）。
+    """
+    uid = str(uid or "").strip()
+    # 已经是自己（账号 / 已登记的 Bot / env 里那个 Bot）就不用再认了 ——
+    # 用 `is_self()` 而不是裸比 NUO_UID：唯一判定点只能有这一处。
+    if not uid or is_self(uid):
+        return False
+    if name is None:
+        name = _name_cache.get(uid) or ""
+    key = _name_matches_bot(name)
+    if not key:
+        return False
+    _BOT_UIDS.add(uid)
+    if not _BOTS[key].get("uid"):
+        _BOTS[key]["uid"] = uid
+    return True
+
+
+def resolve_bot_uids(fetch_members=None) -> dict:
+    """给**没写 uid** 的 Bot 从群成员表里查一次（启动时调一次，别放进循环）。
+
+    `fetch_members(cid) -> {uid: 显示名}`，默认用 `dzmm.get_members`。
+    查不到不报错（Bot 可能还没被拉进群），返回 `{key: uid}`，空字符串表示没查到。
+
+    两个必须收紧的地方（都是实际会咬人的）：
+    - **跳过已经是自己的 uid**：侧车账号的显示名是「小小糯～」，而 Bot 简称是
+      「小小糯」—— 不排除的话，第一次跑就会把**账号自己**认成那个 Bot
+      （2026-09-26 真的发生过，日志里 `Bot nuo_main 的身份 = 已认到 503e3cb9`）。
+      实际危害不大（账号本来就是 self），但它会写进内存里的 Bot 记录、并让日志说谎。
+    - **先精确匹配，再退到"只差一个 bot 后缀"**：避免先碰到谁就认谁。
+    """
+    if fetch_members is None:
+        fetch_members = get_members
+    out = {}
+    for key, rec in _BOTS.items():
+        if rec["uid"] or not rec["cid"]:
+            out[key] = rec["uid"]
+            continue
+        try:
+            members = fetch_members(rec["cid"]) or {}
+        except Exception:                                       # noqa: BLE001
+            out[key] = ""
+            continue
+        cands = {c for c in (rec["name"], rec["short"]) if c}
+        hit = ""
+        # 第一轮：显示名和配置名完全相同
+        for uid, name in members.items():
+            if is_self(uid):
+                continue
+            if str(name or "").strip() in cands:
+                hit = str(uid)
+                break
+        # 第二轮：只差一个 bot 后缀（薇丝 / 薇丝-bot / 薇丝bot）
+        if not hit:
+            for uid, name in members.items():
+                if is_self(uid):
+                    continue
+                if _name_matches_bot(str(name or "")) == key:
+                    hit = str(uid)
+                    break
+        if hit:
+            rec["uid"] = hit
+            _BOT_UIDS.add(hit)
+        out[key] = hit
+    return out
 
 
 def self_names_longest_first() -> list:

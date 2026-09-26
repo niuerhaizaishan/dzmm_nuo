@@ -46,6 +46,14 @@ services:
       DZMM_BOT_CID: "${DZMM_BOT_CID:-}"
       DZMM_BOT_NAME: "${DZMM_BOT_NAME:-小小糯}"
       DZMM_BOT_SHORT: "${DZMM_BOT_SHORT:-小小糯}"
+      # ---- P12-H：第二个 Bot（玫瑰房的「薇丝-bot」）----
+      # ⚠️ 这个 compose 是**逐键透传**（没有 env_file），所以新 Bot 的 token
+      #    必须在这里显式列一行，否则 .env 里配了也进不了容器 ——
+      #    表现是"页面/配置里都有这个 Bot，运行期却说 token 没解析到"。
+      # 群绑定与名字在 config.json 的 bots[] 里（那里才是唯一真源）；
+      # 身份识别优先用 bots[].uid，没写就用这里的名称去成员表里认。
+      DZMM_BOT_TOKEN_ROSE: "${DZMM_BOT_TOKEN_ROSE:-}"
+      DZMM_BOT_SECRET_ROSE: "${DZMM_BOT_SECRET_ROSE:-}"
       # 唯一登录者会话锁（P5.1）。off = 不互斥
       DZMM_SESSION_LOCK: "${DZMM_SESSION_LOCK:-on}"
       # 出站限流（P5.2）。off = 不限流

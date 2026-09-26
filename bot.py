@@ -230,7 +230,7 @@ import state_store                                    # P7：状态存储后端�
 from runtime import ctx                               # P8 第 4 步：当前群上下文的唯一真源
 from runtime.ctx import PRIMARY_CID                   # 常驻群 cid 的唯一真源（Sender 默认参数要用）
 from runtime.obs import log  # P8 第 4 步：搬到 runtime/obs.py
-from runtime.identity import self_uids, is_self, self_names, self_names_longest_first, _load_member_names, get_full_name, get_name, is_at_me, NUO_UID, BOT_UID, BOT_NAME, BOT_NAME_SHORT, _name_cache  # P8 第 4 步：搬到 runtime/identity.py
+from runtime.identity import self_uids, is_self, self_names, self_names_longest_first, _load_member_names, get_full_name, get_name, is_at_me, NUO_UID, BOT_UID, BOT_NAME, BOT_NAME_SHORT, _name_cache, register_bots, resolve_bot_uids as _resolve_bot_uids, learn_bot_uid, bot_uids  # P8 第 4 步：搬到 runtime/identity.py（P12-H 加多 Bot 身份）
 from runtime.dice import _dice_state, _dice_save, _dice_current_player, _dice_send_private, _dice_board_text, _dice_deal_round, _dice_start_cmd, _dice_join_cmd, _dice_exit_cmd, _dice_begin_cmd, _dice_next_round_cmd, _dice_call_cmd, _dice_open_cmd, _dice_quit_cmd, _dice_skip_cmd, _dice_status_text  # P8 第 4 步：搬到 runtime/dice.py
 from runtime.text import _get_opencc, _normalize_cn, _simplify, _strip_parenthesis, _is_stop_word, _dedupe_options, _normalize_choice, _extract_deadline_seconds, _squash, _clean_name, _norm_poem, _CJK_VARIANT, STOP_WORDS, _OPENCC_T2S  # P8 第 4 步：搬到 runtime/text.py
 from runtime.members import _extract_msgs, _get_msgs_by_uid, _member_profile_text, _find_in_profiles, _find_user_in_msgs, find_user_by_name, _find_uid_by_name, _gender_label, _random_member_uid, _archive_text_from_profile, _history_lines, _profile_history, HISTORY_MAX  # P8 第 4 步：搬到 runtime/members.py
@@ -244,6 +244,21 @@ from runtime import features as _features   # P12-A：功能注册表（唯一�
 # P12-C：配置里的三块覆盖，在这里（运行时导入之后、任何 _feat_on/_tune 之前）
 # 正式进运行期。
 apply_config_overrides()
+
+# P12-H：把配置里的**所有** Bot 注册成"我自己"。
+# 少了这一步，新 Bot 在自己群里发的消息会被当成群友 —— 轻则统计污染，
+# 重则自问自答（它是"回声过滤"的唯一真源，见 runtime/identity.py）。
+# ⚠️ 必须在 identity 的 import 之后（第 233 行那批）。
+try:
+    _BOT_REG = register_bots(_CFG.bots_for_identity())
+    log("P11: 我的身份数={}（账号 1 + Bot {}）".format(
+        1 + len(_BOT_REG), len(_BOT_REG)))
+    for _b in _CFG.bots_for_identity():
+        log("P11: 我的身份 Bot key={} name={} cid={} uid={}".format(
+            _b["key"], _b["name"] or "-", (_b["cid"] or "")[:8],
+            (_b["uid"] or "**未配置**（启动时按成员表里的名字认）")))
+except Exception as _e:                                        # noqa: BLE001
+    log("P11: 多 Bot 身份注册失败（只认账号）：" + str(_e)[:80])
 
 # 旧版配置升级落盘（必须在运行时导入之后 —— 这里才拿得到 log）
 migrate_config_file()
@@ -2124,28 +2139,71 @@ def _log_route(event: str, cid: str, detail: str = "") -> None:
     log("bot路由: {} cid={} {}".format(event, (cid or "")[:8], str(detail)[:80]))
 
 
+def _bot_senders() -> dict:
+    """按**配置里的 Bot 注册表**造发送器：`{cid: DzmmBotSender}`。
+
+    P12-H 之前这里只读 `DZMM_BOT_TOKEN`/`DZMM_BOT_CID` 两个环境变量，
+    于是一个 Bot 都加不了 —— 配置里写 `bots[]` 也不会有人送（P11 留下的缺口：
+    页面上能加 Bot，运行期没人读）。现在唯一真源是 `_CFG.bots`：
+    每个 `enabled` 且 token 能解析到（`token_env` → `.env`，或内联）的 Bot
+    各拿一个发送器，绑到它自己的 `cid` 上。
+
+    一个群只能有一个 Bot（`config_store` 校验过），所以 cid 就是路由键。
+    """
+    senders = {}
+    origin = (os.environ.get("DZMM_BOT_ORIGIN") or ORIGIN).rstrip("/")
+    proxy = os.environ.get("DZMM_PROXY") or None
+    for b in _CFG.bots:
+        if not b.enabled:
+            log("bot路由: 跳过未启用的 Bot {}（{}）".format(b.key, (b.cid or "")[:8]))
+            continue
+        token = b.resolve_token()
+        if not token:
+            log("bot路由: ⚠️ Bot {} 的 token 没解析到（token_env={!r}）—— 这个群退回账号".format(
+                b.key, b.token_env))
+            continue
+        try:
+            senders[b.cid] = DzmmBotSender(origin, token, proxy=proxy)
+            log("bot路由: Bot {}({}) -> 群 {} 已就绪（uid={}）".format(
+                b.key, b.name or "-", (b.cid or "")[:8], (b.uid or "未配置")[:8]))
+        except Exception as e:                                 # noqa: BLE001
+            log("bot路由: Bot {} 初始化失败（该群退回账号）：{}".format(
+                b.key, str(e)[:80]))
+    return senders
+
+
 def _wrap_with_bot_routing(account):
     """把装了官方 Bot 的群路由到 Bot。**默认关闭** —— 接线但不上线。
 
     `DZMM_BOT_ROUTING=on` 才启用；缺 token/cid 或初始化异常一律退回账号。
     切换时机由人决定，不由代码替人决定。
+
+    配置里一个可用 Bot 都没有时，退回"按环境变量造一个"的老路（P4 的行为），
+    免得没挂 config.json 的旧部署突然没了 Bot 通道。
     """
     if not _RUNTIME_IMPORT_OK:
         return account
     if not _truthy_env("DZMM_BOT_ROUTING", "off"):
         log("bot路由: 未启用（DZMM_BOT_ROUTING=off），全部走账号")
         return account
-    token = (os.environ.get("DZMM_BOT_TOKEN") or "").strip()
-    cid = (os.environ.get("DZMM_BOT_CID") or "").strip()
-    if not token or not cid:
-        log("bot路由: 缺少 DZMM_BOT_TOKEN 或 DZMM_BOT_CID，退回账号")
-        return account
     try:
-        origin = (os.environ.get("DZMM_BOT_ORIGIN") or ORIGIN).rstrip("/")
-        bot = DzmmBotSender(origin, token, proxy=(os.environ.get("DZMM_PROXY") or None))
-        log("bot路由: 已启用 cid={} origin={}".format(cid[:8], origin))
-        return RoutingSender(account, {cid: bot}, on_route=_log_route)
-    except Exception as e:                                 # noqa: BLE001
+        senders = _bot_senders()
+        if not senders:
+            token = (os.environ.get("DZMM_BOT_TOKEN") or "").strip()
+            cid = (os.environ.get("DZMM_BOT_CID") or "").strip()
+            if token and cid:
+                origin = (os.environ.get("DZMM_BOT_ORIGIN") or ORIGIN).rstrip("/")
+                senders = {cid: DzmmBotSender(
+                    origin, token, proxy=(os.environ.get("DZMM_PROXY") or None))}
+                log("bot路由: 配置里没有可用 Bot，退回 env 单 Bot cid={}".format(cid[:8]))
+            else:
+                log("bot路由: 没有任何可用 Bot（配置与 env 都没有），退回账号")
+                return account
+        log("bot路由: 已启用 origin={} 覆盖群={}".format(
+            (os.environ.get("DZMM_BOT_ORIGIN") or ORIGIN).rstrip("/"),
+            ",".join(c[:8] for c in senders)))
+        return RoutingSender(account, senders, on_route=_log_route)
+    except Exception as e:                                     # noqa: BLE001
         log("bot路由: 初始化失败，退回账号：" + str(e)[:100])
         return account
 
@@ -2191,9 +2249,12 @@ def _log_runtime_status() -> None:
             cfg.source, len(GROUPS), len(MUTE_CIDS), len(SCREEN_CIDS),
             len(PUSH_CIDS), len(cfg.bots), cfg.path))
         for b in cfg.bots:
-            log("P11: Bot key={} name={} cid={} token={}".format(
+            log("P11: Bot key={} name={} cid={} token={} uid={}".format(
                 b.key, b.name, (b.cid or "")[:8],
-                "已设置" if b.resolve_token() else "**未设置**"))
+                "已设置" if b.resolve_token() else "**未设置**",
+                (b.uid or "未配置")[:8]))
+        log("P11: 我是谁={}".format(
+            ",".join(sorted(u[:8] for u in bot_uids())) or "（只有侧车账号）"))
         # 人设自证：配置里指定的按群人设到底生效了没有。
         # （这个字段曾经"画在页面上但运行期没人读"，不打印就不出来）
         _cp = config_personas()
@@ -2274,6 +2335,17 @@ async def main_loop(interval: float, dry: bool, once: bool):
             await sender.start()
         except Exception as e:
             log("sender init failed: " + str(e)[:80])
+        # P12-H：给"配置里没写 uid"的 Bot 从群成员表里认一次身份。
+        # 放在 sender.start() **之后**：这一步要用登录态调 getMembers，
+        # 启动最初那一刻 cookie 还没准备好，太早查只会白失败一次。
+        try:
+            _resolved = await asyncio.to_thread(_resolve_bot_uids)
+            for _k, _uid in (_resolved or {}).items():
+                log("P11: Bot {} 的身份 = {}".format(
+                    _k, ("已认到 " + _uid[:8]) if _uid else
+                    "**没认到**（Bot 可能还没被拉进群；进群后发出第一条消息时会自动认）"))
+        except Exception as e:                                 # noqa: BLE001
+            log("P11: Bot 身份识别失败（不影响运行）：" + str(e)[:80])
 
     state = load_state()
     log("start  dry=" + str(dry) + " interval=" + str(interval) + " groups=" + str(len(GROUPS)))
@@ -2443,6 +2515,17 @@ async def main_loop(interval: float, dry: bool, once: bool):
                         state[cid] = group_state
                         save_state(state)
                         continue
+
+                    # P12-H：新 Bot 的 uid 可能还不知道（配置里没写 / 平台没给）。
+                    # 用"成员名 == 配置里的 Bot 名"把它认出来，之后 is_self() 就准了。
+                    # ⚠️ 必须在下面**所有** is_self(...) 之前跑：否则新 Bot 在群里
+                    # 发的第一条消息会被当成群友（可能自问自答）。
+                    # 只查昵称缓存，不发请求，所以放进每轮循环是安全的。
+                    for _m in pending:
+                        if learn_bot_uid(_m.get("sent_by")):
+                            log("P11: 认出一个 Bot 身份（按名字）：{} -> {}".format(
+                                (_m.get("sent_by") or "")[:8],
+                                ((_m.get("content") or {}).get("text") or "")[:20]))
 
                     # 本轮是否有真正的用户新消息（非 agent）
                     had_new = any(not is_self(m.get("sent_by")) for m in pending)

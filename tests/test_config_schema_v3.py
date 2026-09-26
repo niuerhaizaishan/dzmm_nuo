@@ -62,8 +62,10 @@ def cfgfile(monkeypatch, dbdir):
 
 # ---------------------------------------------------------------- 1. 版本与迁移
 
-def test_schema_version_is_3_and_old_versions_supported():
-    assert cs.SCHEMA_VERSION == 3
+def test_schema_version_supports_v3_and_later():
+    """v3 引进的是 `personas` 节。P12-H 之后当前版本更高（v4 加了 bots[].uid），
+    但**v3 必须仍然被支持**（旧文件不能因为升级就起不来）。"""
+    assert cs.SCHEMA_VERSION >= 3
     assert set(cs.SUPPORTED_VERSIONS) >= {1, 2, 3}
 
 
@@ -84,7 +86,7 @@ def test_v2_file_is_migrated_on_disk_with_backup(cfgfile):
     assert report["backup"] and (cs.backup_dir() / report["backup"]).is_file()
     old = json.loads((cs.backup_dir() / report["backup"]).read_text(encoding="utf-8"))
     assert old["version"] == 2, "备份里必须是原来那一版（可回滚）"
-    assert json.loads(cfgfile.read_text(encoding="utf-8"))["version"] == 3
+    assert json.loads(cfgfile.read_text(encoding="utf-8"))["version"] == cs.SCHEMA_VERSION
 
 
 # ---------------------------------------------------------------- 2. 读写往返
