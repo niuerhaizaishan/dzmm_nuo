@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timedelta
 
 from brains import generate_trend
-from personas import me as _pme                    # 自称：按群人设名（小小糯/薇丝）
+from personas import me as _pme, p as _pp          # 自称 + 按群人设文案（小小糯/薇丝）
 from profiles import get_profile
 from runtime.ctx import PRIMARY_CID
 from runtime.fortune import _fortune_calc
@@ -147,8 +147,9 @@ async def week_trend(cid: str, uid: str, days: int = TREND_DEFAULT_DAYS) -> str:
     name = get_name(uid)
     if st["n"] == 0:
         _me = _pme(cid)
-        return ("（翻了翻小本子）过去 " + str(days) + " 天你一次都没找" + _me + "算过运势呢～"
-                "发 /算命 算一次，" + _me + "就开始给你记了哦～")
+        return (_pp("trend_empty", cid, days=days) or (
+            "（翻了翻小本子）过去 " + str(days) + " 天你一次都没找" + _me + "算过运势呢～"
+            "发 /算命 算一次，" + _me + "就开始给你记了哦～"))
     scores = [s for _, s in pairs]
     # 上周同期（用于对比）
     prev = _trend_days(cid, uid, days * 2)[:days]

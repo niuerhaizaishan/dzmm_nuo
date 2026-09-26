@@ -16,7 +16,7 @@ from profiles import get_profile
 from runtime import ctx
 from runtime.identity import get_full_name
 from runtime.text import _clean_name
-from personas import me as _pme                      # 自称：按群人设名（小小糯/薇丝）
+from personas import me as _pme, p as _pp             # 自称 + 按群人设文案（小小糯/薇丝）
 import state_store
 
 __all__ = [
@@ -197,8 +197,11 @@ def fortune(cmd_sender: str, cid: str = None) -> str:
         last = ""
     last = " ".join(str(last).split()).strip()
     if not last:
-        last = (full + "今天运势「" + level + "」哦～命理" + concl
-                + "，记得照着宜忌来，" + _pme(cid) + "都替你看着呢～♡")
+        # 兜底那句是**跨群**的（玫瑰房也看得到）：本群有人设文案就用本群的，
+        # 否则用原来的默认句（认证群一个字没变）。
+        last = (_pp("fortune_tail", cid, full=full, level=level, concl=concl)
+                or (full + "今天运势「" + level + "」哦～命理" + concl
+                    + "，记得照着宜忌来，" + _pme(cid) + "都替你看着呢～♡"))
     ben_gan = info["ben_ganzhi"][0] if info["ben_ganzhi"] != "—" else "—"
     ben_zhi = info["ben_ganzhi"][1] if len(info["ben_ganzhi"]) > 1 else ""
     lines = [

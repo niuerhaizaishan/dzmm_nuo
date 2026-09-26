@@ -15,7 +15,7 @@ from brains import (generate_perf_comment, generate_perf_ending,
                     generate_person_summary)
 from dzmm import get_messages_all, get_messages_since, get_user
 from wx_alert import send_weixin
-from personas import me as _pme                    # 自称：按群人设名（小小糯/薇丝）
+from personas import me as _pme, p as _pp          # 自称 + 按群人设文案（小小糯/薇丝）
 from runtime import ctx
 from runtime.features import on as _feat_on     # P12-A：功能开关（唯一判定点）
 from runtime.group_state import _get_perf_state, _set_perf_state
@@ -256,7 +256,9 @@ async def _handle_perf_start(sender, cid: str, start_id: str, dry: bool):
         "review_status": "none",
     }
     _set_perf_state(cid, perf)
-    await _perf_send(sender, "🎬 公演开始啦～姐姐们请开始表演，" + _pme(cid) + "会实时丰富剧情、点评、羞辱哦～（结束发 /公演结束）", cid, dry)
+    await _perf_send(sender, _pp("perf_start", cid) or (
+        "🎬 公演开始啦～姐姐们请开始表演，" + _pme(cid)
+        + "会实时丰富剧情、点评、羞辱哦～（结束发 /公演结束）"), cid, dry)
 
 
 async def _perf_end_bg(sender, cid: str, dry: bool) -> None:

@@ -2398,7 +2398,9 @@ async def main_loop(interval: float, dry: bool, once: bool):
                 if _cid in MUTE_CIDS:
                     continue
                 if _feat_on(_cid, "screen_rescreen"):
-                    await _send(sender, _cid, "🤖 " + _personas.fill(CAPTCHA_RECOVERED_NOTICE, _cid), dry)
+                    await _send(sender, _cid, "🤖 " + (
+                        p("captcha_recovered", _cid)
+                        or _personas.fill(CAPTCHA_RECOVERED_NOTICE, _cid)), dry)
                     await _rescreen_pending(sender, _cid, dry)
             log("✅ 风控解除（Socket.IO 已重连），已群内提醒 + 补筛查")
         _was_sio_connected = is_conn
@@ -2484,7 +2486,9 @@ async def main_loop(interval: float, dry: bool, once: bool):
                         for _cid in GROUPS:
                             if _cid in MUTE_CIDS:
                                 continue
-                            await _send(sender, _cid, "🤖 " + _personas.fill(CAPTCHA_RECOVERED_NOTICE, _cid), dry)
+                            await _send(sender, _cid, "🤖 " + (
+                                p("captcha_recovered", _cid)
+                                or _personas.fill(CAPTCHA_RECOVERED_NOTICE, _cid)), dry)
                             await _rescreen_pending(sender, _cid, dry)
                         log("✅ 风控解除，已群内提醒 + 补筛查")
                 else:
@@ -3286,7 +3290,12 @@ async def main_loop(interval: float, dry: bool, once: bool):
                     if not _captcha_notified.get(cid):
                         _captcha_notified[cid] = True
                         if _feat_on(cid, "screen_captcha_notice"):
-                            await _send(sender, cid, "🤖 " + _personas.fill(CAPTCHA_NOTICE, cid), dry)
+                            # 撞验证码是**跨群**提示：认证群用代码默认那句（小小糯口吻），
+                            # 玫瑰房有自己那份（见 personas.PHRASES.rose_butler），
+                            # 取不到就回落默认 —— 认证群的文案一个字没变。
+                            await _send(sender, cid, "🤖 " + (
+                                p("captcha_notice", cid)
+                                or _personas.fill(CAPTCHA_NOTICE, cid)), dry)
                         # 拉 noVNC 人工验证窗口（撞验证码时提供人工过滑块入口，只拉一次防刷屏）
                         try:
                             subprocess.Popen(

@@ -173,7 +173,86 @@ def test_room_trigger_gate_accepts_the_new_name():
     assert _is_room_trigger(ROSE, "some-uid", "今晚吃什么好呢") is False
 
 
-# ---------------------------------------------------------------- 4. 护栏
+# ---------------------------------------------------------------- 5. 口径
+
+# 玫瑰房**固定文案**（不走 AI 的那些）：客人一眼看到，口径必须跟人设 extra 一致。
+# 人设原文：优雅、从容、慢半拍；**不要撒娇卖萌、不要自称"小秘书"、不要叫"姐姐们"**；
+# 来访者一律称「客人」，Vv 是「Vv姐姐」；有客人进房时屋主规矩**一字不改**。
+ROOM_RULE_LINE = "此间玫瑰，遵循屋主的规则，未经主人同意不得摘取玫瑰花。"
+
+# 撒娇/卖萌标记（人设明令禁止的那一类）
+_CUTE_MARKS = ("小秘书", "♡", "呀", "啦", "哦～", "好不好")
+_OWNER_NAMES = ("Vv姐姐", "糯糯姐", "糯糯姐姐")
+# 人设**钦定原句**：extra 里明写"婉拒：「这间屋子只有 Vv姐姐 能吩咐我哦～」"，
+# 所以这一句的「哦～」是屋主自己定的，不算跑偏。
+_SELF_SANCTIONED = {"ROOM_GUEST_REFUSE", "phrase:sync_only_owner"}
+
+
+def _rose_fixed_texts():
+    """玫瑰房当前**真正会发出去**的固定句（本群人设话术优先，不用代码兜底）。
+
+    ⚠️ 刻意不放 `bot.CAPTCHA_NOTICE` / `HELP_TEXT` / `INTRO_TEXT`：那三个是
+    **没有本群文案时的兜底**，玫瑰房各自都有自己那份（话术表 / 新增的跨群 key），
+    所以它们不会出现在玫瑰房 —— 放进来测的是"兜底句"，不是"客人的眼睛"。
+    """
+    out = {
+        "ROOM_GREET_TEMPLATE": P.ROOM_GREET_TEMPLATE.replace(
+            "{name}", "某客人").replace("{item}", "一杯茶").replace("{line}", "请自便。"),
+        "ROOM_GUEST_REFUSE": P.ROOM_GUEST_REFUSE,
+        "ROOM_GHOST_TEXT": P.fill(P.ROOM_GHOST_TEXT, ROSE),
+        "ROOM_GHOST_WARN": P.fill(P.ROOM_GHOST_WARN, ROSE),
+        "ROOM_GHOST_BACK": P.fill(P.ROOM_GHOST_BACK, ROSE, who="Vv"),
+    }
+    for i, x in enumerate(P.ROOM_GREET_LINES):
+        out["ROOM_GREET_LINES[{}]".format(i)] = P.fill(x, ROSE)
+    for k in P.known_phrase_keys("rose_butler"):
+        t = P.p(k, ROSE)
+        if t:
+            out["phrase:" + k] = t
+    # 跨群固定句（玫瑰房那份）
+    for k in ("captcha_notice", "captcha_recovered", "perf_start",
+              "trend_empty", "recap_fail"):
+        t = P.p(k, ROSE)
+        if t:
+            out["cross:" + k] = t
+    return out
+
+
+def test_rose_fixed_texts_speak_in_the_butler_voice():
+    bad = []
+    for label, t in _rose_fixed_texts().items():
+        if label not in _SELF_SANCTIONED:
+            for mark in _CUTE_MARKS:
+                if mark in t:
+                    bad.append("{}: 出现撒娇标记 {!r} → {}".format(label, mark, t[:40]))
+        rest = t
+        for nm in _OWNER_NAMES:
+            rest = rest.replace(nm, "")
+        if "姐姐" in rest or "妹妹" in rest:
+            bad.append("{}: 叫了客人姐姐/妹妹 → {}".format(label, t[:40]))
+    assert not bad, "玫瑰房固定文案口径跑偏：\n" + "\n".join(bad)
+
+
+def test_room_rule_line_is_verbatim():
+    """屋主规矩那句话，人设要求"一字不改地说出"。"""
+    assert ROOM_RULE_LINE in P.ROOM_GREET_TEMPLATE
+    for _ in range(20):
+        assert ROOM_RULE_LINE in bot._room_greet_text("某客人", ROSE)
+
+
+def test_cross_group_notices_override_only_for_rose():
+    """公演/算命/回顾/风控这些**跨群**固定句：玫瑰房换口径，认证群一个字不变。"""
+    for k in ("captcha_notice", "captcha_recovered", "perf_start",
+              "fortune_tail", "trend_empty", "recap_fail"):
+        assert P.p(k, ROSE), "玫瑰房缺这份覆盖：" + k
+        assert P.p(k, NUO_GROUP) == "", "认证群不该有这个 key（要保持代码默认）" + k
+    # 认证群走代码默认句（原样）
+    assert "姐姐们请开始表演" in (
+        P.p("perf_start", NUO_GROUP)
+        or "🎬 公演开始啦～姐姐们请开始表演，{}会实时丰富剧情".format(P.me(NUO_GROUP)))
+
+
+# ---------------------------------------------------------------- 6. 护栏
 
 # 扫描范围 = **会往群里发文字**的模块。
 # 不扫 brains.py：那里的「小小糯」全是 `_p("XXX_PROMPT", …)` 的提示词默认值，

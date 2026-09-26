@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 from brains import generate_recap
 from dzmm import get_messages_since
-from personas import me as _pme                    # 自称：按群人设名（小小糯/薇丝）
+from personas import me as _pme, p as _pp          # 自称 + 按群人设文案（小小糯/薇丝）
 from runtime.ctx import PRIMARY_CID
 from runtime.identity import _load_member_names, get_full_name, get_name, is_self
 from runtime.obs import log
@@ -225,7 +225,8 @@ async def recap_absent(cid: str, uid: str, text: str = "") -> str:
                                        max_count=600)
     except Exception as e:
         log("回顾拉取失败: " + str(e)[:60])
-        return "哎呀，" + _pme(cid) + "翻记录的时候卡了一下，等会儿再问一次好不好～"
+        return (_pp("recap_fail", cid)
+                or "哎呀，" + _pme(cid) + "翻记录的时候卡了一下，等会儿再问一次好不好～")
     # 先把成员昵称一次性load进来：否则转录里每个陌生 uid 都会单独发一次 HTTP 查名字
     # （实测 6 小时窗口因此多花 2.9 秒）
     try:
