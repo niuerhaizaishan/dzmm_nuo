@@ -93,6 +93,8 @@ def test_defaults_match_the_code_constants():
         ("heat.judge_interval", 1800),
         ("heat.judge_trigger", 80),
         ("heat.pending_max", 10),
+        # 房间对话的 max_tokens（玫瑰房人设要求"4～8 句"，线上给玫瑰房调高）
+        ("room.reply_max_tokens", 400),
         # 定时
         ("schedule.scan_hour", bot.PROFILE_SCAN_HOUR),
         ("schedule.greet_window_min", 90),

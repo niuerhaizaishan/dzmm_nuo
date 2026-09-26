@@ -252,7 +252,13 @@ _FEATURES_RAW = (
     # ---- F. 房间玩法（7，仅房间群）
     Feature("room_welcome", "新客欢迎（含屋主规矩）", "room"),
     Feature("room_refuse", "客人指令婉拒", "room"),
-    Feature("room_order", "点单（酒水/雪茄）", "room"),
+    Feature("room_order", "点单（酒水/雪茄）", "room",
+            params=(
+                Param("room.reply_max_tokens", "房间回复上限", 400, "token", 100, 2000,
+                      tier="可配",
+                      note="房间对话的 max_tokens。玫瑰房人设要求 4～8 句，"
+                           "默认 400 容易说到一半被截断（线上给玫瑰房调高）"),
+            )),
     Feature("room_flower", "摘花/花瓣", "room"),
     Feature("room_ghost", "红衣女鬼", "room", resets=("rose_ghost",),
             note="3h 兜底只在收到房间消息时检查，冷清房间不自愈"),

@@ -206,21 +206,31 @@ def test_rename_rewrites_names_and_every_self_reference():
 
     否则 `extra` 里那句"你自称「小小糯」"会赢（它自己写着"优先级最高"），
     模型照旧自称旧名字 —— 看起来改了、其实没改。
+
+    P12-H 第二阶段之后，`rose_butler` 的**代码默认**自称就是「薇丝」
+    （`extra` 与话术都改了，话术走 `{me}` 占位符）⇒ 从默认值改名时，
+    工具**只需**改两个字段；但配置里写死旧名字的文本仍然会被一起换掉
+    （见下面两条 + `test_rename_still_rewrites_literal_phrase_names`）。
     """
     T = _tool()
     NEW = "玫瑰管家"   # 别用「薇丝」：代码默认已经叫薇丝，那样改名是个 no-op，测不出东西
+    # 前置：默认值自己不能残留默认名（否则房间里会漏出旧名字）
+    assert "小小糯" not in P.PERSONAS["rose_butler"]["extra"]
+    assert "薇丝" in P.PERSONAS["rose_butler"]["extra"]
+
     item, changes = T.build_rename("rose_butler", {"personas": {}}, P, NEW)
     assert item["name_full"] == NEW and item["name_short"] == NEW
-    assert "小小糯" not in item["extra"], "extra 里不能残留旧名字"
-    assert item["extra"].count(NEW) == P.PERSONAS["rose_butler"]["extra"].count("小小糯")
     assert any("name_full" in c for c in changes)
-    assert any("extra" in c for c in changes)
-    # P12-H 追加：代码默认话术已经改成 `{me}` 占位符（不再写死名字），
-    # 所以"改名"这一步**不需要**再生成话术覆盖 —— 但仍要保证两句都成立：
-    #   ① 改名工具不再产出话术覆盖；② 房间里任何一条话术都不含旧名字。
+    assert item.get("extra") is None, "默认 extra 里没有旧名字 → 不需要产出覆盖"
     assert not item.get("phrases"), "话术走 {me}，不该再产生话术覆盖"
     for k in P.known_phrase_keys("rose_butler"):
         assert "小小糯" not in P.p(k, ROSE), k
+
+    # 配置里写死旧名字的 extra：必须被一起换掉（这才是这条测试的原始动机）
+    raw = {"personas": {"rose_butler": {"extra": "你自称「小小糯」，别叫姐姐。"}}}
+    item2, ch2 = T.build_rename("rose_butler", raw, P, NEW)
+    assert item2["extra"] == "你自称「" + NEW + "」，别叫姐姐。"
+    assert any("extra" in c for c in ch2)
 
 
 def test_rename_still_rewrites_literal_phrase_names():

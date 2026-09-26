@@ -3101,7 +3101,11 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                            "（如果这句话是在调戏你，就是 TA 的第 " + str(n + 1)
                                            + " 次，按第 " + str(n + 1)
                                            + " 档演出，并在回复最末尾加上 [[STRIKE]]）"})
-                            reply = await asyncio.to_thread(generate_reply, ctx)
+                            # 房间回复的 token 上限跟群里的人设走：玫瑰房要"4～8 句"，
+                            # 认证群那份（默认 400）保持原样。见 tuning room.reply_max_tokens。
+                            reply = await asyncio.to_thread(
+                                generate_reply, ctx,
+                                max_tokens=int(_tune("room.reply_max_tokens", cid)))
                             # 调戏计数：AI 的 [[STRIKE]] 标记为主，关键词兜底（必须点名了管家）
                             # P12-A：`room_lewd` 只管"三级递进"这套计数/送出机制；
                             # 关掉它，管家照常回话、只是不再数次数（不是把房间关了）

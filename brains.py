@@ -650,7 +650,13 @@ def _call_llm(system_prompt: str, user_content: str,
     return reply
 
 
-def generate_reply(messages: list[dict], api_key: str = DEFAULT_KEY) -> str:
+def generate_reply(messages: list[dict], api_key: str = DEFAULT_KEY,
+                   max_tokens: int = None) -> str:
+    """群内闲聊/房间对话的回复。
+
+    `max_tokens` 可覆盖（默认 400）：玫瑰房的人设要求"4～8 句"，400 token 容易
+    把话说到一半就截断 —— 由调用方按群传 `tuning: room.reply_max_tokens`。
+    """
     chat = []
     for m in messages[-10:]:
         name = m.get("sender", "")
@@ -660,7 +666,8 @@ def generate_reply(messages: list[dict], api_key: str = DEFAULT_KEY) -> str:
         else:
             chat.append(text)
     context = "\n".join(chat)
-    return _call_llm(CMD_PROMPT, context, api_key, max_tokens=400)
+    return _call_llm(CMD_PROMPT, context, api_key,
+                     max_tokens=int(max_tokens or 400))
 
 
 MEMORY_SUMMARY_PROMPT = _p("MEMORY_SUMMARY_PROMPT", """你是"小小糯～"，下面是你记住的一些事情（可能来自不同人、不同时间）。请把它们整理成一段清晰有条理的总结，方便你自己回顾。

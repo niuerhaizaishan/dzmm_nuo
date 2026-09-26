@@ -252,6 +252,54 @@ def test_cross_group_notices_override_only_for_rose():
         or "🎬 公演开始啦～姐姐们请开始表演，{}会实时丰富剧情".format(P.me(NUO_GROUP)))
 
 
+def test_rose_help_text_does_not_mention_the_auth_group():
+    """不能用的功能就说"暂未开放"，**不要**写"只在认证妹子群开放"（屋主指定）。"""
+    t = P.p("help_text", ROSE)
+    assert "认证" not in t
+    assert "暂未开放" in t
+
+
+def test_butler_extra_asks_for_richer_replies():
+    """屋主要求：玫瑰房的回复要**丰富、长一些**（人设里必须真写着这件事）。"""
+    extra = P.persona_for(ROSE)["extra"]
+    assert "篇幅" in extra and "丰盛" in extra
+    assert "4～8 句" in extra
+    assert "说话短，一两句就够" not in extra, "旧的『短句』要求必须删掉，否则模型还回一两句"
+    assert "不要撒娇卖萌" in extra, "优雅的底线不能一起删掉"
+
+
+def test_room_reply_token_budget_is_tunable_per_group():
+    """房间回复的 max_tokens 走 tuning，且**按群**生效（玫瑰房可单独调高）。"""
+    import runtime.tuning as T
+    assert T.get("room.reply_max_tokens", ROSE) == 400          # 代码默认
+    assert T.get("room.reply_max_tokens", NUO_GROUP) == 400
+    T.set_overrides({"{}|room.reply_max_tokens".format(ROSE): 800})
+    try:
+        assert T.get("room.reply_max_tokens", ROSE) == 800
+        assert T.get("room.reply_max_tokens", NUO_GROUP) == 400, "别串到认证群"
+    finally:
+        T.set_overrides({})
+
+
+def test_generate_reply_accepts_the_token_budget(monkeypatch):
+    """`generate_reply` 要真的把上限传下去；不传就是老行为（400）。"""
+    import brains
+    seen = {}
+    monkeypatch.setattr(brains, "_call_llm",
+                        lambda sp, uc, k=None, **kw: seen.update(kw) or "x")
+    brains.generate_reply([{"sender": "客人", "text": "在吗"}], max_tokens=800)
+    assert seen.get("max_tokens") == 800
+    brains.generate_reply([{"sender": "客人", "text": "在吗"}])
+    assert seen.get("max_tokens") == 400
+
+
+def test_room_reply_path_reads_the_param():
+    """源码级：房间回复那一处必须读 tuning，而不是写死。"""
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    assert 'generate_reply, ctx' in src
+    assert 'room.reply_max_tokens' in src
+
+
 # ---------------------------------------------------------------- 6. 护栏
 
 # 扫描范围 = **会往群里发文字**的模块。
