@@ -1,5 +1,53 @@
 # P12-H 追加记录（2026-09-26）：第二个 Bot「薇丝-bot」进玫瑰房 + 多 Bot 身份
 
+## 结果（已上线）
+
+| 项 | 值 |
+|---|---|
+| Bot | `weisi_rose` / **薇丝-bot**（简称 薇丝） |
+| 绑定群 | **Rose（505/506）玫瑰房** `4a56be71-9ca6-4785-b45f-18725d187f1a` |
+| bot_id（平台用户 id） | `36916cb2-b423-465b-afd0-21476e92196b` |
+| **入群时间** | **2026-09-26 13:10:49 UTC**（`chatroom.addBot` 返回 `status: added`） |
+| 群成员 | 23 → **24**，成员表里 `isBot=true, fullName=薇丝-bot` ✓ |
+| 身份 | 已写进 `config.json` 的 `bots[].uid`；启动自证 `我是谁=36916cb2,eee88c3d` |
+| 路由 | `bot路由: 已启用 覆盖群=bd7fe6a4,4a56be71` ⇒ 玫瑰房的文本走薇丝-bot |
+| 人设 | `rose_butler` 改名为**薇丝**（热加载生效，未重启） |
+
+## 关键教训：tRPC 的 **mutation 必须从页面里 fetch**，裸 requests 会 403
+
+这是本次唯一真正的坑，值得单独记：
+
+| 调用 | 裸 requests | 页面内 fetch |
+|---|---|---|
+| 查询 `chatroom.listBots` / `getMembers` | **200 通** | 200 通 |
+| 变更 `chatroom.addBot` | **403 Forbidden**（两种 body 形状都一样） | **200 `{"status":"added"}`** ✓ |
+
+⇒ 平台的 **WAF 对 tRPC mutation 校验浏览器上下文**（Origin/Referer/UA/`x-trpc-source` 之类）。
+不是权限问题（群主/管理员确实够），也不是 body 形状问题。**以后所有内部 tRPC 变更
+一律走页面内 fetch** —— 已固化成 `tools/add_bot_to_chatroom.py`（`--dry-run` 可先看）。
+
+官方文档（`https://www.laopo.ai/studio/bots/docs`，是 SPA，要用浏览器渲染才看得到正文）明确：
+
+- **公开** Bot：任意普通群聊的**群主或管理员**都能加；
+- **私有** Bot：只有**创建者本人**能加，且创建者必须是目标群的群主/管理员；
+- **scenario 群聊不展示 Add Bot 入口**（这类群加不了）⇒ 所以"UI 里找不到入口"这件事
+  本身就是一条有效信息：要么入口在"输入框 + 面板"里，要么这个群是 scenario；
+- 加成功后群内会有系统消息、成员列表实时刷新；
+- HTTP API 只文档化了 `send-message`（**没有**"加群"接口）—— 加群是 UI/内部 tRPC 的事。
+
+## 不发消息也能证明"token + 成员资格"都对
+
+往 `send-message` 只给 `chatroom_id`、**不给 content**：
+
+```
+400 {"ok":false,"error":"Invalid request body",
+     "details":{"fieldErrors":{"content":["必填"]}}}
+```
+
+是**参数校验错**而不是 `403 Bot is not a member` ⇒ token 有效 **且**它确实在目标群里；
+而且因为没内容，**一个字都没发出去**。这个手法以后每次加完 Bot 都可以复用。
+
+
 ## 做了什么
 
 | 项 | 内容 |
