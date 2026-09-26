@@ -578,3 +578,19 @@ def test_dashboard_reload_button_only_requests(cfgfile, admin, monkeypatch):
     assert "已请求机器人进程立即热加载" in body
     assert H.request_file().is_file()
     assert T.get("heat.climax_threshold") != 163, "面板不该自己应用"
+
+
+def test_readonly_panel_proof_markers_include_p11_p12():
+    """只读面板的「启动自证行」要包含 P11/P12 那几行。
+
+    否则"配置到底来自文件还是默认值 / 覆盖了几个 / 热加载开没开"在面板上
+    看不到 —— 而那正是这一期最需要一眼看到的东西。
+    每一行都是**每次启动都会打**的（`bot.py` 里有对应 log 调用），
+    所以"全都在"才是有意义的判据。
+    """
+    import dashboard as dash
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    for m in ("P11: 配置=", "P11: 人设", "P12: 功能", "P12: 参数",
+              "P12: 人设文本", "P12: 热加载="):
+        assert m in dash.PROOF_MARKERS, m
+        assert m in src, "bot.py 里没有打印 {} —— 面板会一直显示缺失".format(m)
