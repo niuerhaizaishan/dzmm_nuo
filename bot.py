@@ -117,6 +117,7 @@ from runtime.trend import is_trend_cmd, is_trend_board_cmd, _trend_days, _trend_
 from runtime.recap import is_recap_cmd, _recap_intent, _recap_window, _day0, _msg_ts, _fmt_ts, _recap_mentions, _recap_transcript, recap_absent, RECAP_CIDS, RECAP_MAX_MSGS, RECAP_MAX_HOURS, RECAP_COOLDOWN  # P8 第 4 步：搬到 runtime/recap.py
 from runtime.sign import _room_owner, _is_room_trigger, _is_flower_grab, _sign_from_md, _sign_intent, _sign_find, _sign_parse_birth, _sign_stored, _sign_remember, _sign_calc, _sign_recent, _sign_card, _sign_reply, _ROOM_LAYOUT_WORDS, _ROOM_CONJURE_WORDS, _SIGN_FULL, _SIGN_SHORT, _SIGN_ME_RE, _SIGN_NAMES  # P8 第 4 步：搬到 runtime/sign.py
 from runtime.group_state import _get_fasao_state, _set_fasao_state, _get_dj_state, _set_dj_state, _get_perf_state, _set_perf_state, _get_vote_state, _set_vote_state, _get_story_state, _set_story_state, _get_memory, _remember, _set_last_action, _get_last_action, MEMORY_MAX  # P8 第 4 步：搬到 runtime/group_state.py
+from runtime import features as _features   # P12-A：功能注册表（唯一开关判定点）
 from runtime.heat import _add_heat, HEAT_SCENE_PICK, HEAT_SCENE_CONTINUE_TARGET, HEAT_SCENE_CONTINUE_SENDER, HEAT_INSULT_TARGET, HEAT_INSULT_SENDER, HEAT_FASAO_PICK, HEAT_DIAOJIAO_ROUND, HEAT_VOTE_STARTER, HEAT_VOTE_VOTER, HEAT_STORY_VOTER, HEAT_STORY_PROTAGONIST  # P8 第 4 步：搬到 runtime/heat.py
 from runtime.memory import _extract_names, _extract_keywords, _fast_rank, _ai_filter, _retrieve_memory, _append_memory_ref, _extract_remember, is_remember_cmd, is_recall_cmd, _record_history, _on_rename, _refresh_profile_latest, MEMORY_TRIGGERS, MEMORY_FILTER_PROMPT  # P8 第 4 步：搬到 runtime/memory.py
 from runtime.poem import is_poem_cmd, poem, _do_poem, _poem_text, _poem_resolve, _record_poem, _get_poem_history, _parse_poem_style, POEM_STYLE_KEYWORDS  # P8 第 4 步：搬到 runtime/poem.py
@@ -126,6 +127,7 @@ from runtime.vote import is_vote_start_cmd, is_vote_end_cmd, is_vote_choice_cmd,
 from runtime.story import is_story_start_cmd, is_story_end_cmd, start_story, _check_story, _finish_story, _advance_story, _record_story_vote, _story_vote_result, STORY_MAX_ROUND, STORY_VOTE_SECONDS  # P8 第 4 步：搬到 runtime/story.py
 from runtime.perf import _detect_perf_query, summarize_person_perf, is_perf_start_cmd, is_perf_end_cmd, _get_perf_content, _get_perf_content_full, _perf_heat_target, _perf_m_name, _perf_send, _handle_perf_start, _perf_end_bg, _handle_perf_end, _check_perf_interact, OWNER_UID  # P8 第 4 步：搬到 runtime/perf.py
 from runtime.fasao import is_fasao_cmd, fasao, is_scene_cmd, _parse_scene_target, scene, is_fasao_end_cmd, _check_fasao_timeout, end_fasao, _pick_combo_by_xp, FASAO_TIMEOUT, SCENES, POSITIONS, EXTRAS, XP_BIAS  # P8 第 4 步：搬到 runtime/fasao.py
+from runtime.perf import _check_perf_timeout  # P12-A：公演超时解锁（原先没有超时）
 from runtime.diaojiao import is_dj_end_cmd, _dj_target_text, _dj_end_text, is_diaojiao_cmd, start_diaojiao, _check_diaojiao, DJ_PARTICIPATE_HINT  # P8 第 4 步：搬到 runtime/diaojiao.py
 
 # DZMM 主站 origin（多线路切换：env_config 从 DZMM_HOST 环境变量读）
@@ -488,11 +490,12 @@ class Sender:
             self._consecutive_send_fail += 1
             if self._consecutive_send_fail >= 3 and not self._send_alerted:
                 self._send_alerted = True
-                try:
-                    await asyncio.to_thread(send_weixin,
-                        "🚨【小小糯bot】发送持续失败（连续 3 条，自愈无效），请检查代理/cookie")
-                except Exception:
-                    pass
+                if _feat_on("", "alert_send_fail"):
+                    try:
+                        await asyncio.to_thread(send_weixin,
+                            "🚨【小小糯bot】发送持续失败（连续 3 条，自愈无效），请检查代理/cookie")
+                    except Exception:
+                        pass
         return ok
 
     async def _verify_sent(self, cid: str, text: str) -> bool:
@@ -1078,6 +1081,8 @@ def _daily_profile_scan() -> list:
     api_used = 0
     for cid in GROUPS:
         if cid in MUTE_CIDS:  # 静默监控群：不扫档案、不播报
+            continue
+        if not _feat_on(cid, "profile_scan"):   # P12-A 闸门：这个群今天不扫
             continue
         try:
             members = get_members(cid)
@@ -1711,8 +1716,12 @@ async def _scheduled_pushes(sender, dry: bool) -> None:
         # 窗口：[整点, 整点+90 分钟]；超出窗口就不补了（避免半夜恢复时补发早安）
         if not (hour * 60 <= cur <= hour * 60 + 90):
             continue
+        # P12-A 闸门：三个问候各自可关（按群由 PUSH_CIDS 决定，这里是功能级开关）。
+        # 注意 todo 要按**群**过滤（同一个问候在不同群可以有不同开关）。
         key = "last_greet_" + period
-        todo = [c for c in PUSH_CIDS if (st.get(c) or {}).get(key) != today]
+        todo = [c for c in PUSH_CIDS
+                if (st.get(c) or {}).get(key) != today
+                and _feat_on(c, _GREET_FEATURES[period])]
         if not todo:
             continue
         try:
@@ -1736,6 +1745,8 @@ async def _scheduled_pushes(sender, dry: bool) -> None:
             # 午间顺带发每日记忆汇报
             for c in PUSH_CIDS:
                 if (st.get(c) or {}).get("last_memreport") == today:
+                    continue
+                if not _feat_on(c, "memory_report"):
                     continue
                 try:
                     await _publish_memory_report(sender, c, dry)
@@ -1835,10 +1846,35 @@ def _truthy_env(name: str, default: str = "off") -> bool:
     return (os.environ.get(name) or default).strip().lower() in ("on", "1", "yes", "true")
 
 
+# 三个问候的功能开关 key：`period` 是拼出来的，**必须在这里显式登记** ——
+# 否则静态扫描（tests/test_feature_registry.py）看不见它，而"_feat_on 遇到
+# 不认识的 key 只记日志 + 放行"会把它变成一次静默失效。
+_GREET_FEATURES = {"morning": "greet_morning", "noon": "greet_noon",
+                   "evening": "greet_evening"}
+
+
 def _outbox_enabled() -> bool:
     """DZMM_OUTBOX=off/0/no/false 可退回直发（回滚开关）。默认开。"""
     v = (os.environ.get("DZMM_OUTBOX") or "on").strip().lower()
     return v not in ("off", "0", "no", "false")
+
+
+def _feat_on(cid: str, key: str) -> bool:
+    """功能开关的**唯一入口**（P12-A）。各功能只调它，不许自己写判断。
+
+    本期"只接线不上线"：没有任何覆盖时 `features.on()` 返回注册表里的默认值
+    （= 今天的行为），所以这一版**零行为变化**；配置覆盖在 P12-C 才接上。
+
+    未知 key 在这里**不抛**：这条路在消息处理热路径上，抛了会中断整个群的处理。
+    折中做法是记日志 + 放行（放行 = 保持今天的行为），
+    并由 `tests/test_feature_registry.py` 静态扫描 bot.py 里用到的 key
+    是否都在注册表里 —— 开发期就拦住，而不是线上。
+    """
+    try:
+        return _features.on(cid or "", key)
+    except Exception as e:                                     # noqa: BLE001
+        log("features: 判定失败 key=" + str(key) + " " + str(e)[:60])
+        return True
 
 
 def _log_route(event: str, cid: str, detail: str = "") -> None:
@@ -1924,6 +1960,13 @@ def _log_runtime_status() -> None:
         log("P11: 人设 配置指定={} 生效群数={}".format(len(_cp), len(GROUPS)))
         for _cid, _key in sorted(_cp.items()):
             log("P11: 人设 cid={} -> {}".format(_cid[:8], _key))
+        # P12-A 自证：功能注册表的接线进度与"现在关掉了哪些"。
+        # 与 P8/P11 同一个道理 —— "悄悄退回默认值/悄悄没接线"必须能一眼看出来。
+        _fs = _features.summary()
+        log("P12: 功能 共={} 已接线={} 待接线={} 默认关={} 秒退={}".format(
+            _fs["total"], _fs["wired"], _fs["planned"],
+            ",".join(_fs["off_by_default"]) or "无",
+            "开" if _fs["env_all_on"] else "关"))
     except Exception as e:                                 # noqa: BLE001
         log("P11: 配置状态未知（" + str(e)[:60] + "）")
 
@@ -2019,8 +2062,9 @@ async def main_loop(interval: float, dry: bool, once: bool):
             for _cid in GROUPS:
                 if _cid in MUTE_CIDS:
                     continue
-                await _send(sender, _cid, "🤖 " + CAPTCHA_RECOVERED_NOTICE, dry)
-                await _rescreen_pending(sender, _cid, dry)
+                if _feat_on(_cid, "screen_rescreen"):
+                    await _send(sender, _cid, "🤖 " + CAPTCHA_RECOVERED_NOTICE, dry)
+                    await _rescreen_pending(sender, _cid, dry)
             log("✅ 风控解除（Socket.IO 已重连），已群内提醒 + 补筛查")
         _was_sio_connected = is_conn
         # 每天 06:00 后首次循环：全群扫描昵称/简介/签名变化，有变化就在群里说一声
@@ -2030,7 +2074,10 @@ async def main_loop(interval: float, dry: bool, once: bool):
             try:
                 _notices = await asyncio.to_thread(_daily_profile_scan)
                 for _ncid, _ntxt in _notices:
-                    await _send(sender, _ncid, _ntxt, dry)
+                    # 「档案自动构建」与「改名播报」是两个开关：扫描仍在做，
+                    # 只是可以选择"不发群消息"（数据照样更新）
+                    if _feat_on(_ncid, "notice_rename"):
+                        await _send(sender, _ncid, _ntxt, dry)
             except Exception as _e:
                 log("档案扫描异常: " + str(_e)[:60])
         # 定时问候 / 记忆汇报：用主 sender（页面常驻、秒发）发出，不再靠独立进程的冷浏览器
@@ -2787,8 +2834,9 @@ async def main_loop(interval: float, dry: bool, once: bool):
                         now = datetime.now()
                         today = now.strftime("%Y-%m-%d")
                         has_data = bool((group_state.get("heat_value") or {}) or (group_state.get("msg_count") or {}))
-                        if (now.hour in (12, 18) and cid in PUSH_CIDS and group_state.get("last_daily_rank_date") != today
-                                and has_data):
+                        if (now.hour in (12, 18) and cid in PUSH_CIDS
+                                and group_state.get("last_daily_rank_date") != today
+                                and _feat_on(cid, "rank_push") and has_data):
                             group_state["last_daily_rank_date"] = today
                             state[cid] = group_state
                             save_state(state)
@@ -2816,6 +2864,12 @@ async def main_loop(interval: float, dry: bool, once: bool):
                         else:
                             ok = await sender.send("🤖 " + fasao_timeout, cid)
                             log("✅" if ok else "❌")
+
+                # 公演超时自动解锁（P12-A 补）。原先**没有超时**：
+                # 人散了没人发 /公演结束 ⇒ 这个群被永久屏蔽，只有停止词那条分支可达。
+                # 这里只解锁、不发消息、不生成小说（待审的 review_status 保留）。
+                if _get_perf_state(cid).get("active"):
+                    _check_perf_timeout(cid)
 
                 # 投票定时检查（截止到→自动结束；时间驱动，无新消息也执行）
                 if _get_vote_state(cid).get("active"):

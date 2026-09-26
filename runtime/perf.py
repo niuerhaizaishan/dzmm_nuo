@@ -209,6 +209,40 @@ async def _perf_send(sender, text: str, cid: str, dry: bool):
     log("✅" if ok else "❌")
 
 
+PERF_TIMEOUT_SEC = 7200
+
+
+def _check_perf_timeout(cid: str, timeout_sec: float = None) -> str:
+    """公演超时自动结束。返回要发的文案；没超时返回 ""。
+
+    ### 为什么必须补这个（原先**根本没有超时**）
+
+    公演是五个玩法状态机里唯一没有超时的。而所有玩法都用
+    "`active` 为真 → 该群其他指令一律不处理"做互斥，于是：
+
+    - 公演开着而人散了（没人发 `/公演结束`）⇒ **这个群永久哑掉**，
+      只有停止词那条分支还能走到；
+    - 运维在页面上把"公演"关掉也救不回来 —— 状态还在，屏蔽照样生效。
+
+    超时是"关掉功能能安全关闭"的前提（见 `runtime/features.py` 的复位设计）。
+    这里只**解锁**：清掉 `active`，保留 `review_status`（待审的小说不能因此丢），
+    **不主动生成小说**（那是 `/公演结束` 的流程，超时不该悄悄花一次 LLM 调用）。
+    """
+    perf = _get_perf_state(cid)
+    if not perf.get("active"):
+        return ""
+    limit = float(PERF_TIMEOUT_SEC if timeout_sec is None else timeout_sec)
+    ts = float(perf.get("last_interact_ts") or perf.get("started_ts") or 0)
+    if ts and (time.time() - ts) < limit:
+        return ""
+    perf["active"] = False
+    perf["timeout_ts"] = time.time()
+    _set_perf_state(cid, perf)
+    log("⏱️ [{}] 公演超时（{:.0f} 分钟无互动）自动解锁".format(
+        (cid or "")[:8], limit / 60.0))
+    return ""
+
+
 async def _handle_perf_start(sender, cid: str, start_id: str, dry: bool):
     perf = {
         "active": True,
