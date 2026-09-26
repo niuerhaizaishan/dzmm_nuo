@@ -276,8 +276,15 @@ def _flag(form, key):
     return str(v).strip() in ("1", "on", "true", "yes")
 
 
-def parse_form(form) -> dict:
-    """把扁平的表单字段还原成配置 dict。**空行忽略**。"""
+def parse_form(form, base=None) -> dict:
+    """把扁平的表单字段还原成配置 dict。**空行忽略**。
+
+    `base` = 当前配置（`_raw_from_store()` 的结果）。**P12-C 起必须传**：
+    schema v2 多了 `features`/`tuning`/`scopes` 三节，而这个表单页
+    （P12-D 之前）只画了群和 Bot —— 不把这三节带过去，一次"改别名"的保存
+    就会把它们**整节抹掉**（用户配好的开关与参数凭空消失）。
+    这类静默丢失比报错难查得多，所以这里显式继承。
+    """
     groups = []
     for i in range(200):
         p = "groups[{}]".format(i)
@@ -324,7 +331,13 @@ def parse_form(form) -> dict:
         bots.append(bot)
 
     from runtime.config_store import SCHEMA_VERSION
-    return {"version": SCHEMA_VERSION, "groups": groups, "bots": bots}
+    out = {"version": SCHEMA_VERSION, "groups": groups, "bots": bots}
+    # 这一版表单页还画不了 v2 的三节 ⇒ 从 base **原样继承**（见函数注释）。
+    # P12-D 加上矩阵/参数表单后，这里会改成"从表单读、读不到才继承"。
+    for sec in ("features", "tuning", "scopes"):
+        if base and base.get(sec):
+            out[sec] = base[sec]
+    return out
 
 
 def diff_summary(old: dict, new: dict) -> list:

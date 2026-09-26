@@ -50,10 +50,15 @@ from pathlib import Path
 
 __all__ = ["Config", "BotSpec", "GroupSpec", "ConfigError", "load", "save",
            "config_path", "backup_dir", "audit_path", "KEEP_BACKUPS",
-           "SCHEMA_VERSION"]
+           "SCHEMA_VERSION", "SUPPORTED_VERSIONS", "migrate_file",
+           "default_bots_from_env"]
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 KEEP_BACKUPS = 20
+
+# 历史版本 → 升级方式。**只做加法**：新版必须有办法读旧版，
+# 且升级过程要留备份（`migrate_file()` 负责）。
+SUPPORTED_VERSIONS = (1, 2)
 
 _ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIRNAME = "config"
@@ -73,6 +78,10 @@ class GroupSpec:
     screen: bool = False      # 入群筛查（踢游客/男性）
     push: bool = False        # 定时推送（问候/排行/记忆汇报）
     persona: str = ""         # 空 = 用 personas 的默认
+    # P12-C：这一群的**功能开关覆盖**与**参数覆盖**（只写与默认不同的）。
+    # 用 dict（不是 tuple）是因为要按 key 查；约定**只读**，别就地改。
+    features: dict = field(default_factory=dict)   # {"diaojiao": False}
+    tuning: dict = field(default_factory=dict)     # {"heat.climax_threshold": 120}
     # 刻意**没有** `bot` 字段：哪个 Bot 服务哪个群由 `bots[].cid` 唯一决定。
     # 两边都写 = 两个真源 = 迟早不一致，而"面板显示的绑定"与"实际生效的绑定"
     # 不一致正是运维后台最不该犯的错。
@@ -128,6 +137,12 @@ class Config:
     push: tuple = ()
     group_specs: dict = field(default_factory=dict)   # cid -> GroupSpec
     bots: tuple = ()                   # (BotSpec, ...)
+    # P12-C（schema v2）：这两块是"与代码默认不同"的**覆盖**，
+    # 全局的放这里，按群的挂在各自的 GroupSpec 上。
+    features: dict = field(default_factory=dict)      # {"diaojiao": False}
+    tuning: dict = field(default_factory=dict)        # {"devil.base_prob": 0.2}
+    scopes: dict = field(default_factory=dict)        # {"trend": ("cid", ...)}
+    migrated_from: int = 0             # 从哪一版升上来的（0 = 本来就是当前版本）
     source: str = "defaults"           # "file" | "defaults"
     path: str = ""
 
@@ -140,6 +155,26 @@ class Config:
     def group(self, cid: str):
         return self.group_specs.get(cid)
 
+    def feature_map(self) -> dict:
+        """展平成 `runtime.features.set_overrides()` 要的形状。
+
+        全局用 `"key"`，按群用 `"cid|key"` —— 群级优先由 features 层负责。
+        顺序上先全局后按群（dict 后写覆盖先写，语义更直观）。
+        """
+        out = {k: bool(v) for k, v in (self.features or {}).items()}
+        for cid, spec in (self.group_specs or {}).items():
+            for k, v in (getattr(spec, "features", None) or {}).items():
+                out["{}|{}".format(cid, k)] = bool(v)
+        return out
+
+    def tuning_map(self) -> dict:
+        """同 `feature_map()`，给 `runtime.tuning.set_overrides()`。"""
+        out = dict(self.tuning or {})
+        for cid, spec in (self.group_specs or {}).items():
+            for k, v in (getattr(spec, "tuning", None) or {}).items():
+                out["{}|{}".format(cid, k)] = v
+        return out
+
     def as_dict(self) -> dict:
         """序列化回"配置文件的样子"。
 
@@ -150,18 +185,32 @@ class Config:
         这时候在页面上改任何别的东西再保存，配置里那几行会被
         **整行删掉**（别名、人设一起没）。所以这里与运行期语义分开：
         运行期看 `groups`，配置界面看 `group_specs`。
+
+        空字典（没有任何覆盖）**不写进文件** —— 配置文件里"没有这一节"
+        和"这一节是空的"是同一件事，少写点噪声。
         """
-        return {
+        out = {
             "version": SCHEMA_VERSION,
             "groups": [{"cid": g.cid, "alias": g.alias, "enabled": g.enabled,
                         "mute": g.mute, "screen": g.screen, "push": g.push,
-                        "persona": g.persona}
+                        "persona": g.persona,
+                        **({"features": dict(g.features)}
+                           if getattr(g, "features", None) else {}),
+                        **({"tuning": dict(g.tuning)}
+                           if getattr(g, "tuning", None) else {})}
                        for g in self.group_specs.values()],
             "bots": [{"key": b.key, "name": b.name, "short": b.short, "cid": b.cid,
                       "token_env": b.token_env, "enabled": b.enabled,
                       **({"token": b.token} if b.token else {})}
                      for b in self.bots],
         }
+        if self.features:
+            out["features"] = dict(self.features)
+        if self.tuning:
+            out["tuning"] = dict(self.tuning)
+        if self.scopes:
+            out["scopes"] = {k: list(v) for k, v in self.scopes.items()}
+        return out
 
 
 # ---------------------------------------------------------------- 路径
@@ -195,12 +244,91 @@ def _as_list(v, what):
     return v
 
 
+def _strict_bool(v, where):
+    """只认真正的 JSON 布尔。
+
+    ⚠️ 不能再用 `bool(v)`：`bool("false") == True` —— 手写配置里写成字符串
+    `"false"` 会被当成**打开**，而且没有任何提示。这类"静默反向"比报错糟得多。
+    （页面上来的值由 `config_ui.parse_form` 转成真布尔，不受影响。）
+    """
+    _require(isinstance(v, bool), "{} 必须是 true/false（收到 {!r}）".format(where, v))
+    return v
+
+
+def _override_map(v, where, known, kind):
+    """校验一张"覆盖表"：键必须在册，值合法。
+
+    `kind` 是 `features` 或 `tuning`，只影响报错文案。
+    允许两种写法：`{"key": true}` 与 `{"key": {"on": false}}`（后者为将来留扩展位）。
+    """
+    if v is None:
+        return {}
+    _require(isinstance(v, dict), "{} 必须是对象".format(where))
+    out = {}
+    for k, val in v.items():
+        key = str(k).strip()
+        _require(key, "{} 里有空 key".format(where))
+        _require(key in known,
+                 "{}.{} 不是已登记的{}（可用：{}）".format(
+                     where, key, kind,
+                     ", ".join(sorted(known)[:6]) + "…" if len(known) > 6 else
+                     ", ".join(sorted(known))))
+        if isinstance(val, dict):
+            _require("on" in val, "{}.{} 写成对象时必须带 on".format(where, key))
+            val = _strict_bool(val["on"], "{}.{}.on".format(where, key))
+        if kind == "功能开关":
+            out[key] = _strict_bool(val, "{}.{}".format(where, key))
+        else:
+            from runtime.tuning import PARAMS, _coerce, TuningError
+            _param, _feat = PARAMS[key]
+            try:
+                out[key] = _coerce(_param, val, "{}.{}".format(where, key))
+            except TuningError as e:
+                raise ConfigError(str(e))
+    return out
+
+
+def _feature_keys():
+    from runtime.features import keys as _keys
+    return set(_keys())
+
+
+def _param_keys():
+    from runtime.tuning import PARAMS
+    return set(PARAMS)
+
+
+def _scope_names():
+    from runtime.tuning import SCOPE_DEFAULTS
+    return set(SCOPE_DEFAULTS)
+
+
+def _migrate(raw: dict) -> tuple:
+    """把旧版配置**就地升级**成当前版本。返回 (raw, 原版本号)。
+
+    v1 → v2 **只是版本号变化**：三块覆盖节（`features`/`tuning`/`scopes`）
+    是**可选**的（没写 = 没有覆盖 = 用代码默认值），所以旧文件不需要补空节 ——
+    补了反而会把一堆空对象写进文件（`save()` 是照 raw 原样写的）。
+    不认识的高版本**不猜**，交给 `_parse` 报错（宁可起不来，也不要按错的结构跑）。
+    """
+    ver = raw.get("version", SCHEMA_VERSION)
+    if ver == SCHEMA_VERSION:
+        return raw, 0
+    if ver not in SUPPORTED_VERSIONS:
+        return raw, 0                      # 让 _parse 报"不受支持"
+    out = dict(raw)
+    out["version"] = SCHEMA_VERSION
+    return out, ver
+
+
 def _parse(raw: dict, defaults: dict) -> Config:
     """把原始 dict 解析成 Config；任何不合规都抛 ConfigError。"""
     _require(isinstance(raw, dict), "配置根节点必须是对象")
+    raw, migrated_from = _migrate(raw)
     ver = raw.get("version", SCHEMA_VERSION)
     _require(ver == SCHEMA_VERSION,
-             "配置 version={} 不受支持（本程序只认 {}）".format(ver, SCHEMA_VERSION))
+             "配置 version={} 不受支持（本程序支持 {}）".format(
+                 raw.get("version"), " / ".join(str(v) for v in SUPPORTED_VERSIONS)))
 
     known_personas = set(defaults.get("personas") or ())
     groups = []
@@ -219,11 +347,17 @@ def _parse(raw: dict, defaults: dict) -> Config:
         spec = GroupSpec(
             cid=cid,
             alias=str(g.get("alias") or "").strip(),
-            enabled=bool(g.get("enabled", True)),
-            mute=bool(g.get("mute", False)),
-            screen=bool(g.get("screen", False)),
-            push=bool(g.get("push", False)),
+            # P12-C：改用严格布尔 —— `bool("false")` 是 True，会把字符串
+            # "false" 静默当成打开（这类"静默反向"比直接报错糟得多）
+            enabled=_strict_bool(g.get("enabled", True), where + ".enabled"),
+            mute=_strict_bool(g.get("mute", False), where + ".mute"),
+            screen=_strict_bool(g.get("screen", False), where + ".screen"),
+            push=_strict_bool(g.get("push", False), where + ".push"),
             persona=persona,
+            features=_override_map(g.get("features"), where + ".features",
+                                   _feature_keys(), "功能开关"),
+            tuning=_override_map(g.get("tuning"), where + ".tuning",
+                                 _param_keys(), "参数"),
         )
         specs[cid] = spec
         # 语义与原来的 GROUPS/MUTE_CIDS 一致：静默群**仍在** GROUPS 里
@@ -265,14 +399,41 @@ def _parse(raw: dict, defaults: dict) -> Config:
             cid=cid,
             token=str(b.get("token") or "").strip(),
             token_env=str(b.get("token_env") or "").strip(),
-            enabled=bool(b.get("enabled", True)),
+            enabled=_strict_bool(b.get("enabled", True), where + ".enabled"),
         ))
 
     mute = frozenset(cid for cid, s in specs.items() if s.mute)
     screen = frozenset(cid for cid, s in specs.items() if s.screen)
     push = tuple(cid for cid in groups if specs[cid].push)
+
+    # 全局覆盖（P12-C）
+    feats = _override_map(raw.get("features"), "features",
+                          _feature_keys(), "功能开关")
+    tune = _override_map(raw.get("tuning"), "tuning", _param_keys(), "参数")
+    scopes = {}
+    raw_scopes = raw.get("scopes") or {}
+    _require(isinstance(raw_scopes, dict), "scopes 必须是对象")
+    for name, cids in raw_scopes.items():
+        nm = str(name).strip()
+        _require(nm in _scope_names(),
+                 "scopes.{} 不是已登记的按群集合（可用：{}）".format(
+                     nm, ", ".join(sorted(_scope_names()))))
+        _require(isinstance(cids, list), "scopes.{} 必须是数组".format(nm))
+        clean = []
+        for c in cids:
+            cidv = str(c or "").strip()
+            # 集合里写了一个不存在的群 = 打错字 ⇒ 报错，否则它会永远不生效
+            _require(cidv in specs,
+                     "scopes.{} 里的 {} 不在 groups 里（拼错了？）".format(
+                         nm, cidv[:8] or "(空)"))
+            if cidv not in clean:
+                clean.append(cidv)
+        scopes[nm] = tuple(clean)
+
     return Config(groups=tuple(groups), mute=mute, screen=screen, push=push,
-                  group_specs=specs, bots=tuple(bots))
+                  group_specs=specs, bots=tuple(bots),
+                  features=feats, tuning=tune, scopes=scopes,
+                  migrated_from=migrated_from)
 
 
 def _defaults_to_raw(defaults: dict) -> dict:
@@ -307,11 +468,55 @@ def _defaults_to_raw(defaults: dict) -> dict:
 _cache = None
 
 
+def migrate_file(defaults: dict) -> dict:
+    """把磁盘上的旧版配置**升级并落盘**（先备份）。返回一份人话报告。
+
+    为什么要单独一个动作、而不是在 `load()` 里顺手写：
+    `load()` 是**读路径**（面板、闸门、一次性容器都在调它），
+    读的时候顺手改文件是意外行为 —— 会出现"我只看了一眼，文件就被改了"。
+    所以升级落盘放在**启动时显式调一次**（`bot.py`），并在日志里自证。
+
+    返回：`{"migrated": bool, "from": int, "to": int, "backup": str|None, "error": str}`
+    """
+    out = {"migrated": False, "from": 0, "to": SCHEMA_VERSION,
+           "backup": None, "error": ""}
+    p = config_path()
+    if not p.is_file():
+        return out
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:                                      # noqa: BLE001
+        out["error"] = "解析失败：{}".format(e)
+        return out
+    old_ver = int(raw.get("version", 0) or 0)
+    if old_ver == SCHEMA_VERSION:
+        return out
+    migrated, _ = _migrate(raw)
+    if migrated.get("version") != SCHEMA_VERSION:
+        out["error"] = "version={} 不受支持，未升级".format(old_ver)
+        return out
+    backups = sorted(backup_dir().glob("config-*.json")) if backup_dir().is_dir() else []
+    before = set(str(b) for b in backups)
+    try:
+        save(migrated, defaults)          # save 内部会先备份、再原子写
+    except Exception as e:                                      # noqa: BLE001
+        out["error"] = "升级失败（原文件未动）：{}".format(e)
+        return out
+    new_backups = [str(b) for b in sorted(backup_dir().glob("config-*.json"))
+                   if str(b) not in before]
+    out.update({"migrated": True, "from": old_ver,
+                "backup": os.path.basename(new_backups[-1]) if new_backups else None})
+    return out
+
+
 def load(defaults: dict, force: bool = False) -> Config:
     """读配置。文件不存在就用 `defaults`（＝改动前的行为）。
 
     `defaults` 需要提供：`groups` / `mute` / `screen` / `push`，
     可选 `aliases` / `bots` / `personas`（用于校验 persona 名字是否存在）。
+
+    ⚠️ 旧版文件在这里**只在内存里升级**（`_parse` 内部的 `_migrate`），
+    落盘由 `migrate_file()` 显式做 —— 读路径不写文件。
     """
     global _cache
     if _cache is not None and not force:

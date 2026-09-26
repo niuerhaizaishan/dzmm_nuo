@@ -88,12 +88,50 @@ except config_store.ConfigError as _e:
 # 必须在下面任何一次 apply_persona / p() 之前完成。
 set_config_personas({s.cid: s.persona for s in _CFG.group_specs.values()})
 
-# P12-B：参数覆盖与按群集合的**注入点**。
-# 现在没有任何来源 ⇒ 全部走代码默认值（= 今天的行为）；
-# P12-C 起这两个调用会吃 config.json 里的 tuning / scopes 两节。
-# 留成显式调用（而不是省略）是为了让"参数从哪来"这条线在代码里看得见。
-_tuning.set_overrides(_CFG.tuning if hasattr(_CFG, "tuning") else {})
-_tuning.set_scopes(_CFG.scopes if hasattr(_CFG, "scopes") else {})
+# P12-C：schema v2 的三块覆盖**从这里进运行期**。
+# 这是"页面上配了 → 运行期真的生效"的唯一一条通路：
+#   features  → runtime/features.py 的覆盖表（"cid|key" / "key"）
+#   tuning    → runtime/tuning.py 的覆盖表
+#   scopes    → 按群集合（trend / recap）
+# 没写 = 用代码默认值（= 今天的行为），所以旧配置（v1）升级后行为不变。
+#
+# ⚠️ 必须放在**运行时导入之后**（`_features` 在下面那批 import 里才出现），
+# 而且要在任何一次 `_feat_on()` / `_tune()` 调用之前。
+_FEATURES_DEFAULT_KW = {
+    "groups": _GROUPS_DEFAULT, "mute": _MUTE_CIDS_DEFAULT,
+    "screen": _SCREEN_CIDS_DEFAULT, "push": _PUSH_CIDS_DEFAULT,
+    "aliases": _GROUP_ALIASES, "bots": _BOTS_DEFAULT,
+    "personas": tuple(PERSONAS),
+}
+
+
+def apply_config_overrides(cfg=None) -> None:
+    """把（可能是刚升级过的）配置里的三块覆盖注入运行期。
+
+    `_features` / `_tuning` 在**运行时导入**那块才出现，所以这个函数
+    必须在那边之后调用（见 `apply_config_overrides()` 的调用点）。
+    """
+    c = cfg if cfg is not None else _CFG
+    _features.set_overrides(c.feature_map())
+    _tuning.set_overrides(c.tuning_map())
+    _tuning.set_scopes(c.scopes)
+
+
+def migrate_config_file() -> None:
+    """旧版配置在**启动时**升级落盘（读路径不写文件，见 config_store.migrate_file）。
+
+    放在运行时导入之后（这里才拿得到 `log`）。不需要 reload `_CFG` ——
+    `_parse` 内部已把旧版在**内存里**升级过了，这里只是让磁盘上的版本跟上。
+    """
+    try:
+        m = config_store.migrate_file(dict(_FEATURES_DEFAULT_KW))
+        if m.get("migrated"):
+            log("P11: 配置已从 v{} 升级到 v{}（已备份 {}）".format(
+                m["from"], m["to"], m.get("backup") or "无"))
+        elif m.get("error"):
+            log("P11: 配置未升级（{}）".format(m["error"]))
+    except Exception as e:                                     # noqa: BLE001
+        log("P11: 配置升级检查异常（不影响启动）：" + str(e)[:80])
 
 GROUPS = list(_CFG.groups)
 MUTE_CIDS = set(_CFG.mute)
@@ -127,6 +165,13 @@ from runtime.recap import is_recap_cmd, _recap_intent, _recap_window, _day0, _ms
 from runtime.sign import _room_owner, _is_room_trigger, _is_flower_grab, _sign_from_md, _sign_intent, _sign_find, _sign_parse_birth, _sign_stored, _sign_remember, _sign_calc, _sign_recent, _sign_card, _sign_reply, _ROOM_LAYOUT_WORDS, _ROOM_CONJURE_WORDS, _SIGN_FULL, _SIGN_SHORT, _SIGN_ME_RE, _SIGN_NAMES  # P8 第 4 步：搬到 runtime/sign.py
 from runtime.group_state import _get_fasao_state, _set_fasao_state, _get_dj_state, _set_dj_state, _get_perf_state, _set_perf_state, _get_vote_state, _set_vote_state, _get_story_state, _set_story_state, _get_memory, _remember, _set_last_action, _get_last_action, MEMORY_MAX  # P8 第 4 步：搬到 runtime/group_state.py
 from runtime import features as _features   # P12-A：功能注册表（唯一开关判定点）
+
+# P12-C：配置里的三块覆盖，在这里（运行时导入之后、任何 _feat_on/_tune 之前）
+# 正式进运行期。
+apply_config_overrides()
+
+# 旧版配置升级落盘（必须在运行时导入之后 —— 这里才拿得到 log）
+migrate_config_file()
 from runtime.heat import _add_heat, HEAT_SCENE_PICK, HEAT_SCENE_CONTINUE_TARGET, HEAT_SCENE_CONTINUE_SENDER, HEAT_INSULT_TARGET, HEAT_INSULT_SENDER, HEAT_FASAO_PICK, HEAT_DIAOJIAO_ROUND, HEAT_VOTE_STARTER, HEAT_VOTE_VOTER, HEAT_STORY_VOTER, HEAT_STORY_PROTAGONIST  # P8 第 4 步：搬到 runtime/heat.py
 from runtime.memory import _extract_names, _extract_keywords, _fast_rank, _ai_filter, _retrieve_memory, _append_memory_ref, _extract_remember, is_remember_cmd, is_recall_cmd, _record_history, _on_rename, _refresh_profile_latest, MEMORY_TRIGGERS, MEMORY_FILTER_PROMPT  # P8 第 4 步：搬到 runtime/memory.py
 from runtime.poem import is_poem_cmd, poem, _do_poem, _poem_text, _poem_resolve, _record_poem, _get_poem_history, _parse_poem_style, POEM_STYLE_KEYWORDS  # P8 第 4 步：搬到 runtime/poem.py

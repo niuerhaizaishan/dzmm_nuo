@@ -415,9 +415,19 @@ try:
         _cfg = _cs.load(_defaults)
         check("配置合法（不合法 bot 会拒绝启动）", True,
               "source={}".format(_cfg.source))
-        print("     群(配置)={} 生效={} 静默={} 筛查={} 推送={} Bot={}".format(
-            len(_cfg.group_specs), len(_cfg.groups), len(_cfg.mute),
-            len(_cfg.screen), len(_cfg.push), len(_cfg.bots)))
+        print("     schema=v{} 群(配置)={} 生效={} 静默={} 筛查={} 推送={} Bot={}".format(
+            _cs.SCHEMA_VERSION, len(_cfg.group_specs), len(_cfg.groups),
+            len(_cfg.mute), len(_cfg.screen), len(_cfg.push), len(_cfg.bots)))
+        if _cfg.migrated_from:
+            print("     ⚠️ 磁盘上还是 v{}：本程序会在启动时自动升级 + 备份".format(
+                _cfg.migrated_from))
+        _ov = _cfg.feature_map()
+        if _ov:
+            print("     功能/参数覆盖 {} 项（其中按群 {} 项）".format(
+                len(_ov), sum(1 for k in _ov if "|" in k)))
+        if _cfg.scopes:
+            print("     按群集合：{}".format(
+                ", ".join("{}={}".format(k, len(v)) for k, v in _cfg.scopes.items())))
         _missing = [b.key for b in _cfg.bots if not (b.resolve_token() or "").strip()]
         check("每个 Bot 的 token 都能解析到", not _missing, _missing)
         _off = [s.cid[:8] for s in _cfg.group_specs.values() if not s.enabled]

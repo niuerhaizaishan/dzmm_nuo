@@ -526,6 +526,12 @@ def section_config():
 
     out["source"] = cfg.source            # "file" | "defaults"
     out["path"] = cfg.path
+    # P12-C：schema 版本与"是不是刚升上来的"，面板上要看得见
+    out["schema_version"] = config_store.SCHEMA_VERSION
+    out["migrated_from"] = cfg.migrated_from
+    out["feature_overrides"] = len(cfg.feature_map())
+    out["param_overrides"] = len(cfg.tuning_map())
+    out["scopes"] = {k: list(v) for k, v in (cfg.scopes or {}).items()}
     # Docker 在 bind mount 的源文件不存在时会建一个**目录** —— 那种情况下
     # config_store 读不到配置（静默退回默认值），而界面写它会失败。
     # 这种"看起来配了、其实没配"的状态必须显式报出来。
@@ -1157,6 +1163,22 @@ class Handler(BaseHTTPRequestHandler):
         got = (form.get("csrf") or [""])[0]
         return bool(want) and hmac.compare_digest(got, want)
 
+    def _drain(self, length: int, cap: int = 64 * 1024) -> None:
+        """有上限地把请求体读掉再回响应（防"关连接发 RST"把客户端打断）。
+
+        只在我们**不打算处理**这个请求时才需要（比如 body 超限）。
+        上限 `cap` 保证恶意客户端不能用超大 body 让服务端一直读。
+        """
+        try:
+            remain = min(int(length or 0), cap)
+            while remain > 0:
+                chunk = self.rfile.read(min(remain, 8192))
+                if not chunk:
+                    break
+                remain -= len(chunk)
+        except Exception:                                          # noqa: BLE001
+            pass
+
     def _render_backup_page(self, query=""):
         """单份备份的详情：人话摘要 + 逐行差异 + 回滚按钮。"""
         from admin import config_ui
@@ -1223,7 +1245,9 @@ class Handler(BaseHTTPRequestHandler):
 
         defaults = _config_defaults()
         old = _raw_from_store(defaults)
-        new = config_ui.parse_form(form)
+        # `base=old`：把当前配置里的 v2 三节（features/tuning/scopes）带过去 ——
+        # 这一版表单页还画不了它们，不继承就会被"改个别名"顺手抹掉。
+        new = config_ui.parse_form(form, base=old)
         # 先挡住"旧页面把配置整行删掉"：旧页面里没有的条目，提交上来就会丢。
         # 只在**配置文件真的存在**时才查 —— 没有文件时用的是 bot.py 里的默认值，
         # 删不掉任何东西，没必要拦。
@@ -1319,7 +1343,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             length = 0
         if length <= 0 or length > MAX_BODY:
-            self._send(400, render_login(error="请求格式不对"), "text/html; charset=utf-8")
+            # ⚠️ 拒绝之前要**把请求体读掉**（有上限地丢弃）。
+            # 不读就回 400 然后关连接，Windows 会发 RST，客户端正在写 body 时
+            # 收到 `ConnectionAbortedError (WinError 10053)` ——
+            # 表现是"测试偶发红"，根子是服务端不礼貌的关闭方式。
+            self._drain(length)
+            self._send(400, render_login(error="请求格式不对"),
+                       "text/html; charset=utf-8")
             return
         raw = self.rfile.read(length).decode("utf-8", "replace")
         form = parse_qs(raw)

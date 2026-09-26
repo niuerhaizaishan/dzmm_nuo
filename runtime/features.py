@@ -361,13 +361,25 @@ def overrides() -> dict:
 
 
 def on(cid: str, key: str) -> bool:
-    """**唯一的开关判定点**。未配置 = 用注册表里的默认值（= 今天的行为）。"""
+    """**唯一的开关判定点**。未配置 = 用注册表里的默认值（= 今天的行为）。
+
+    覆盖表的键形状（与 `runtime/tuning.py` **保持一致**）：
+      - 按群：`"<cid>|<key>"`
+      - 全局：`"<key>"`（配置文件里就是这么写的）
+      - 另外兼容 `"*|<key>"` 这种显式全局写法。
+    ⚠️ 曾经 features 只认 `"*|<key>"` 而 config 写的是裸 `"<key>"`，
+    于是"全局关了某个功能"看起来配了却不生效 —— 端到端测试抓到的。
+    """
     f = get(key)                       # 未知 key 必须炸，不许静默放行
     if _env_all_on():
         return True                    # DZMM_FEATURES=off → 全开
-    v = _OVERRIDES.get("{}|{}".format(cid or "", key))
+    v = None
+    if cid:
+        v = _OVERRIDES.get("{}|{}".format(cid, key))
     if v is None:
-        v = _OVERRIDES.get("*|" + key)     # 全局默认（不带群）
+        v = _OVERRIDES.get(key)            # 全局（配置文件的形状）
+    if v is None:
+        v = _OVERRIDES.get("*|" + key)     # 兼容：显式全局
     return f.default if v is None else bool(v)
 
 
@@ -375,9 +387,9 @@ def why_off(cid: str, key: str) -> str:
     """它为什么是关的（自证行/日志用）：default / config / env。"""
     if _env_all_on():
         return "env(DZMM_FEATURES=off)"
-    if _OVERRIDES.get("{}|{}".format(cid or "", key)) is not None:
+    if cid and _OVERRIDES.get("{}|{}".format(cid, key)) is not None:
         return "config(本群)"
-    if _OVERRIDES.get("*|" + key) is not None:
+    if _OVERRIDES.get(key) is not None or _OVERRIDES.get("*|" + key) is not None:
         return "config(全局)"
     return "default"
 
