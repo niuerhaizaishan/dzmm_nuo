@@ -131,8 +131,10 @@ _FEATURES_RAW = (
         Param("heat.pending_max", "待评缓冲条数", 10, "条", 1, 200),
     )),
     Feature("heat_climax", "高潮事件播报", "game"),
-    Feature("devil_roast", "恶魔吐槽（主动冒话）", "game", default=False,
-            note="今天默认关，还要群内 `/吐槽开` 才生效（内层门保持不变）",
+    Feature("devil_roast", "恶魔吐槽（主动冒话）", "game",
+            note="**两层门**：这一层是「允不允许」（默认允许）；是否真的吐槽还由群状态 "
+                 "`devil_enabled`（群内 `/吐槽开|关`）决定 —— 配置关了就是彻底关，"
+                 "群内也打不开",
             params=(
                 Param("devil.base_prob", "普通闲聊触发概率", 0.03, "", 0.0, 1.0),
                 Param("devil.sensitive_prob", "命中敏感词概率", 0.10, "", 0.0, 1.0),
@@ -140,7 +142,9 @@ _FEATURES_RAW = (
                 Param("devil.cooldown", "冷却", 600, "秒", 0, 86400),
                 Param("devil.about_person_prob", "针对具体成员的概率", 0.5, "", 0.0, 1.0),
             )),
-    Feature("devil_cold", "冷场吐槽", "game", default=False,
+    Feature("devil_cold", "冷场吐槽", "game",
+            note="同 `devil_roast`：这一层是「允不允许」，实际触发还看群状态里的 "
+                 "`devil_enabled` 开关（两者共用同一个群内开关）",
             params=(
                 Param("devil.cold_prob", "每次 roll 概率", 0.3, "", 0.0, 1.0),
                 Param("devil.cold_threshold", "冷清多久后开始", 7200, "秒", 60, 86400),
@@ -249,6 +253,7 @@ _FEATURES_RAW = (
 # bot.py / runtime/*.py 里的 `_feat_on(cid, "key")`，两边不一致就报错。
 # 加闸门忘了改这里、或改了这里忘了加闸门，都会当场红。
 _WIRED = (
+    # --- 第一批（定时/事件类入口，不与命令分派链耦合）---
     "greet_morning", "greet_noon", "greet_evening",   # 定时问候（按群过滤）
     "memory_report",                                  # 午间记忆汇报
     "rank_push",                                      # 12/18 点骚度排行
@@ -256,6 +261,11 @@ _WIRED = (
     "notice_rename",                                  # 扫描后的改名/简介播报
     "screen_rescreen",                                # 风控解除后补筛查 + 群内提醒
     "alert_send_fail",                                # 连续发送失败告警
+    # --- 第二批（命令分派链，逐分支加闸门）---
+    "dice", "perf", "perf_review", "story", "vote", "scene", "scene_continue",
+    "scene_rewrite", "scene_end", "diaojiao", "help", "memory_remember",
+    "memory_recall", "devil_roast", "intro", "sync", "register", "query",
+    "trend", "rank_heat", "recap", "summary", "fortune", "poem", "insult",
 )
 FEATURES = tuple(replace(f, stage="wired") if f.key in _WIRED else f
                  for f in _FEATURES_RAW)

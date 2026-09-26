@@ -86,10 +86,21 @@ def test_category_counts_match_the_plan():
                    "schedule": 9, "room": 7, "alert": 4}
 
 
-def test_only_devil_features_default_off():
-    """默认值必须等于"今天的行为"：只有恶魔吐槽与冷场吐槽今天是关的。"""
+def test_all_features_default_on_so_behaviour_is_unchanged():
+    """默认值必须等于"今天的行为"。
+
+    ⚠️ 这里的"默认"是**允不允许这个能力**，不是"今天它是不是开着"。
+    一开始我把恶魔吐槽/冷场吐槽写成 default=False（因为它们今天确实是关的），
+    结果 `/吐槽开` 这条**群内控制命令**被自己功能关掉而静默 —— 直接改掉了
+    今天的行为。正确的模型是：配置层默认"允许"，实际是否吐槽由群状态
+    `devil_enabled`（`/吐槽开|关`）决定，两层各管各的。
+    """
     off = sorted(f.key for f in F.FEATURES if not f.default)
-    assert off == ["devil_cold", "devil_roast"]
+    assert off == [], "任何功能都不该默认关闭（否则等于悄悄改了今天的行为）"
+    # 那两层门的关系要写在注册表里，别只留在脑子里
+    assert "devil_enabled" in F.get("devil_roast").note
+    assert "devil_roast" in F.get("devil_cold").note, \
+        "冷场吐槽要说清它和恶魔吐槽共用同一个群内开关"
 
 
 def test_params_have_sane_bounds():
@@ -154,7 +165,9 @@ def test_default_behaviour_is_todays(monkeypatch):
     monkeypatch.delenv("DZMM_FEATURES", raising=False)
     assert F.on("any-cid", "dice") is True
     assert F.on("any-cid", "perf") is True
-    assert F.on("any-cid", "devil_roast") is False, "今天默认关的必须还是关"
+    # 恶魔吐槽的"默认关"是**群状态**那一层（devil_enabled，靠 /吐槽开），
+    # 不是配置这一层：配置默认是"允许"，所以 /吐槽开 这条群内控制命令仍然有效。
+    assert F.on("any-cid", "devil_roast") is True
     assert F.why_off("any-cid", "dice") == "default"
 
 
@@ -336,3 +349,132 @@ def test_rank_push_gate_is_wired_in_source():
     window = src[idx - 400:idx + 100]
     assert "last_daily_rank_date" in window, "闸门必须与「今天发过没」的判定在一起"
     assert "PUSH_CIDS" in window, "定时推送仍然只发生在 PUSH_CIDS 里的群"
+
+
+# ------------------------------------- 6. 命令分派链：归属表与兜底静默
+
+def test_cmd_attribution_table_covers_every_cmd_gate():
+    """分派链里每个闸门都要在归属表里有一份 —— 否则"关掉的功能"会漏进兜底聊天。"""
+    import bot
+    table_keys = {k for keys, _ in bot._CMD_FEATURE_ORDER for k in keys}
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    chain = src[src.index("# 吹牛骰子命令（优先）"):src.index("elif at_msg:")]
+    gate_keys = set(re.findall(r'_feat_on\(cid, "([a-z_]+)"\)', chain))
+    missing = gate_keys - table_keys
+    assert not missing, "分派链里有闸门但归属表没登记：{}".format(sorted(missing))
+
+
+def test_cmd_attribution_order_follows_the_chain():
+    """归属表的顺序必须与代码里闸门出现的顺序一致（"顺序即行为"）。
+
+    顺序错了会出现：`/发骚结束` 这类"落空转发"的命令被算到错误的功能上，
+    于是关掉 A 功能却把 B 功能的命令静默掉了。
+
+    ⚠️ 只比"谓词分支"上的闸门：**互斥分支**（`perf_active and _feat_on(...)`、
+    `_get_dj_state(cid).get("active") and ...`）不是功能归属，它们带的是状态判断，
+    所以在归属表里没有对应项，也不该参与顺序比较。
+    """
+    import bot
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    chain = src[src.index("# 吹牛骰子命令（优先）"):src.index("elif at_msg:")]
+    src_order = []
+    for line in chain.splitlines():
+        m = re.search(r'_feat_on\(cid, "([a-z_]+)"\)', line)
+        if not m:
+            continue
+        if not ("is_" in line or "cmd ==" in line or "cmd.startswith" in line):
+            continue                       # 互斥分支，跳过
+        if m.group(1) not in src_order:
+            src_order.append(m.group(1))
+    table_order = []
+    for keys, _ in bot._CMD_FEATURE_ORDER:
+        # 只比**主键**（元组第一个）：共享/落空转发的次要键（如 `/选` 的 story、
+        # `/发骚结束` 的 scene）本来就要跟主键排在一起，不能参与顺序比较。
+        if keys[0] not in table_order:
+            table_order.append(keys[0])
+    common = [k for k in src_order if k in table_order]
+    assert common == [k for k in table_order if k in src_order], \
+        "归属表顺序与分派链不一致：代码 {} vs 表 {}".format(common, table_order)
+
+
+def test_disabled_feature_makes_its_command_silent(monkeypatch):
+    """关掉一个功能后，它的命令必须**静默**（不能被兜底聊天接走）。"""
+    import bot
+    F.set_overrides({})                       # 默认全开
+    for cmd in ("/吹牛骰子", "/投票 主题|A|B", "/剧情开始", "/发骚", "/写诗",
+                "/算命", "/帮助", "/注册", "/查 某人", "/回忆", "/羞辱 某人"):
+        assert bot._cmd_owned_by_disabled("c1", cmd) is False, cmd
+
+    F.set_overrides({"c1|vote": False})
+    assert bot._cmd_owned_by_disabled("c1", "/投票 主题|A|B") is True
+    # `/选 N` 是共享分支：投票关了但剧情还开着 ⇒ **不能静默**（剧情要用它）
+    assert bot._cmd_owned_by_disabled("c1", "/选 1") is False
+    assert bot._cmd_owned_by_disabled("c1", "/算命") is False, "别的功能不受影响"
+    # 两个都关 ⇒ 才静默
+    F.set_overrides({"c1|vote": False, "c1|story": False})
+    assert bot._cmd_owned_by_disabled("c1", "/选 1") is True
+
+
+def test_fallthrough_commands_are_attributed_correctly(monkeypatch):
+    """**落空转发**的命令：归属挂在多个功能上，任何一个开着就不静默。
+
+    `/发骚结束` 在没有进行中的场景时，实际会被"发起场景"那个分支处理
+    （代码注释里登记过这个行为）。所以：
+      - `scene_end` 关、`scene` 开 ⇒ 不静默（场景会把它变成一次发起）；
+      - 两个都关 ⇒ 静默。
+    """
+    import bot
+    F.set_overrides({"c1|scene_end": False})
+    assert bot._cmd_owned_by_disabled("c1", "/发骚结束") is False
+    F.set_overrides({"c1|scene": False})
+    assert bot._cmd_owned_by_disabled("c1", "/发骚结束") is False, \
+        "还有一个开着就不静默（场景分支会处理它）"
+    F.set_overrides({"c1|scene": False, "c1|scene_end": False})
+    assert bot._cmd_owned_by_disabled("c1", "/发骚结束") is True
+
+
+def test_continue_is_attributed_by_last_action(state):
+    """共享分支：`/继续` 归谁管取决于上一步是羞辱还是场景。"""
+    import bot
+    import state_store
+    state_store.group_set("c1", "last_action", {"type": "insult", "output": "x"})
+    monkeypatch_ok = bot._continue_allowed("c1")
+    assert monkeypatch_ok is True
+    F.set_overrides({"c1|insult": False})
+    assert bot._continue_allowed("c1") is False, "上一步是羞辱 ⇒ 归羞辱管"
+    F.set_overrides({"c1|insult": False, "c1|scene_continue": True})
+    state_store.group_set("c1", "last_action", {"type": "scene", "output": "y"})
+    assert bot._continue_allowed("c1") is True, "上一步是场景 ⇒ 归场景续写管"
+
+
+def test_devil_switch_cannot_be_turned_on_when_feature_is_off(monkeypatch):
+    """配置里关了主动吐槽，群内 `/吐槽开` 就不该还能打开它（否则页面与群里自相矛盾）。"""
+    import bot
+    F.set_overrides({"c1|devil_roast": False})
+    assert bot._cmd_owned_by_disabled("c1", "/吐槽开") is True
+    F.set_overrides({})
+    assert bot._cmd_owned_by_disabled("c1", "/吐槽开") is False
+
+
+def test_defaults_are_logically_equivalent_to_before(state):
+    """零行为变化的**逻辑保证**：没有覆盖时每个闸门都返回 True。
+
+    于是分派链里：
+      `elif <原条件> and _feat_on(...)`  ≡  `elif <原条件>`
+      `elif ... and (_feat_on(a) or _feat_on(b))`  ≡  `elif ...`
+      兜底那条 `elif _cmd_owned_by_disabled(...)` ≡ 永不成立（直接落到 generate_reply）
+    这不是"跑几个用例看着一样"，而是条件化简 —— 也是这一期敢上线的底气。
+    """
+    import bot
+    assert all(F.on("any-cid", k) is True for k in F.keys()), \
+        "默认必须有闸门全开（否则等于改了今天的行为）"
+    for cmd in ("/吹牛骰子", "/投票 x|a|b", "/选 1", "/发骚结束", "/吐槽开", "/结束",
+                "/剧情开始", "/公演开始", "/同意", "/命令 过来", "/调教 x",
+                "/写诗", "/算命", "/周运", "/我不在", "/总结", "/帮助", "/介绍",
+                "/同步", "/注册", "/查 x", "/羞辱 x", "/继续", "/重写"):
+        assert bot._cmd_owned_by_disabled("any-cid", cmd) is False, cmd
+    # 互斥分支同理：`X and _feat_on(...)` ≡ `X`
+    assert bot._continue_allowed("any-cid") is True
+    import state_store
+    state_store.group_set("any-cid", "last_action", {"type": "insult"})
+    assert bot._continue_allowed("any-cid") is True

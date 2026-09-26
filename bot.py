@@ -1877,6 +1877,86 @@ def _feat_on(cid: str, key: str) -> bool:
         return True
 
 
+def _continue_allowed(cid: str) -> bool:
+    """`/继续` 归哪个功能管：看**上一次动作的类型**（羞辱 / 场景续写）。
+
+    "共享分支"之一：同一条命令，归属取决于上一步做了什么，
+    所以闸门不能只看命令本身。
+    """
+    try:
+        last = _get_last_action(cid) or {}
+    except Exception:                                          # noqa: BLE001
+        last = {}
+    if str(last.get("type") or "") == "insult":
+        return _feat_on(cid, "insult")
+    return _feat_on(cid, "scene_continue")
+
+
+# 命令 → 功能 的归属表（**顺序必须与 cmd 分派链一致**）。
+# 只用于兜底分支的一个判断：这条命令是不是属于某个**被关掉**的功能？
+# 是 ⇒ 静默（不回、也不交给兜底聊天），否则"关掉投票"会变成
+# "投票指令被当成闲聊回答" —— 功能没关干净。
+#
+# 每一项是 `((key, ...), 谓词)`，**键是元组**：
+# 共享分支/落空转发的命令会挂在多个功能上，只要还有**任意一个**开着，
+# 就不算"被关掉"。例如：
+#   - `/选 N` 一个分支同时服务投票与剧情 ⇒ ("vote", "story")
+#   - `/发骚结束` 没有进行中的场景时会**落空转发**到"发起场景" ⇒ ("scene_end", "scene")
+#   - 停止词 `/结束` 在骰子局进行中归骰子 ⇒ 骰子那一项里也含这些词
+_CMD_FEATURE_ORDER = (
+    (("dice",), lambda c: c in ("/吹牛骰子", "/加入", "/牌局", "/看骰", "/开始",
+                                "/下一轮", "/开", "/退出", "/结束")
+     or parse_call(c.lstrip("/")) is not None),
+    (("perf",), is_perf_end_cmd),
+    (("perf_review",), lambda c: is_review_cmd(c) is not None),
+    (("perf",), is_perf_start_cmd),
+    (("story",), is_story_end_cmd),
+    (("vote",), is_vote_end_cmd),
+    (("vote", "story"), lambda c: is_vote_choice_cmd(c) is not None),
+    (("scene_end", "scene"), is_fasao_end_cmd),
+    (("diaojiao",), is_dj_end_cmd),
+    (("help",), lambda c: c.startswith("/ ")),
+    (("diaojiao",), lambda c: is_dj_command_cmd(c) is not None),
+    (("diaojiao",), lambda c: is_diaojiao_cmd(c) is not None),
+    (("scene_continue", "insult"), is_continue_cmd),
+    (("scene_rewrite",), lambda c: is_rewrite_cmd(c) is not None),
+    (("story",), is_story_start_cmd),
+    (("vote",), is_vote_start_cmd),
+    (("help",), lambda c: is_help_cmd(c) or is_guide_cmd(c)),
+    (("memory_remember",), lambda c: is_remember_cmd(c) is not None),
+    (("memory_recall",), is_recall_cmd),
+    (("devil_roast",), lambda c: is_devil_cmd(c) is not None),
+    (("intro",), is_intro_cmd),
+    (("sync",), is_sync_cmd),
+    (("register",), lambda c: is_register_cmd(c) is not None),
+    (("query",), is_profile_cmd),
+    (("trend",), is_trend_board_cmd),
+    (("rank_heat",), is_rank_cmd),
+    (("recap",), lambda c: is_recap_cmd(c) is not None),
+    (("trend",), lambda c: is_trend_cmd(c) is not None),
+    (("summary",), is_summary_cmd),
+    (("fortune",), is_fortune_cmd),
+    (("scene",), is_scene_cmd),
+    (("poem",), lambda c: is_poem_cmd(c) is not None),
+    (("insult",), lambda c: is_insult_cmd(c) is not None),
+)
+
+
+def _cmd_owned_by_disabled(cid: str, cmd: str) -> bool:
+    """这条命令属于某个被关掉的功能吗？（只看**第一个**匹配的归属）
+
+    一个归属可能挂多个功能（共享分支/落空转发）：**只要还有一个开着**，
+    就返回 False（不静默）—— 否则关掉 A 会把还在用的 B 的命令一起吞掉。
+    """
+    for keys, pred in _CMD_FEATURE_ORDER:
+        try:
+            if pred(cmd):
+                return not any(_feat_on(cid, k) for k in keys)
+        except Exception:                                      # noqa: BLE001
+            continue
+    return False
+
+
 def _log_route(event: str, cid: str, detail: str = "") -> None:
     """路由审计。account 太频繁不记；bot_* 事件都记（切换期观察用）。"""
     if event == "account":
@@ -2284,13 +2364,15 @@ async def main_loop(interval: float, dry: bool, once: bool):
                         perf_active = perf.get("active")
 
                         # 吹牛骰子命令（优先）
-                        if cmd == "/吹牛骰子":
+                        # P12-A：整族命令共用一个功能开关 `dice`。
+                        # 关了它，这些分支全部落空 → 最后落到 else 的"被关功能"判定 → 静默。
+                        if cmd == "/吹牛骰子" and _feat_on(cid, "dice"):
                             reply = await _dice_start_cmd(cid, cmd_sender)
-                        elif cmd == "/加入":
+                        elif cmd == "/加入" and _feat_on(cid, "dice"):
                             reply = await _dice_join_cmd(cmd_sender)
-                        elif cmd == "/牌局":
+                        elif cmd == "/牌局" and _feat_on(cid, "dice"):
                             reply = _dice_status_text(_dice_state())
-                        elif cmd == "/看骰":
+                        elif cmd == "/看骰" and _feat_on(cid, "dice"):
                             # 群里发 /看骰，bot 私聊回骰子（不暴露给群里其他人）
                             _dg = _dice_state()
                             if _dg.get("active") and cmd_sender in _dg.get("dice", {}):
@@ -2298,35 +2380,35 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                 reply = "🎲 骰子已私聊发你啦～去看私聊哦～"
                             else:
                                 reply = "你现在没有进行中的骰子局哦～"
-                        elif cmd == "/开始":
+                        elif cmd == "/开始" and _feat_on(cid, "dice"):
                             reply = await _dice_begin_cmd(sender, cmd_sender)
-                        elif cmd == "/下一轮" and _dice_state().get("phase") == "round_end":
+                        elif cmd == "/下一轮" and _feat_on(cid, "dice") and _dice_state().get("phase") == "round_end":
                             reply = await _dice_next_round_cmd(sender)
-                        elif cmd == "/继续" and _dice_state().get("phase") == "round_end" and not _get_fasao_state(cid).get("active"):
+                        elif cmd == "/继续" and _feat_on(cid, "dice") and _dice_state().get("phase") == "round_end" and not _get_fasao_state(cid).get("active"):
                             reply = await _dice_next_round_cmd(sender)
-                        elif cmd == "/开":
+                        elif cmd == "/开" and _feat_on(cid, "dice"):
                             reply = await _dice_open_cmd(cmd_sender)
-                        elif cmd == "/退出" and _dice_state().get("active"):
+                        elif cmd == "/退出" and _feat_on(cid, "dice") and _dice_state().get("active"):
                             reply = _dice_exit_cmd(cmd_sender)
-                        elif cmd == "/结束" and _dice_state().get("active"):
+                        elif cmd == "/结束" and _feat_on(cid, "dice") and _dice_state().get("active"):
                             reply = await _dice_quit_cmd(cmd_sender)
-                        elif (dc := parse_call(cmd.lstrip("/"))) is not None:
+                        elif _feat_on(cid, "dice") and (dc := parse_call(cmd.lstrip("/"))) is not None:
                             reply = await _dice_call_cmd(cmd_sender, dc)
-                        elif (_dice_state().get("active") and _dice_state().get("phase") == "calling"
+                        elif (_feat_on(cid, "dice") and _dice_state().get("active") and _dice_state().get("phase") == "calling"
                               and cmd.startswith("/") and re.match(r"^/\d", cmd)):
                             reply = "叫数格式要写成 /N个X 哦～比如 /3个3、/5个6（N 是数量，X 是 1~6 的点数）～"
                         # 公演结束
-                        elif is_perf_end_cmd(cmd) and perf_active:
+                        elif is_perf_end_cmd(cmd) and perf_active and _feat_on(cid, "perf"):
                             # 生成小说要跑十几次 pro 模型调用（很慢），放后台跑——
                             # 主循环是单协程串行处理所有群的，堵在这里会让 5 个群一起失联
                             # （2026-09-14 实测被堵 37 分钟以上）
                             asyncio.create_task(_perf_end_bg(sender, cid, dry))
                             reply = None
                         # 审核命令（仅糯糯，且待审核状态）
-                        elif (rv := is_review_cmd(cmd)) is not None and cmd_sender == OWNER_UID and perf.get("review_status") == "pending":
+                        elif (rv := is_review_cmd(cmd)) is not None and cmd_sender == OWNER_UID and perf.get("review_status") == "pending" and _feat_on(cid, "perf_review"):
                             await _handle_review(sender, cid, rv, dry)
                         # 公演开始
-                        elif is_perf_start_cmd(cmd):
+                        elif is_perf_start_cmd(cmd) and _feat_on(cid, "perf"):
                             if _get_dj_state(cid).get("active"):
                                 await _perf_send(sender, "调教进行中哦～先 /调教结束 再开公演～", cid, dry)
                             elif perf_active:
@@ -2335,29 +2417,35 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                 await _handle_perf_start(sender, cid, msgs[-1]["message_id"], dry)
                             reply = None  # 已自己发过消息了；空串会被当成"生成失败"回滚重试（2026-09-21 修）
                         # 公演进行中，其他指令不响应（交给互动逻辑）
-                        elif perf_active:
+                        # ⚠️ 这是**互斥分支**不是功能分支：但它也必须跟功能开关走 ——
+                        # 否则把"公演"关掉后，残留的 active 会继续把这个群屏蔽住
+                        # （运维在页面上关了功能，群里却更哑了 —— 那是最糟的结果）。
+                        elif perf_active and _feat_on(cid, "perf"):
                             reply = "🎭 公演进行中哦～暂无法响应其他指令，想参与就直接发言，等公演结束后再试～"
                         # 剧情结束（提前结束 → 直接进结局）
-                        elif is_story_end_cmd(cmd) and _get_story_state(cid).get("active"):
+                        elif is_story_end_cmd(cmd) and _get_story_state(cid).get("active") and _feat_on(cid, "story"):
                             reply = await asyncio.to_thread(_finish_story, cid)
                         # 投票结束（/投票结束 或停止词，投票进行中）
-                        elif is_vote_end_cmd(cmd) and _get_vote_state(cid).get("active"):
+                        elif is_vote_end_cmd(cmd) and _get_vote_state(cid).get("active") and _feat_on(cid, "vote"):
                             reply = await asyncio.to_thread(_finish_vote, cid)
                         # 选择指令（投票优先，剧情次之；静默记录）
-                        elif (choice := is_vote_choice_cmd(cmd)) is not None:
-                            if _get_vote_state(cid).get("active"):
+                        # ★ 共享分支：`/选 N` 同时服务投票与剧情，所以闸门必须**分两臂**加，
+                        #   不能只看命令属于哪个功能（命令 → 功能不是一对一）。
+                        elif (choice := is_vote_choice_cmd(cmd)) is not None and (
+                                _feat_on(cid, "vote") or _feat_on(cid, "story")):
+                            if _get_vote_state(cid).get("active") and _feat_on(cid, "vote"):
                                 _record_vote(cid, cmd_sender, choice)
                                 reply = None
-                            elif _get_story_state(cid).get("active"):
+                            elif _get_story_state(cid).get("active") and _feat_on(cid, "story"):
                                 if choice in ("1", "2", "3"):
                                     _record_story_vote(cid, cmd_sender, choice)
                                 reply = None
                             else:
                                 reply = p("no_vote", cid)
-                        elif is_fasao_end_cmd(cmd) and _get_fasao_state(cid).get("active"):
+                        elif is_fasao_end_cmd(cmd) and _get_fasao_state(cid).get("active") and _feat_on(cid, "scene_end"):
                             # 发骚结束（停止词，发骚进行中）
                             reply = await asyncio.to_thread(end_fasao, cid)
-                        elif is_dj_end_cmd(cmd):
+                        elif is_dj_end_cmd(cmd) and _feat_on(cid, "diaojiao"):
                             # 调教结束
                             dj = _get_dj_state(cid)
                             if dj.get("active"):
@@ -2372,10 +2460,10 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                     reply = p("no_dial", cid)
                                 else:
                                     reply = p("no_play", cid)
-                        elif cmd.startswith("/ "):
+                        elif cmd.startswith("/ ") and _feat_on(cid, "help"):
                             # 斜杠后紧跟空格（如 / 清歌），格式错误
                             reply = p("slash_space", cid)
-                        elif (dj_cmd := is_dj_command_cmd(cmd)) is not None:
+                        elif (dj_cmd := is_dj_command_cmd(cmd)) is not None and _feat_on(cid, "diaojiao"):
                             # 调教命令（调教中才有效）
                             dj = _get_dj_state(cid)
                             if dj.get("active"):
@@ -2392,52 +2480,54 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                         reply += "\n\n" + DJ_PARTICIPATE_HINT
                             else:
                                 reply = p("unknown_cmd", cid)
-                        elif is_diaojiao_cmd(cmd) is not None:
+                        elif is_diaojiao_cmd(cmd) is not None and _feat_on(cid, "diaojiao"):
                             # 发起调教
                             if _get_dj_state(cid).get("active"):
                                 reply = "调教进行中哦～先 /调教结束 再发起新的～"
                             else:
                                 reply = await asyncio.to_thread(start_diaojiao, cid, cmd, cmd_sender)
-                        elif _get_dj_state(cid).get("active"):
-                            # 调教进行中，其他指令屏蔽
+                        elif _get_dj_state(cid).get("active") and _feat_on(cid, "diaojiao"):
+                            # 调教进行中，其他指令屏蔽（同样必须跟开关走，理由见公演那处）
                             reply = "🔗 调教进行中哦～想参与就发 /命令 xxx，或 /调教结束 收尾～"
-                        elif is_continue_cmd(cmd):
+                        elif is_continue_cmd(cmd) and _continue_allowed(cid):
                             # 续写（发骚续写优先，continue_last 内部分发发骚/羞辱）
+                            # ★ 共享分支：按上一次动作的**类型**决定归哪个功能管
+                            #   （insult 的上一段 → 羞辱；其余 → 场景续写）
                             reply = await asyncio.to_thread(continue_last, cid, cmd, cmd_sender)
-                        elif is_rewrite_cmd(cmd) is not None:
+                        elif is_rewrite_cmd(cmd) is not None and _feat_on(cid, "scene_rewrite"):
                             # 重写上一段（发骚 active 时有效）
                             reply = await asyncio.to_thread(rewrite_last, cid, cmd)
-                        elif _get_fasao_state(cid).get("active"):
+                        elif _get_fasao_state(cid).get("active") and _feat_on(cid, "scene"):
                             # 发骚进行中，其他指令屏蔽
                             reply = "🎲 发骚过程中暂时无法响应其他指令哦～请等结束后再试～想继续就发 /继续，想结束就发 /结束～"
-                        elif is_story_start_cmd(cmd):
+                        elif is_story_start_cmd(cmd) and _feat_on(cid, "story"):
                             # 发起剧情游戏
                             if _get_story_state(cid).get("active"):
                                 reply = "剧情已经进行中啦～"
                             else:
                                 reply = await asyncio.to_thread(start_story, cid, cmd, cmd_sender)
-                        elif is_vote_start_cmd(cmd):
+                        elif is_vote_start_cmd(cmd) and _feat_on(cid, "vote"):
                             # 发起投票（轻量，可与其他功能并存）
                             if _get_vote_state(cid).get("active"):
                                 reply = "已经有进行中的投票啦～想结束发 /投票结束～"
                             else:
                                 reply = await asyncio.to_thread(start_vote, cid, cmd, cmd_sender)
-                        elif _get_story_state(cid).get("active"):
+                        elif _get_story_state(cid).get("active") and _feat_on(cid, "story"):
                             # 剧情进行中，其他指令屏蔽
                             reply = "🎬 剧情进行中哦～想投票就发 /选 1/2/3 或 /1/2/3，或 /剧情结束 收尾～"
-                        elif _get_vote_state(cid).get("active"):
+                        elif _get_vote_state(cid).get("active") and _feat_on(cid, "vote"):
                             # 投票进行中，其他指令屏蔽
                             reply = "📊 投票进行中哦～想参与就发 /选 X 或 /X（X=序号），想结束发 /投票结束～"
-                        elif is_help_cmd(cmd) or is_guide_cmd(cmd):
+                        elif (is_help_cmd(cmd) or is_guide_cmd(cmd)) and _feat_on(cid, "help"):
                             reply = p("help_text", cid) or HELP_TEXT
-                        elif (mc := is_remember_cmd(cmd)) is not None:
+                        elif (mc := is_remember_cmd(cmd)) is not None and _feat_on(cid, "memory_remember"):
                             # 记忆：/记住 内容
                             if not mc:
                                 reply = p("mem_ask2", cid)
                             else:
                                 _remember(cid, mc, get_name(cmd_sender))
                                 reply = p("mem_saved", cid)
-                        elif is_recall_cmd(cmd):
+                        elif is_recall_cmd(cmd) and _feat_on(cid, "memory_recall"):
                             # 回忆：直接列出具体记忆内容（原文列表）
                             mem = _get_memory(cid)
                             if not mem:
@@ -2454,16 +2544,18 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                 if total > len(shown):
                                     lines.append(p("mem_list_more", cid).format(k=len(shown)))
                                 reply = "\n".join(lines)
-                        elif (devil_sw := is_devil_cmd(cmd)) is not None:
+                        elif (devil_sw := is_devil_cmd(cmd)) is not None and _feat_on(cid, "devil_roast"):
                             # 主动吐槽开关（恶魔+冷场共用，全局配置）
+                            # 跟功能开关走：配置里把它关了，群内就**不许**再打开
+                            # （否则会出现"页面上关着、群里却是开的"这种自相矛盾）
                             group_state["devil_enabled"] = (devil_sw == "on")
                             state[cid] = group_state
                             save_state(state)
                             reply = ("💬 主动吐槽已开启～我会偶尔冒个泡哦～"
                                      if devil_sw == "on" else "💬 主动吐槽已关闭～我先安静啦")
-                        elif is_intro_cmd(cmd):
+                        elif is_intro_cmd(cmd) and _feat_on(cid, "intro"):
                             reply = p("intro_text", cid) or INTRO_TEXT
-                        elif is_sync_cmd(cmd):
+                        elif is_sync_cmd(cmd) and _feat_on(cid, "sync"):
                             # 手动同步（仅糯糯）
                             if cmd_sender != OWNER_UID:
                                 reply = p("sync_only_owner", cid)
@@ -2471,13 +2563,13 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                 if not dry:
                                     await sender.send("🤖 收到同步指令～正在拉取增量消息，稍等一下下哦～", cid)
                                 reply = await asyncio.to_thread(sync_profiles)
-                        elif (reg_query := is_register_cmd(cmd)) is not None:
+                        elif (reg_query := is_register_cmd(cmd)) is not None and _feat_on(cid, "register"):
                             # 注册：先发提醒，再执行，最后发结果
                             if not dry:
                                 target = reg_query or get_name(cmd_sender)
                                 await sender.send(p("register_working", cid, who=target), cid)
                             reply = await asyncio.to_thread(register_user, reg_query, cmd_sender)
-                        elif (query := is_profile_cmd(cmd)):
+                        elif (query := is_profile_cmd(cmd)) and _feat_on(cid, "query"):
                             # 查人：先提醒，再执行
                             if not dry:
                                 await sender.send(p("query_working", cid, who=query), cid)
@@ -2491,45 +2583,45 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                 text = _append_memory_ref(text, cid, query)
                                 reply = await asyncio.to_thread(generate_profile_summary, text)
                                 reply += "\n（这个人还没注册哦，发 /注册 可以建立档案～）"
-                        elif is_trend_board_cmd(cmd):
+                        elif is_trend_board_cmd(cmd) and _feat_on(cid, "trend"):
                             # 群运势榜（必须在 is_rank_cmd 之前，否则"运势排行"被骚度榜的"排行"吃掉）
                             reply = await week_trend_board(cid)
                             if not reply:
                                 reply = p("unknown_cmd", cid)  # 非认证群：当成"不认识这个指令"
-                        elif is_rank_cmd(cmd):
+                        elif is_rank_cmd(cmd) and _feat_on(cid, "rank_heat"):
                             # 发情值排行
                             reply = await asyncio.to_thread(rank_summary)
                             if not reply:
                                 reply = p("rank_empty", cid)
-                        elif (rc_win := is_recap_cmd(cmd)) is not None:
+                        elif (rc_win := is_recap_cmd(cmd)) is not None and _feat_on(cid, "recap"):
                             # 「我不在的时候群里发生了什么」（仅认证群）
                             reply = await recap_absent(cid, cmd_sender, rc_win)
                             if not reply:
                                 reply = p("unknown_cmd", cid)  # 非认证群：当成"不认识这个指令"
-                        elif (tr_days := is_trend_cmd(cmd)) is not None:
+                        elif (tr_days := is_trend_cmd(cmd)) is not None and _feat_on(cid, "trend"):
                             # 过去 N 天运势趋势（必须排在 is_fortune_cmd 之前，否则 /运势趋势 会被 /运势 吃掉）
                             reply = await week_trend(cid, cmd_sender, tr_days)
                             if not reply:
                                 reply = p("unknown_cmd", cid)  # 非认证群：当成"不认识这个指令"
-                        elif is_summary_cmd(cmd):
+                        elif is_summary_cmd(cmd) and _feat_on(cid, "summary"):
                             # 总结类指令：先拉群聊记录，再让 AI 总结
                             chat_text = await asyncio.to_thread(summarize_chat, cmd)
                             group_name = get_group_name()
                             full_text = ("群名：" + group_name + "\n" + chat_text) if group_name else chat_text
                             reply = await asyncio.to_thread(generate_summary, full_text)
-                        elif is_fortune_cmd(cmd):
+                        elif is_fortune_cmd(cmd) and _feat_on(cid, "fortune"):
                             # 算命：给发指令的人算今天运势
                             reply = await asyncio.to_thread(fortune, cmd_sender)
-                        elif is_scene_cmd(cmd):
+                        elif is_scene_cmd(cmd) and _feat_on(cid, "scene"):
                             # 涩涩骰子：人物×场景×体位×附加玩法
                             reply = await asyncio.to_thread(scene, cmd)
-                        elif is_poem_cmd(cmd) is not None:
+                        elif is_poem_cmd(cmd) is not None and _feat_on(cid, "poem"):
                             # 写诗：随机文学方向，根据档案+发言写短诗
                             reply = await asyncio.to_thread(poem, cmd, cmd_sender)
                         else:
                             # 羞辱指令（返回 None 表示不是羞辱）
                             insult_target = is_insult_cmd(cmd)
-                            if insult_target is not None:
+                            if insult_target is not None and _feat_on(cid, "insult"):
                                 target_uid, text, custom, found = await asyncio.to_thread(_insult_resolve, insult_target, cmd_sender)
                                 if not found:
                                     reply = p("not_found_insult", cid)
@@ -2548,6 +2640,11 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                         "material": text,
                                         "output": reply,
                                     })
+                            elif _cmd_owned_by_disabled(cid, cmd):
+                                # 属于被关掉的功能 ⇒ 静默（不回、也不交给兜底聊天）。
+                                # 不这么做的话，"关掉投票"会变成"投票指令被当成闲聊回答"。
+                                log("🔇 [" + cid[:8] + "] 功能已关闭，静默: " + cmd[:30])
+                                reply = None
                             else:
                                 reply = await asyncio.to_thread(generate_reply, [{"sender": "user", "text": cmd}])
                         if reply is not None:
