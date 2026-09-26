@@ -15,6 +15,7 @@ from brains import (generate_perf_comment, generate_perf_ending,
                     generate_person_summary)
 from dzmm import get_messages_all, get_messages_since, get_user
 from wx_alert import send_weixin
+from personas import me as _pme                    # 自称：按群人设名（小小糯/薇丝）
 from runtime import ctx
 from runtime.features import on as _feat_on     # P12-A：功能开关（唯一判定点）
 from runtime.group_state import _get_perf_state, _set_perf_state
@@ -143,7 +144,7 @@ def _get_perf_content_full(cid: str, start_id: str) -> str:
             if len(t) < 30:
                 continue
             t = " ".join(t.split())  # 合并内部换行为单行，避免被当成多条对话
-            lines.append("【小小糯参考】" + t)
+            lines.append("【" + _pme(cid) + "参考】" + t)
             continue
         if text.startswith("/"):
             if text.startswith("/公演结束"):
@@ -255,7 +256,7 @@ async def _handle_perf_start(sender, cid: str, start_id: str, dry: bool):
         "review_status": "none",
     }
     _set_perf_state(cid, perf)
-    await _perf_send(sender, "🎬 公演开始啦～姐姐们请开始表演，小小糯会实时丰富剧情、点评、羞辱哦～（结束发 /公演结束）", cid, dry)
+    await _perf_send(sender, "🎬 公演开始啦～姐姐们请开始表演，" + _pme(cid) + "会实时丰富剧情、点评、羞辱哦～（结束发 /公演结束）", cid, dry)
 
 
 async def _perf_end_bg(sender, cid: str, dry: bool) -> None:
@@ -279,7 +280,7 @@ async def _handle_perf_end(sender, cid: str, dry: bool):
 
     # 1. 点评整个公演
     ending = await asyncio.to_thread(generate_perf_ending, content)
-    await _perf_send(sender, "🎬 公演结束！小小糯点评：\n" + ending, cid, dry)
+    await _perf_send(sender, "🎬 公演结束！" + _pme(cid) + "点评：\n" + ending, cid, dry)
 
     # 1.5 等待参与者补充收尾（20秒，避免漏掉公演结束后的补充台词）
     # P12-A：`perf_novel` 关掉时**到此为止**：点评照发、公演照常结束，
@@ -375,7 +376,7 @@ def _check_perf_interact(cid: str, msgs: list) -> str:
     # 记忆去重：把上一轮互动文本写进 prompt，要求避开
     prev_text = perf.get("last_interact_text", "")
     if prev_text:
-        tail += "\n\n【上一轮小小糯已经说过的内容（务必避开重复）】\n" + prev_text
+        tail += "\n\n【上一轮" + _pme(cid) + "已经说过的内容（务必避开重复）】\n" + prev_text
 
     reply = generate_perf_enrich(tail)
     perf["last_interact_text"] = reply

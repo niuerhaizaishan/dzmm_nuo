@@ -72,13 +72,24 @@ def test_p_uses_configured_persona_phrases():
 
 
 def test_apply_persona_appends_configured_extra():
-    base = "你是小小糯。"
+    """extra 必须被追加，名字也必须被换成本群人设名（两件事一起验）。
+
+    ⚠️ 两点别踩：① 默认人设的"零开销原样返回"要用**默认群**验；
+    ② 玫瑰房的人设自己就叫薇丝，基准串必须在**设定好人设之后**再用
+    `personas.me(cid)` 拼，否则基准里还是旧名字。
+    """
     personas.set_config_personas({})
+    base = "你是" + personas.DEFAULT_NAME_SHORT + "。"
     assert personas.apply_persona(base, cid=OTHER) == base, "默认人设要零开销原样返回"
+
     personas.set_config_personas({OTHER: "rose_butler"})
+    base = "你是" + personas.me(OTHER) + "。"
     got = personas.apply_persona(base, cid=OTHER)
     assert got.startswith(base)
     assert personas.PERSONAS["rose_butler"]["extra"] in got
+    # 默认名换成这个群的人设名（改名不能只改两个字段；extra 照旧追加在后面）
+    assert personas.apply_persona("你是" + personas.DEFAULT_NAME_SHORT + "。",
+                                  cid=OTHER).startswith("你是" + personas.me(OTHER) + "。")
 
 
 def test_set_config_personas_ignores_empty_values():

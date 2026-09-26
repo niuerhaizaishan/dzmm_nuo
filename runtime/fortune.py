@@ -16,6 +16,7 @@ from profiles import get_profile
 from runtime import ctx
 from runtime.identity import get_full_name
 from runtime.text import _clean_name
+from personas import me as _pme                      # 自称：按群人设名（小小糯/薇丝）
 import state_store
 
 __all__ = [
@@ -25,9 +26,11 @@ __all__ = [
 ]
 
 
-FORTUNE_APOLOGY = """🙇♀️🙇♀️🙇♀️ 姐姐们，小小糯来磕头认错啦～前几天把运势算得凶凶的，是小小糯不好，这就跪下咚咚咚给姐姐们磕响头赔罪～💦
-为了赔罪，今天每一位姐姐的运势，小小糯都保证是 90 分以上的大吉～🍀 祝姐姐们好运连连，天天被幸福包围～
-姐姐们就原谅软软糯糯的小小糯这一次嘛～好不好嘛～♡"""
+# ⚠️ 只在 is_apology_day（一次性日期，见下）出现，正文里用 {me} 占位符 ——
+# 这段是"赔罪话术"，房间里自称是「薇丝」，写死名字会在玫瑰房漏出「小小糯」。
+FORTUNE_APOLOGY = """🙇♀️🙇♀️🙇♀️ 姐姐们，{me}来磕头认错啦～前几天把运势算得凶凶的，是{me}不好，这就跪下咚咚咚给姐姐们磕响头赔罪～💦
+为了赔罪，今天每一位姐姐的运势，{me}都保证是 90 分以上的大吉～🍀 祝姐姐们好运连连，天天被幸福包围～
+姐姐们就原谅软软糯糯的{me}这一次嘛～好不好嘛～♡"""
 
 
 _GAN = "甲乙丙丁戊己庚辛壬癸"
@@ -124,8 +127,8 @@ def is_fortune_cmd(cmd: str) -> bool:
     return any(cmd.startswith(p) for p in ["/算命", "/运势", "/占卜", "/今日运势", "/今日运气", "/运气"])
 
 
-def fortune(cmd_sender: str) -> str:
-    """算命：五行命理算分 → 组装运势消息（硬控 ≤10 行）。"""
+def fortune(cmd_sender: str, cid: str = None) -> str:
+    """算命：五行命理算分 → 组装运势消息（硬控 ≤10 行）。`cid` 用来取本群自称."""
     uid = cmd_sender
     full = get_full_name(uid)
     today = datetime.now().strftime("%Y-%m-%d")
@@ -195,7 +198,7 @@ def fortune(cmd_sender: str) -> str:
     last = " ".join(str(last).split()).strip()
     if not last:
         last = (full + "今天运势「" + level + "」哦～命理" + concl
-                + "，记得照着宜忌来，小小糯都替你看着呢～♡")
+                + "，记得照着宜忌来，" + _pme(cid) + "都替你看着呢～♡")
     ben_gan = info["ben_ganzhi"][0] if info["ben_ganzhi"] != "—" else "—"
     ben_zhi = info["ben_ganzhi"][1] if len(info["ben_ganzhi"]) > 1 else ""
     lines = [
@@ -216,7 +219,7 @@ def fortune(cmd_sender: str) -> str:
     if is_caigao:
         lines.append("（悄悄说：这是糯糯姐看你最近太凶，手动调的高分哦～）")
     if is_apology_day:
-        lines.append(FORTUNE_APOLOGY)
+        lines.append(FORTUNE_APOLOGY.format(me=_pme(cid)))
     return "\n".join(lines)
 
 

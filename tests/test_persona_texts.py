@@ -78,8 +78,10 @@ def test_empty_extra_means_no_extra_not_default():
     assert P.PERSONAS["rose_butler"]["extra"], "前置条件：房间里本来有一段 extra"
     P.set_content_overrides({"rose_butler": {"extra": ""}})
     assert P.persona_for(ROSE)["extra"] == ""
-    sp = P.apply_persona("你是" + P.DEFAULT_NAME_FULL + "。", ROSE)
-    assert sp == "你是" + P.DEFAULT_NAME_FULL + "。", "空的 extra 不该追加任何东西"
+    # 基准用**本群人设名**写：玫瑰房的人设名与默认名不同，apply_persona 会换名字，
+    # 本条只验"空 extra 不追加任何东西"。
+    base = "你是" + P.me_full(ROSE) + "。"
+    assert P.apply_persona(base, ROSE) == base, "空的 extra 不该追加任何东西"
 
 
 def test_phrase_override_and_empty_phrase():
@@ -206,15 +208,28 @@ def test_rename_rewrites_names_and_every_self_reference():
     模型照旧自称旧名字 —— 看起来改了、其实没改。
     """
     T = _tool()
-    item, changes = T.build_rename("rose_butler", {"personas": {}}, P, "薇丝")
-    assert item["name_full"] == "薇丝" and item["name_short"] == "薇丝"
+    NEW = "玫瑰管家"   # 别用「薇丝」：代码默认已经叫薇丝，那样改名是个 no-op，测不出东西
+    item, changes = T.build_rename("rose_butler", {"personas": {}}, P, NEW)
+    assert item["name_full"] == NEW and item["name_short"] == NEW
     assert "小小糯" not in item["extra"], "extra 里不能残留旧名字"
-    assert item["extra"].count("薇丝") == P.PERSONAS["rose_butler"]["extra"].count("小小糯")
-    assert item["phrases"], "话术里指向自己的那几条也要换"
-    for k, v in item["phrases"].items():
-        assert "小小糯" not in v, k
+    assert item["extra"].count(NEW) == P.PERSONAS["rose_butler"]["extra"].count("小小糯")
     assert any("name_full" in c for c in changes)
     assert any("extra" in c for c in changes)
+    # P12-H 追加：代码默认话术已经改成 `{me}` 占位符（不再写死名字），
+    # 所以"改名"这一步**不需要**再生成话术覆盖 —— 但仍要保证两句都成立：
+    #   ① 改名工具不再产出话术覆盖；② 房间里任何一条话术都不含旧名字。
+    assert not item.get("phrases"), "话术走 {me}，不该再产生话术覆盖"
+    for k in P.known_phrase_keys("rose_butler"):
+        assert "小小糯" not in P.p(k, ROSE), k
+
+
+def test_rename_still_rewrites_literal_phrase_names():
+    """配置里写死名字的话术（历史遗留/手工覆盖）仍然会被一起换掉。"""
+    T = _tool()
+    raw = {"personas": {"rose_butler": {"phrases": {
+        "mem_ask": "要记什么？说清楚些，小小糯好写进册子。"}}}}
+    item, changes = T.build_rename("rose_butler", raw, P, "薇丝")
+    assert item["phrases"]["mem_ask"] == "要记什么？说清楚些，薇丝好写进册子。"
     assert any("话术" in c for c in changes)
 
 

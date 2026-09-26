@@ -14,6 +14,7 @@ import time
 
 from dice_game import count_point, dice_str, is_legal_raise, roll_dice, roll_wild
 from dzmm import get_private_cid
+from personas import me as _pme                      # 自称：按群人设名（小小糯/薇丝）
 from runtime.identity import get_name
 from runtime.obs import log
 import state_store
@@ -93,7 +94,8 @@ async def _dice_deal_round(sender, g: dict) -> str:
     lines.append(f"由 1号 首叫（最少叫 {num} 个，格式 /N个X）")
     if failed:
         lines.append("⚠️ " + "、".join("@" + get_name(p) for p in failed)
-                     + " 骰子没发成功（私聊未解锁），请先私聊小小糯发一句话，再发 /看骰 查看～")
+                     + " 骰子没发成功（私聊未解锁），请先私聊" + _pme(g.get("cid"))
+                     + "发一句话，再发 /看骰 查看～")
     return "\n".join(lines)
 
 

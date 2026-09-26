@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 
 from brains import generate_recap
 from dzmm import get_messages_since
+from personas import me as _pme                    # 自称：按群人设名（小小糯/薇丝）
 from runtime.ctx import PRIMARY_CID
 from runtime.identity import _load_member_names, get_full_name, get_name, is_self
 from runtime.obs import log
@@ -188,16 +189,17 @@ def _recap_mentions(msgs: list, uid: str):
     return (hits, who[:3], sample)
 
 
-def _recap_transcript(msgs: list) -> tuple:
-    """消息列表 → 给 AI 的转录文本 + 条数（bot 消息标成"小小糯:"，长文截断）."""
+def _recap_transcript(msgs: list, cid: str = None) -> tuple:
+    """消息列表 → 给 AI 的转录文本 + 条数（bot 消息标成本群自称，长文截断）."""
     lines = []
+    _me = _pme(cid)
     for m in msgs:
         u = m.get("sent_by", "")
         t = ((m.get("content") or {}).get("text") or "").strip()
         if not t:
             continue
         if is_self(u):
-            lines.append("小小糯: " + t[:100])
+            lines.append(_me + ": " + t[:100])
         else:
             lines.append(get_name(u) + ": " + t[:80])
     return ("\n".join(lines), len(lines))
@@ -223,7 +225,7 @@ async def recap_absent(cid: str, uid: str, text: str = "") -> str:
                                        max_count=600)
     except Exception as e:
         log("回顾拉取失败: " + str(e)[:60])
-        return "哎呀，小小糯翻记录的时候卡了一下，等会儿再问一次好不好～"
+        return "哎呀，" + _pme(cid) + "翻记录的时候卡了一下，等会儿再问一次好不好～"
     # 先把成员昵称一次性load进来：否则转录里每个陌生 uid 都会单独发一次 HTTP 查名字
     # （实测 6 小时窗口因此多花 2.9 秒）
     try:
@@ -238,7 +240,7 @@ async def recap_absent(cid: str, uid: str, text: str = "") -> str:
     if total == 0:
         return "（翻了翻小本子）" + (wlabel or "你不在的这段时间") + "群里一条消息都没有，安静得像没人～"
     kept = msgs[-int(_tune("recap.max_msgs", cid)):]
-    transcript, n_shown = _recap_transcript(kept)
+    transcript, n_shown = _recap_transcript(kept, cid)
     hits, who, sample = _recap_mentions(msgs, uid)
     end_show = until if (until and until < time.time() - 60) else time.time()
     if wlabel:
@@ -271,7 +273,7 @@ async def recap_absent(cid: str, uid: str, text: str = "") -> str:
         if body.get(k):
             lines.append(body[k])
     if len(lines) < 3:
-        lines.append("（群里挺热闹的，但小小糯没提炼出什么重点，要不你再问细一点？）")
+        lines.append("（群里挺热闹的，但" + _pme(cid) + "没提炼出什么重点，要不你再问细一点？）")
     # 记录冷却
     try:
         st = state_store.load_state()

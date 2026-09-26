@@ -230,7 +230,7 @@ import state_store                                    # P7：状态存储后端�
 from runtime import ctx                               # P8 第 4 步：当前群上下文的唯一真源
 from runtime.ctx import PRIMARY_CID                   # 常驻群 cid 的唯一真源（Sender 默认参数要用）
 from runtime.obs import log  # P8 第 4 步：搬到 runtime/obs.py
-from runtime.identity import self_uids, is_self, self_names, self_names_longest_first, _load_member_names, get_full_name, get_name, is_at_me, NUO_UID, BOT_UID, BOT_NAME, BOT_NAME_SHORT, _name_cache, register_bots, resolve_bot_uids as _resolve_bot_uids, learn_bot_uid, bot_uids  # P8 第 4 步：搬到 runtime/identity.py（P12-H 加多 Bot 身份）
+from runtime.identity import self_uids, is_self, self_names, self_names_longest_first, _load_member_names, get_full_name, get_name, is_at_me, mentions_self, NUO_UID, BOT_UID, BOT_NAME, BOT_NAME_SHORT, _name_cache, register_bots, resolve_bot_uids as _resolve_bot_uids, learn_bot_uid, bot_uids  # P8 第 4 步：搬到 runtime/identity.py（P12-H 加多 Bot 身份）
 from runtime.dice import _dice_state, _dice_save, _dice_current_player, _dice_send_private, _dice_board_text, _dice_deal_round, _dice_start_cmd, _dice_join_cmd, _dice_exit_cmd, _dice_begin_cmd, _dice_next_round_cmd, _dice_call_cmd, _dice_open_cmd, _dice_quit_cmd, _dice_skip_cmd, _dice_status_text  # P8 第 4 步：搬到 runtime/dice.py
 from runtime.text import _get_opencc, _normalize_cn, _simplify, _strip_parenthesis, _is_stop_word, _dedupe_options, _normalize_choice, _extract_deadline_seconds, _squash, _clean_name, _norm_poem, _CJK_VARIANT, STOP_WORDS, _OPENCC_T2S  # P8 第 4 步：搬到 runtime/text.py
 from runtime.members import _extract_msgs, _get_msgs_by_uid, _member_profile_text, _find_in_profiles, _find_user_in_msgs, find_user_by_name, _find_uid_by_name, _gender_label, _random_member_uid, _archive_text_from_profile, _history_lines, _profile_history, HISTORY_MAX  # P8 第 4 步：搬到 runtime/members.py
@@ -297,7 +297,10 @@ _captcha_active = False
 _captcha_notified = {}  # cid -> bool，撞验证码群里说明是否已发（每群一次防刷屏）
 
 # 撞验证码相关文案
-CAPTCHA_NOTICE = ("⚠️ 小小糯撞上平台验证码啦～查资料、踢人、新人筛查暂时受限，"
+# ⚠️ 自称一律写 `{me}` —— 这里是**代码默认值**（默认人设 = 小小糯），发出去之前
+# 会过 `personas.fill(text, cid)`：认证群填「小小糯」、玫瑰房填「薇丝」。
+# 直接写死名字的话，玫瑰房会冒出一个客人不认识的「小小糯」。
+CAPTCHA_NOTICE = ("⚠️ {me}撞上平台验证码啦～查资料、踢人、新人筛查暂时受限，"
                   "聊天收发不受影响哦～风控解除会自动恢复，稍安勿躁～♡")
 CAPTCHA_JOIN_NOTICE = ("⚠️ 检测到新成员「{name}」加入，但当前撞平台验证码、暂时核实不了身份～"
                        "恢复后男生和游客会被自动踢出，其他情况会提醒管理员处理哦～♡")
@@ -728,14 +731,14 @@ def should_reply(context: list[dict]) -> str:
     return ""
 
 
-def _strip_at(text: str) -> str:
-    """去掉 @小小糯 前缀，返回纯提问。
+def _strip_at(text: str, cid: str = None) -> str:
+    """去掉 @我 的前缀，返回纯提问（`cid` 决定本群我可能被叫的名字）.
 
     ⚠️ 必须**长名优先**（`self_names_longest_first`）：名字之间可能互为前缀，
     短名先剥会把长名的残余留进 prompt（`@小小糯-bot` → `-bot`）。
     见 runtime/identity.py 里那个函数的说明。
     """
-    for name in self_names_longest_first():
+    for name in self_names_longest_first(cid):
         if name:
             text = text.replace("@" + name, "", 1)
     return text.strip()
@@ -760,8 +763,8 @@ def is_summary_cmd(cmd: str) -> bool:
     return any(k in cmd for k in keywords)
 
 
-HELP_TEXT = """小小糯的指令说明～：
-@小小糯～ - 直接@我聊天
+HELP_TEXT = """{me}的指令说明～：
+@{me_full} - 直接@我聊天
 /骚度排行 - 发情值排行
 /发骚 /体位骰 - 涩涩骰子
 /羞辱 昵称 - 恶魔羞辱 /吐槽开/关 - 主动吐槽
@@ -771,7 +774,8 @@ HELP_TEXT = """小小糯的指令说明～：
 /剧情开始 /投票 - 游戏&投票(/选 N)
 🔥 发情值满100触发高潮"""
 
-WELCOME_TEXT = """🎉 欢迎 {name} 姐姐加入～♡ 我是小小糯～，群里的小秘书～
+# 认证群欢迎语（含"妹子认证群"字样）—— 别的人群不用它，见 WELCOME_TEXT_PLAIN
+WELCOME_TEXT = """🎉 欢迎 {name} 姐姐加入～♡ 我是{me_full}，群里的小秘书～
 
 💬 新人先冒个泡说句话，让姐姐们认识认识你呀～还没注册的话发 /注册 建个档案哦～📝
 
@@ -780,11 +784,11 @@ WELCOME_TEXT = """🎉 欢迎 {name} 姐姐加入～♡ 我是小小糯～，群
 【群简介】姐妹们发骚聊天的地方～可以 🎲发骚、🔗玩调教、😈被羞辱、🎭开公演，还有 🎬剧情游戏、📊投票、🔮算命、📇查档案、🔥发情值排行～发 /说明 看全部功能～♡"""
 
 # 非认证群的欢迎语（中性版）：不写"会被踢""认证"等字样，只介绍功能
-WELCOME_TEXT_PLAIN = """🎉 欢迎 {name} 加入～♡ 我是小小糯～，群里的小秘书～
+WELCOME_TEXT_PLAIN = """🎉 欢迎 {name} 加入～♡ 我是{me_full}，群里的小秘书～
 
 💬 冒个泡说句话，让大家认识认识你呀～还没注册的话发 /注册 建个档案哦～📝
 
-【群简介】小小糯会 🔮算命、📇查档案、📝写诗、🎬剧情游戏、📊投票、🎲骰子、🔥发言排行，也能陪你聊天～发 /说明 看全部功能～♡"""
+【群简介】{me}会 🔮算命、📇查档案、📝写诗、🎬剧情游戏、📊投票、🎲骰子、🔥发言排行，也能陪你聊天～发 /说明 看全部功能～♡"""
 
 # 新成员筛查（妹子认证群）：踢游客 / 踢男性 / 提醒未填性别
 TOURIST_KEYWORDS = ["游客"]
@@ -799,7 +803,7 @@ JOIN_WARN_NOT_VERIFIED = "⚠️ 新成员「{name}」加入但未通过妹子�
 
 # 记忆功能：触发词 + 上限
 
-INTRO_TEXT = """我是小小糯～19岁，糯糯姐的私人秘书，银白双马尾配红蓝异色瞳，软软糯糯的小奶猫一只～♡
+INTRO_TEXT = """我是{me_full}19岁，糯糯姐的私人秘书，银白双马尾配红蓝异色瞳，软软糯糯的小奶猫一只～♡
 我会查档案、排骚度、羞辱人、总结群聊，还能陪姐姐们聊天～
 还没注册的姐姐，发 /注册 建立档案，以后查你会更丰富哦～发 /说明 看详细功能～"""
 
@@ -1124,7 +1128,7 @@ async def _publish_memory_report(sender, cid: str, dry: bool):
         return
     total = len(mem)
     shown = mem[-_tune("memory.report_items", cid):]
-    lines = [f"📝 小小糯今日记忆（共 {total} 条）："]
+    lines = [p("mem_list_head", cid).format(n=total)]
     for i, m in enumerate(shown, 1):
         at_short = (m.get('at') or '')
         if len(at_short) >= 11:
@@ -1314,14 +1318,14 @@ def _daily_profile_scan() -> list:
                 txt = "🤖 咦～" + old_name + " 改名成「" + name + "」啦"
                 if bits:
                     txt += "，" + "，".join(bits)
-                txt += ("，小小糯记住咯～以后就叫你 "
+                txt += ("，" + _personas.me(cid) + "记住咯～以后就叫你 "
                         + (_clean_name(name) or name) + " 姐姐啦～♡")
                 notices.append((cid, txt))
             elif bits:
                 if cid in ROOM_CIDS:
                     continue  # 同上：房间群不播报简介/签名变化
                 notices.append((cid, "🤖 咦～" + name + " 姐姐" + "，".join(bits)
-                                + "，小小糯偷偷更新档案咯～♡"))
+                                + "，" + _personas.me(cid) + "偷偷更新档案咯～♡"))
     snap["day"] = time.strftime("%Y-%m-%d")
     snap["members"] = cur
     _scan_save(snap)
@@ -2394,7 +2398,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                 if _cid in MUTE_CIDS:
                     continue
                 if _feat_on(_cid, "screen_rescreen"):
-                    await _send(sender, _cid, "🤖 " + CAPTCHA_RECOVERED_NOTICE, dry)
+                    await _send(sender, _cid, "🤖 " + _personas.fill(CAPTCHA_RECOVERED_NOTICE, _cid), dry)
                     await _rescreen_pending(sender, _cid, dry)
             log("✅ 风控解除（Socket.IO 已重连），已群内提醒 + 补筛查")
         _was_sio_connected = is_conn
@@ -2480,7 +2484,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                         for _cid in GROUPS:
                             if _cid in MUTE_CIDS:
                                 continue
-                            await _send(sender, _cid, "🤖 " + CAPTCHA_RECOVERED_NOTICE, dry)
+                            await _send(sender, _cid, "🤖 " + _personas.fill(CAPTCHA_RECOVERED_NOTICE, _cid), dry)
                             await _rescreen_pending(sender, _cid, dry)
                         log("✅ 风控解除，已群内提醒 + 补筛查")
                 else:
@@ -2568,7 +2572,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                             if cid in SCREEN_CIDS and _feat_on(cid, "screen"):
                                 log("🎉 [" + cid[:8] + "] 新成员加入 " + str(len(joins)) + " 人，开始筛查")
                                 passed = await _handle_joins(sender, cid, joins, dry)
-                                wtxt = WELCOME_TEXT
+                                wtxt = _personas.fill(WELCOME_TEXT, cid)
                             elif cid in SCREEN_CIDS:
                                 # 「入群筛查」关了：**不再踢人**，但仍要欢迎 ——
                                 # 所以这里退化成"普通群"的处理方式（中性欢迎语）。
@@ -2576,7 +2580,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                 # 否则关掉筛查会把欢迎语、房间迎客一起关掉。
                                 log("🎉 [" + cid[:8] + "] 新成员加入 " + str(len(joins)) + " 人（筛查已关闭，只欢迎）")
                                 passed = joins
-                                wtxt = WELCOME_TEXT_PLAIN
+                                wtxt = _personas.fill(WELCOME_TEXT_PLAIN, cid)
                             elif cid in ROOM_CIDS:
                                 # 房间群：主动问好 + 屋主规矩 + 花瓣变出招待品
                                 # （女鬼期间屋子没人，不迎客）
@@ -2592,12 +2596,12 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                     log("🌹 [" + cid[:8] + "] 有客人进房 " + str(len(joins)) + " 人，上茶")
                                     for jid in joins:
                                         await _send(sender, cid,
-                                                    "🤖 " + _room_greet_text(get_full_name(jid)), dry)
+                                                    "🤖 " + _room_greet_text(get_full_name(jid), cid), dry)
                                     passed, wtxt = [], ""
                             else:
                                 log("🎉 [" + cid[:8] + "] 新成员加入 " + str(len(joins)) + " 人，只发欢迎语")
                                 passed = joins
-                                wtxt = WELCOME_TEXT_PLAIN
+                                wtxt = _personas.fill(WELCOME_TEXT_PLAIN, cid)
                             for jid in passed:
                                 jname = get_full_name(jid)
                                 if not _feat_on(cid, "screen_welcome"):
@@ -2618,7 +2622,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                             cmd = t
                             cmd_sender = m.get("sent_by", "")
                             break
-                        if not at_msg and is_at_me(t):
+                        if not at_msg and is_at_me(t, cid):
                             at_msg = t
                             at_sender = m.get("sent_by", "")
                         if not room_hit and _is_room_trigger(cid, m.get("sent_by", ""), t):
@@ -2798,7 +2802,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                             # 投票进行中，其他指令屏蔽
                             reply = "📊 投票进行中哦～想参与就发 /选 X 或 /X（X=序号），想结束发 /投票结束～"
                         elif (is_help_cmd(cmd) or is_guide_cmd(cmd)) and _feat_on(cid, "help"):
-                            reply = p("help_text", cid) or HELP_TEXT
+                            reply = p("help_text", cid) or _personas.fill(HELP_TEXT, cid)
                         elif (mc := is_remember_cmd(cmd)) is not None and _feat_on(cid, "memory_remember"):
                             # 记忆：/记住 内容
                             if not mc:
@@ -2833,7 +2837,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                             reply = ("💬 主动吐槽已开启～我会偶尔冒个泡哦～"
                                      if devil_sw == "on" else "💬 主动吐槽已关闭～我先安静啦")
                         elif is_intro_cmd(cmd) and _feat_on(cid, "intro"):
-                            reply = p("intro_text", cid) or INTRO_TEXT
+                            reply = p("intro_text", cid) or _personas.fill(INTRO_TEXT, cid)
                         elif is_sync_cmd(cmd) and _feat_on(cid, "sync"):
                             # 手动同步（仅糯糯）
                             if cmd_sender != OWNER_UID:
@@ -2893,7 +2897,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                             reply = await asyncio.to_thread(generate_summary, full_text)
                         elif is_fortune_cmd(cmd) and _feat_on(cid, "fortune"):
                             # 算命：给发指令的人算今天运势
-                            reply = await asyncio.to_thread(fortune, cmd_sender)
+                            reply = await asyncio.to_thread(fortune, cmd_sender, cid)
                         elif is_scene_cmd(cmd) and _feat_on(cid, "scene"):
                             # 涩涩骰子：人物×场景×体位×附加玩法
                             reply = await asyncio.to_thread(scene, cmd)
@@ -2961,7 +2965,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                             group_state["last_id"] = msgs[-1]["message_id"]
                             state[cid] = group_state
                             save_state(state)
-                            q = _strip_at(at_msg)  # 去 @前缀，得到纯提问
+                            q = _strip_at(at_msg, cid)  # 去 @前缀，得到纯提问
                             mem_content = _extract_remember(q) \
                                 if _feat_on(cid, "memory_remember") else None
                             if mem_content is not None:
@@ -3036,7 +3040,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                             state[cid] = group_state
                             save_state(state)
                             log("🌹 [" + cid[:8] + "] " + get_name(r_uid)[:12] + " 回来，女鬼退场")
-                            reply = ROOM_GHOST_BACK.format(who=get_name(r_uid))
+                            reply = _personas.fill(ROOM_GHOST_BACK, cid, who=get_name(r_uid))
                         elif ghost_on and _feat_on(cid, "room_ghost"):
                             # 女鬼还在：再摘花 → 警告+恐吓；其他话一律不接（小小糯在门外）
                             if _is_flower_grab(r_text) and \
@@ -3046,7 +3050,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                                 state[cid] = group_state
                                 save_state(state)
                                 log("👻 [" + cid[:8] + "] 女鬼期间又摘花，警告+恐吓")
-                                reply = ROOM_GHOST_WARN
+                                reply = _personas.fill(ROOM_GHOST_WARN, cid)
                             else:
                                 reply = None  # 静默：管家不在，门也没有
                         elif r_text.startswith("/") and not _room_owner(cid, r_uid) \
@@ -3064,7 +3068,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                             state[cid] = group_state
                             save_state(state)
                             log("👻 [" + cid[:8] + "] " + get_name(r_uid)[:12] + " 摘花，放出红衣女鬼")
-                            reply = ROOM_GHOST_TEXT
+                            reply = _personas.fill(ROOM_GHOST_TEXT, cid)
                         elif (_feat_on(cid, "horoscope")
                               and (_sr := await _sign_reply(
                                   cid, r_uid, r_text,
@@ -3099,7 +3103,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                             # 关掉它，管家照常回话、只是不再数次数（不是把房间关了）
                             _hit = _feat_on(cid, "room_lewd") and "[[STRIKE]]" in (reply or "")
                             if not _hit:
-                                _named = ("小小糯" in r_text) or is_at_me(r_text)
+                                _named = mentions_self(r_text, cid)
                                 _hit = _named and any(w in r_text for w in ROOM_LEWD_WORDS)
                                 if _hit:
                                     log("🌹 [" + cid[:8] + "] 调戏（关键词兜底命中）")
@@ -3282,7 +3286,7 @@ async def main_loop(interval: float, dry: bool, once: bool):
                     if not _captcha_notified.get(cid):
                         _captcha_notified[cid] = True
                         if _feat_on(cid, "screen_captcha_notice"):
-                            await _send(sender, cid, "🤖 " + CAPTCHA_NOTICE, dry)
+                            await _send(sender, cid, "🤖 " + _personas.fill(CAPTCHA_NOTICE, cid), dry)
                         # 拉 noVNC 人工验证窗口（撞验证码时提供人工过滑块入口，只拉一次防刷屏）
                         try:
                             subprocess.Popen(
@@ -3396,12 +3400,18 @@ def _room_male(cid: str, uid: str) -> bool:
     return r == "male"
 
 
-def _room_greet_text(name: str) -> str:
-    """房间群的新客欢迎语（固定模板 + 随机招待品，不消耗 AI 调用）."""
-    return (ROOM_GREET_TEMPLATE
-            .replace("{name}", name)
-            .replace("{item}", random.choice(ROOM_GREET_ITEMS))
-            .replace("{line}", random.choice(ROOM_GREET_LINES)))
+def _room_greet_text(name: str, cid: str = None) -> str:
+    """房间群的新客欢迎语（固定模板 + 随机招待品，不消耗 AI 调用）.
+
+    模板和候选句里都可能有 `{me}`（本群管家的名字，见 personas.fill）——
+    房间管家改过名，欢迎语里必须跟着改，不能写死。
+    """
+    return _personas.fill(
+        ROOM_GREET_TEMPLATE
+        .replace("{name}", name)
+        .replace("{item}", random.choice(ROOM_GREET_ITEMS))
+        .replace("{line}", random.choice(ROOM_GREET_LINES)),
+        cid)
 
 
 def _strike_get(group_state: dict, uid: str, reset_h: int) -> int:
@@ -3516,7 +3526,7 @@ async def _rescreen_pending(sender, cid: str, dry: bool) -> None:
     passed = await _handle_joins(sender, cid, pending, dry)
     for jid in passed:
         jname = get_full_name(jid)
-        await _send(sender, cid, "🤖 " + WELCOME_TEXT.replace("{name}", jname), dry)
+        await _send(sender, cid, "🤖 " + _personas.fill(WELCOME_TEXT, cid).replace("{name}", jname), dry)
 
 
 async def _handle_joins(sender, cid: str, new_uids: list, dry: bool) -> list:
@@ -3559,7 +3569,7 @@ async def _handle_joins(sender, cid: str, new_uids: list, dry: bool) -> list:
             await _kick_and_notify(sender, cid, uid, full, JOIN_WARN_MALE, JOIN_DONE_MALE, dry)
         elif g in (None, "", "unknown"):
             # 未填性别：先欢迎，再请管理员留意 + @本人提醒（不踢）
-            await _send(sender, cid, "🤖 " + WELCOME_TEXT.replace("{name}", full), dry)
+            await _send(sender, cid, "🤖 " + _personas.fill(WELCOME_TEXT, cid).replace("{name}", full), dry)
             await _send(sender, cid, "🤖 " + JOIN_WARN_NULL.format(name=full), dry)
         else:
             # female（或已关掉"踢男性"时的 male）：再查妹子认证状态
@@ -3579,7 +3589,7 @@ async def _handle_joins(sender, cid: str, new_uids: list, dry: bool) -> list:
                 passed.append(uid)
             else:
                 # 女生但未认证：先欢迎，再请管理员留意 + @本人提醒（不踢）
-                await _send(sender, cid, "🤖 " + WELCOME_TEXT.replace("{name}", full), dry)
+                await _send(sender, cid, "🤖 " + _personas.fill(WELCOME_TEXT, cid).replace("{name}", full), dry)
                 await _send(sender, cid, "🤖 " + JOIN_WARN_NOT_VERIFIED.format(name=full), dry)
     return passed
 

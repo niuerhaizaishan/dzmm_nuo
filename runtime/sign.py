@@ -16,9 +16,9 @@ from personas import (NUONUO_UID, ROOMS, ROSE_LUCKY_COLORS, ROSE_LUCKY_DIRS,
                       ROSE_LUCKY_ITEMS, ROSE_MOONS, ROSE_SIGNS, ROSE_SIGN_JI,
                       ROSE_SIGN_WORDS, ROSE_SIGN_YI, ROOM_FLOWER_NOUNS,
                       ROOM_FLOWER_VERBS, ROOM_FLOWER_WORDS, ROOM_MENU_WORDS,
-                      ROOM_ORDER_VERBS)
+                      ROOM_ORDER_VERBS, me as _pme)   # `{me}`/自称：本群管家叫什么
 from runtime.features import on as _feat_on          # P12-A：功能开关（唯一判定点）
-from runtime.identity import _load_member_names, get_name, is_at_me, is_self
+from runtime.identity import _load_member_names, get_name, mentions_self, is_self
 from runtime.members import _get_msgs_by_uid
 from runtime.obs import log
 import state_store
@@ -75,7 +75,7 @@ def _is_room_trigger(cid: str, uid: str, text: str) -> bool:
     t = text.strip()
     if not t or t.startswith("/"):
         return False  # / 指令走权限分支
-    if ("小小糯" in t) or is_at_me(t):
+    if mentions_self(t, cid):
         return True
     if _is_flower_grab(t) and _feat_on(cid, "room_flower"):
         return True  # 摘花 → 进房间分支（男生放任女鬼，其他人由 AI 婉拒）
@@ -299,7 +299,7 @@ async def _sign_reply(cid: str, uid: str, text: str, who: str = "客人") -> str
             card = await _sign_card(cid, uid, s[0], birth[0], birth[1], who)
             return ("（翻开册子写下日子，花瓣在字上停了一下）"
                     + str(birth[0]) + "月" + str(birth[1]) + "日，是" + s[0] + "座。\n" + card)
-        return "这个日子小小糯认不出来……月日再报一次？比如 11 月 5 号。"
+        return "这个日子" + _pme(cid) + "认不出来……月日再报一次？比如 11 月 5 号。"
     # ③ 问房间整体星象（屋主专属）
     if owner and any(k in t for k in ("房间星象", "今日星象", "今天适合", "屋子运势", "房间运势")):
         card = await _sign_card(cid, cid, "天秤", 9, 23, "Vv姐姐" if uid != NUONUO_UID else "糯糯姐")
@@ -309,7 +309,7 @@ async def _sign_reply(cid: str, uid: str, text: str, who: str = "客人") -> str
         gs = (state_store.load_state().get(cid) or {})
         rec = gs.get("rose_signs") or {}
         if not rec:
-            return "册子上还没有人报过生日呢，报一个，小小糯才好替你们看。"
+            return "册子上还没有人报过生日呢，报一个，" + _pme(cid) + "才好替你们看。"
         today = datetime.now().strftime("%Y-%m-%d")
         _load_member_names()  # 先刷新昵称缓存，免得榜上显示 uid 前缀
         rows = []
@@ -335,10 +335,10 @@ async def _sign_reply(cid: str, uid: str, text: str, who: str = "客人") -> str
             if _st and _st[0] == named:
                 return card
             # 没记录 / 记的不是这一座 → 末尾轻轻问一句要不要记进册子
-            return card + "\n（若是你本人的座，说一句「我是" + named + "座」，小小糯替你记进册子。）"
+            return card + "\n（若是你本人的座，说一句「我是" + named + "座」，" + _pme(cid) + "替你记进册子。）"
         got = _sign_stored(cid, uid)
         if not got:
-            return ("（合上册子）小小糯这儿还没记过你的生日呢。"
+            return ("（合上册子）" + _pme(cid) + "这儿还没记过你的生日呢。"
                     "报一个就好——几月几号，或者直接说你是哪个星座？")
         card = await _sign_card(cid, uid, got[0], got[1], got[2], who)
         return card

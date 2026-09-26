@@ -218,3 +218,119 @@ SSH 抽风时（本次连续 35+ 次握手全失败），"用本机糯糯登录"
 - **第一句测试消息**：Bot 进群后要不要我发一条明确标注的测试消息（会出现在群里）？
   在那之前我不发任何消息。
 
+---
+
+# 第二阶段（同日稍后）：把玫瑰房的身份**整体**换成薇丝
+
+用户原话：**"保持原来 rose 群小小糯的功能，切换到薇丝。参考妹子群。"**
+——不是把认证群的功能搬进玫瑰房（功能一个都不动），而是**换"谁在说话"**。
+参考妹子群 = 认证群里"发言者叫小小糯、文案里也自称小小糯"是一致的，玫瑰房要同样自洽。
+
+## 机制原来只覆盖两层，漏了第三层
+
+| 层 | 换名机制 | 之前的状态 |
+|---|---|---|
+| 系统提示词（`brains.py` 40 个 `_p()` 默认值） | `apply_persona()` 替换 `小小糯～/小小糯` | ✅ 已覆盖 |
+| 固定话术（`personas.PHRASES`） | `p(key, cid)` 取本群那份（配置覆盖 6 条） | ✅ 已覆盖 |
+| **其它直接发的字符串** | **无** | ❌ 玫瑰房会漏出「小小糯」 |
+
+第三层里最要命的不是文案难看，而是**判定**：
+
+- `runtime/sign.py::_is_room_trigger` 里写着 `("小小糯" in t) or is_at_me(t)`
+  —— 客人喊「薇丝」**房间根本不接话**；
+- `bot.py` 调戏计数兜底 `_named = ("小小糯" in r_text)` —— 喊「薇丝」不算点名；
+- `_strip_at()` 只剥 `self_names()`（账号名 + Bot 名），`@薇丝` 剥不掉，
+  整句连名字一起进 prompt。
+
+## 改法：一个自称出口 + 一个按群名字集
+
+```python
+personas.me(cid)        # 本群自称（短名）：认证群「小小糯」/ 玫瑰房「薇丝」
+personas.me_full(cid)   # 全名（默认带 ～）
+personas.all_names(cid) # 本群我可能被叫到的名字（人设名 + 默认名，旧名不丢）
+personas.fill(text, cid, **kw)   # 群内文案统一出口：{me}/{me_full} + 旧名替换 + 占位符
+```
+
+`p(key, cid)` 现在也走 `fill()`，所以**话术表里可以直接写 `{me}`**
+（`ALLOWED_PLACEHOLDERS` 已加 `me`/`me_full`，页面校验认它）。
+`fill()` 里占位符用 `format_map` + `__missing__`：**填不上就原样留着，绝不抛异常**
+（少填一个占位符最多难看，抛异常等于这条消息发不出去）。
+
+`identity` 一侧：
+
+```python
+identity.self_names_for(cid)          # self_names() ∪ personas.all_names(cid)
+identity.mentions_self(text, cid)     # 提到我（@ 与直呼都算）→ 房间闸门/调戏兜底用
+identity.is_at_me(text, cid=None)     # 老签名兼容，多了 cid
+identity.self_names_longest_first(cid=None)   # 剥 @ 用，长名优先（防 `-bot` 残余）
+```
+
+## 落到哪些文案（都改成 `{me}` / `me(cid)`）
+
+| 位置 | 内容 |
+|---|---|
+| `bot.py` | `CAPTCHA_NOTICE`、`HELP_TEXT`、`WELCOME_TEXT(_PLAIN)`、`INTRO_TEXT`（全部转 `{me}`）；记忆回执、改名播报、`_named` 兜底、`_strip_at`、大厅欢迎语 |
+| `personas.py` | `ROOM_GREET_LINES`、`ROOM_GHOST_TEXT/WARN/BACK`（女鬼剧本）、`rose_butler` 的 6 条话术默认值 → `{me}`；`rose_butler` 代码默认名也改成**薇丝** |
+| `runtime/sign.py` | 星座册子的 4 句（玫瑰房专属）+ 房间闸门 |
+| `runtime/fortune.py` | 运势兜底句、赔罪日文案（`{me}`） |
+| `runtime/dice.py`、`diaojiao.py`、`perf.py`、`recap.py`、`trend.py`、`memory.py` | 各自的群内文案与模型可见标注 |
+
+**没动**（有意为之）：`【小小糯bot】…` 系列是发给**我**的微信/飞书告警，
+收件人不是群，保留服务名；`smoke`/告警/日志里的服务名同理。
+`settings.py`/`config_store.py` 里的「小小糯」是**默认值**（没配 Bot 时的兜底名），保留。
+
+## 护栏
+
+新增 `tests/test_rose_weisi_switch.py`（11 条），两类断言：
+
+1. **行为**：`fill`/`me`/`p` 按群填名；bot.py 五个常量逐条"认证群=小小糯、玫瑰房=薇丝"；
+   房间剧本/欢迎语不带旧名；`mentions_self("薇丝")` 为真、`is_at_me("@薇丝")` 为真、
+   `@薇丝-bot` 剥得干净；`_is_room_trigger` 认新名字且**不吞闲聊**。
+2. **源码护栏（AST）**：会往群里发字的 9 个模块，字符串常量里**不许**再写死默认名
+   （放行 docstring 与 `【小小糯…` 告警）。新文案必须走 `fill`/`{me}`/`p()`。
+
+改动 18 个文件、825 条测试全绿；闸门本地跑通（`生产后端是 flock` 与
+`配置文件存在` 两项只在服务器上有意义，脚本注释里已写明）。
+
+## 部署证据（2026-09-26 21:46）
+
+顺序：`upload` → `build` → **闸门（一次性容器）** → `up -d --force-recreate`。
+注意 `tools/` 不在上传白名单里，闸门脚本得单独 `scp` 到 `/tmp`。
+
+| 检查 | 结果 |
+|---|---|
+| 上传 | 135 个文件；**11 个改动文件本地/服务器 MD5 逐个相同** |
+| 服务器闸门 | `ALL CHECKS PASSED`（含真实 `config.json` 校验、2 个 Bot 身份/令牌） |
+| 重启后启动日志 | `P11: 我是谁=36916cb2,eee88c3d`、两个 Bot `已就绪`、`人设文本 … 体检=全部通过`、无 traceback |
+| 自证脚本（**不发群消息**） | `VERIFY-RESULT: PASS` |
+
+自证脚本（`/tmp/verify_weisi.py`，一次性容器 + 真实 `.env`）实测输出节选：
+
+```
+me(认证群) / me(玫瑰房)            小小糯 / 薇丝
+fill(CAPTCHA_NOTICE) 认证群        ⚠️ 小小糯撞上平台验证码啦～
+fill(CAPTCHA_NOTICE) 玫瑰房        ⚠️ 薇丝撞上平台验证码啦～
+p(intro_text) 玫瑰房               玫瑰房的管家，薇丝。屋主是 Vv姐姐。
+女鬼警告(玫瑰房)                   门外传来薇丝的声音，隔着空荡荡的门框：…
+mentions_self('薇丝在吗') 玫瑰房    True      ← 以前是 False（房间不接话）
+mentions_self('小小糯在吗') 玫瑰房  True      ← 老群友叫顺口的旧名字也认
+mentions_self('今晚吃什么') 玫瑰房  False     ← 没误伤闲聊
+_strip_at('@薇丝-bot 你好呀')      '你好呀'   ← 不留 `-bot` 残余
+房间闸门('薇丝在吗') / ('今晚吃什么好呢')   True / False
+认到的名字 玫瑰房                   ['小小糯', '小小糯～', '薇丝']
+```
+
+**一句话**：认证群一个字没变，玫瑰房从"发言者叫薇丝、文案里叫小小糯"变成两边一致。
+
+---
+
+# 备注：为什么"参考妹子群"≠ 把妹子群的功能搬过去
+
+用户明确纠正过一次："不是把妹子认证群的功能都迁移过来，是保持原来 rose 群小小糯的
+功能，切换到薇丝。" 所以本次**一个功能开关都没动**：
+
+- 玫瑰房仍是 `room_welcome/room_order/room_flower/room_ghost/horoscope/room_lewd/room_refuse` 那套；
+- 认证群的筛查/踢人/公演/调教/骰子/发情值**没有**进入玫瑰房
+  （人设 `extra` 里那句"其余玩法只在认证妹子群开放"依旧成立）；
+- 改动只碰"自称 / 被叫到名字时认不认得出"两类。
+

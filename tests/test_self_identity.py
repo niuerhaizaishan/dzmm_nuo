@@ -141,10 +141,26 @@ def test_import_from_personas_not_broken():
 # ---------------------------------------------------------------- @ 剥离的顺序
 
 def test_self_names_longest_first_is_sorted_by_length():
-    """剥 @ 必须长名优先 —— `self_names()` 是 set，迭代顺序不确定。"""
+    """剥 @ 必须长名优先 —— 名字集合是 set，迭代顺序不确定。"""
     names = identity.self_names_longest_first()
     assert names == sorted(names, key=len, reverse=True)
-    assert set(names) == identity.self_names()
+    assert set(names) == identity.self_names_for()
+
+
+def test_self_names_for_includes_the_persona_name():
+    """P12-H 追加：**按群**算名字 —— 玫瑰房的客人叫的是「薇丝」。
+
+    侧车账号叫「小小糯～」、Bot 叫「薇丝-bot」，只认 self_names() 的话
+    「薇丝」既不算 @ 我、也不算提我（房间不接话、调戏不计数）。
+    """
+    import personas as P
+    room = identity.self_names_for(P.ROSE_CID)
+    assert "薇丝" in room
+    assert set(room) >= identity.self_names()
+    ordered = identity.self_names_longest_first(P.ROSE_CID)
+    assert set(ordered) == room and ordered == sorted(ordered, key=len, reverse=True)
+    # 没传 cid / 默认人设的群：就是老行为 + 默认名，不会凭空多出房间名
+    assert "薇丝" not in identity.self_names_longest_first()
 
 
 def test_strip_at_does_not_leave_a_prefix_residue(monkeypatch):

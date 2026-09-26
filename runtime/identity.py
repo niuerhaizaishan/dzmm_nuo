@@ -44,6 +44,7 @@ _BOT_NAMES: set = set()
 __all__ = [
     "NUO_UID", "BOT_UID", "BOT_NAME", "BOT_NAME_SHORT",
     "self_uids", "is_self", "self_names", "self_names_longest_first",
+    "self_names_for", "mentions_self",
     "_name_cache", "_load_member_names", "get_full_name", "get_name", "is_at_me",
     "register_bots", "bots", "bot_uids", "bot_names", "learn_bot_uid",
     "resolve_bot_uids",
@@ -75,6 +76,34 @@ def self_names() -> set:
         names.add(BOT_NAME)
         names.add(BOT_NAME_SHORT)
     return {n for n in names if n}
+
+
+def self_names_for(cid: str = None) -> set:
+    """**某个群里**「我」可能被叫到的全部名字 = 账号名 + 各 Bot 名 + 该群人设名。
+
+    为什么要按群算：群里的客人叫的是**人设名**。玫瑰房的管家叫「薇丝」，
+    而账号名是「小小糯～」、Bot 名是「薇丝-bot」—— 只认 self_names() 的话，
+    客人喊一声「薇丝」会被当成在叫别人（房间不接话、调戏也不计数）。
+
+    `personas` 延迟导入：本模块是叶子工具，不能被根模块的导入顺序绑住。
+    """
+    names = set(self_names())
+    try:
+        import personas
+        names |= personas.all_names(cid)
+    except Exception:
+        pass
+    return {n for n in names if n}
+
+
+def mentions_self(text: str, cid: str = None) -> bool:
+    """这条消息有没有**提到我**（@ 和不带 @ 的直呼都算）。
+
+    给"被点名才回应"的闸门用（房间管家、调戏判定兜底）。
+    """
+    if not text:
+        return False
+    return any(nm in text for nm in self_names_for(cid))
 
 
 # ---------------------------------------------------------------- 多 Bot（P12-H）
@@ -215,7 +244,7 @@ def resolve_bot_uids(fetch_members=None) -> dict:
     return out
 
 
-def self_names_longest_first() -> list:
+def self_names_longest_first(cid: str = None) -> list:
     """**剥 @ 时必须用这个**，不能用 `self_names()`。
 
     原因：`self_names()` 是 `set`，迭代顺序不确定。而名字之间可能互为前缀 ——
@@ -230,8 +259,11 @@ def self_names_longest_first() -> list:
     顺带说明：**今天就已经存在这个 bug** —— 侧车名是「小小糯～」而简化名是
     「小小糯」，短名先剥时会留下一个「～」。只是残余是一个波浪号，不容易被注意到；
     Bot 改名成「小小糯-bot」之后残余会变成 `-bot`，一眼就能看见。
+
+    `cid` 传了就把它的人设名（如玫瑰房的「薇丝」）一起算进来 —— 否则
+    「@薇丝 你好」剥不掉，整句连名字一起塞进 prompt。
     """
-    return sorted(self_names(), key=len, reverse=True)
+    return sorted(self_names_for(cid), key=len, reverse=True)
 
 
 def _load_member_names(cid: str = None):
@@ -267,11 +299,11 @@ def get_name(uid: str) -> str:
     return name
 
 
-def is_at_me(text: str) -> bool:
-    """判断消息是否 @ 了小小糯（agent）."""
+def is_at_me(text: str, cid: str = None) -> bool:
+    """判断消息是否 @ 了我（agent）。`cid` 用来认本群人设名（见 self_names_for）."""
     if "@" not in text:
         return False
-    for name in self_names():
+    for name in self_names_for(cid):
         if name and ("@" + name) in text:
             return True
     return False

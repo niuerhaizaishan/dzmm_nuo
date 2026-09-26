@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timedelta
 
 from brains import generate_diaojiao, generate_diaojiao_end
+from personas import me as _pme                   # 自称：按群人设名（小小糯/薇丝）
 from profiles import get_profile
 from runtime.tuning import get as _tune   # P12-B：可调参数（唯一读口）
 from runtime import ctx
@@ -90,7 +91,7 @@ def start_diaojiao(cid: str, cmd: str, sender_uid: str) -> str:
         text = ""
     text = (text or "").strip()
     if not text:
-        text = full + "，小小糯命令你：" + command + "～"
+        text = full + "，" + _pme(cid) + "命令你：" + command + "～"
     return "🔗 调教开始！目标：" + full + "～\n" + text + "\n\n" + DJ_PARTICIPATE_HINT
 
 

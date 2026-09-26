@@ -12,6 +12,7 @@ import time
 
 from brains import _call_llm
 from dzmm import get_user
+from personas import me as _pme                    # 自称：按群人设名（小小糯/薇丝）
 from profiles import get_profile, load_profiles, upsert_profile
 from runtime import ctx
 from runtime.group_state import _get_memory, _remember
@@ -150,7 +151,7 @@ def _append_memory_ref(text: str, cid: str, subject: str, limit: int = 10) -> st
         mem = _retrieve_memory(cid, subject, limit)
         if mem:
             ref = "\n".join("· " + m["text"] for m in mem)
-            return text + "\n\n（以下是小小糯记住的与" + subject + "相关的事，回答时可参考，但不要主动提'这是记忆'）\n" + ref
+            return text + "\n\n（以下是" + _pme(cid) + "记住的与" + subject + "相关的事，回答时可参考，但不要主动提'这是记忆'）\n" + ref
     except Exception:
         pass
     return text
