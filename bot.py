@@ -45,8 +45,10 @@ _GROUP_ALIASES = {
 }
 
 # 房间群（独立人设 + 屋主权限）：配置见 personas.ROOMS
+import personas as _personas           # P12-E：人设文本/话术自证
 from personas import (ROOMS, PERSONAS, apply_persona, set_cid as set_persona_cid,
                       set_config_personas, config_personas,
+                      set_content_overrides as set_persona_texts,
                       ROOM_GREET_TEMPLATE, ROOM_GREET_ITEMS, ROOM_GREET_LINES,
                       ROOM_GUEST_REFUSE, ROOM_ORDER_VERBS, ROOM_MENU_WORDS,
                       ROOM_LEWD_WORDS, ROOM_FLOWER_WORDS, ROOM_FLOWER_NOUNS,
@@ -87,6 +89,9 @@ except config_store.ConfigError as _e:
 # 把配置里指定的按群人设注入 personas 层（覆盖 ROOMS 硬编码）。
 # 必须在下面任何一次 apply_persona / p() 之前完成。
 set_config_personas({s.cid: s.persona for s in _CFG.group_specs.values()})
+# P12-E：人设**文本/话术**的覆盖（schema v3 的 personas 节）。
+# 与上面那行是两件事：上面选"用哪个人设"，这里改"那个人设说什么话"。
+set_persona_texts(_CFG.personas)
 
 # P12-C：schema v2 的三块覆盖**从这里进运行期**。
 # 这是"页面上配了 → 运行期真的生效"的唯一一条通路：
@@ -115,6 +120,7 @@ def apply_config_overrides(cfg=None) -> None:
     _features.set_overrides(c.feature_map())
     _tuning.set_overrides(c.tuning_map())
     _tuning.set_scopes(c.scopes)
+    set_persona_texts(c.personas)          # P12-E：人设文本/话术覆盖
 
 
 def migrate_config_file() -> None:
@@ -2127,6 +2133,15 @@ def _log_runtime_status() -> None:
             _ts["params"], _ts["overridden"],
             ",".join("{}:{}".format(k, v) for k, v in sorted(_ts["scopes"].items())),
             "开" if _ts["env_off"] else "关"))
+        # P12-E 自证：人被改过人设文本/话术的**有几个人设、改了几处**。
+        # 与上面同一个道理 —— "页面上改了、运行期没生效"要能一眼看出来。
+        _ps = _personas.summary()
+        log("P12: 人设文本 覆盖人设={} 文本段={} 话术={} 体检={}".format(
+            _ps["personas"], _ps["fields"], _ps["phrases"],
+            "全部通过" if not _ps["issues"] else "有 {} 条提示".format(
+                len(_ps["issues"]))))
+        for _line in _ps["issues"]:
+            log("P12: 人设体检 " + _line)
     except Exception as e:                                 # noqa: BLE001
         log("P11: 配置状态未知（" + str(e)[:60] + "）")
 

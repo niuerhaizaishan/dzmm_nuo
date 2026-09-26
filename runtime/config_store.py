@@ -53,12 +53,12 @@ __all__ = ["Config", "BotSpec", "GroupSpec", "ConfigError", "load", "save",
            "SCHEMA_VERSION", "SUPPORTED_VERSIONS", "migrate_file",
            "default_bots_from_env"]
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 KEEP_BACKUPS = 20
 
 # 历史版本 → 升级方式。**只做加法**：新版必须有办法读旧版，
 # 且升级过程要留备份（`migrate_file()` 负责）。
-SUPPORTED_VERSIONS = (1, 2)
+SUPPORTED_VERSIONS = (1, 2, 3)
 
 _ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIRNAME = "config"
@@ -142,6 +142,9 @@ class Config:
     features: dict = field(default_factory=dict)      # {"diaojiao": False}
     tuning: dict = field(default_factory=dict)        # {"devil.base_prob": 0.2}
     scopes: dict = field(default_factory=dict)        # {"trend": ("cid", ...)}
+    # P12-E（schema v3）：人设文本/话术的覆盖，同样是"与代码默认不同"才写。
+    #   {"rose_butler": {"name_full": …, "extra": …, "phrases": {"mem_saved": …}}}
+    personas: dict = field(default_factory=dict)
     migrated_from: int = 0             # 从哪一版升上来的（0 = 本来就是当前版本）
     source: str = "defaults"           # "file" | "defaults"
     path: str = ""
@@ -174,6 +177,10 @@ class Config:
             for k, v in (getattr(spec, "tuning", None) or {}).items():
                 out["{}|{}".format(cid, k)] = v
         return out
+
+    def persona_texts(self) -> dict:
+        """给 `runtime.personas.set_content_overrides()` 的形状（就是原样一份）。"""
+        return {k: dict(v) for k, v in (self.personas or {}).items()}
 
     def as_dict(self) -> dict:
         """序列化回"配置文件的样子"。
@@ -210,6 +217,8 @@ class Config:
             out["tuning"] = dict(self.tuning)
         if self.scopes:
             out["scopes"] = {k: list(v) for k, v in self.scopes.items()}
+        if self.personas:
+            out["personas"] = {k: _persona_out(v) for k, v in self.personas.items()}
         return out
 
 
@@ -303,12 +312,114 @@ def _scope_names():
     return set(SCOPE_DEFAULTS)
 
 
+# ---------------------------------------------------------------- 人设覆盖（P12-E）
+
+_PERSONA_FIELDS = ("name_full", "name_short", "extra")
+
+
+def _persona_out(v: dict) -> dict:
+    """按固定字段顺序输出一条人设覆盖（文件好看、diff 稳定）。
+
+    ⚠️ 用 `f in v` 而不是 `v.get(f)`：**空串是有意义的值**
+    （`extra: ""` = 这个人设不要专属设定）。写成 `if v.get(f)` 会把它丢掉，
+    于是一次"清空 extra"的保存会静默退回代码默认的长文本。
+    """
+    out = {}
+    for f in _PERSONA_FIELDS:
+        if f in v:
+            out[f] = v[f]
+    ph = v.get("phrases") or {}
+    if ph:
+        out["phrases"] = {k: ph[k] for k in sorted(ph)}
+    return out
+
+
+def _persona_map(v, where):
+    """校验人设文本/话术覆盖，返回规范化后的 dict。
+
+    规则（与页面上的提示**同源**，`runtime.personas.health()` 也是这套）：
+    - persona key 必须是代码里登记过的人设；
+    - 只认 name_full / name_short / extra / phrases 四个字段 —— 写错字段名报错，
+      不静默忽略（"我改了没生效"是最难查的一类问题）；
+    - **写了就是覆盖**（空串也算写了）：`extra: ""` = 不要专属设定，
+      `phrases.x: ""` = 这条话术留空。不写 = 用代码默认值；
+    - 名字不能为空、不能有换行（会进提示词的第一行、也要用来在群里自称）；
+    - 话术是**要发出去的整条消息**，所以按平台限制卡长度与换行数。
+    """
+    if v is None:
+        return {}
+    _require(isinstance(v, dict), "{} 必须是对象".format(where))
+    # personas 在仓库根（不在 runtime/ 里）—— 与 bot.py 同一个导入方式
+    import personas as P
+    out = {}
+    for k, val in v.items():
+        key = str(k).strip()
+        _require(key, "{} 里有空的人设 key".format(where))
+        _require(key in P.PERSONAS,
+                 "{}.{} 不是已登记的人设（可用：{}）".format(
+                     where, key, ", ".join(sorted(P.PERSONAS))))
+        _require(isinstance(val, dict), "{}.{} 必须是对象".format(where, key))
+        for f in val:
+            _require(f in _PERSONA_FIELDS + ("phrases",),
+                     "{}.{} 里不认识的字段 {!r}（可用：{}）".format(
+                         where, key, f, " / ".join(_PERSONA_FIELDS + ("phrases",))))
+        item = {}
+        for f in _PERSONA_FIELDS:
+            s = val.get(f)
+            if s is None:
+                continue
+            _require(isinstance(s, str),
+                     "{}.{}.{} 必须是字符串".format(where, key, f))
+            if f == "extra":
+                _require(len(s) <= P.EXTRA_MAX_CHARS,
+                         "{}.{}.extra 有 {} 字，超过上限 {} 字".format(
+                             where, key, len(s), P.EXTRA_MAX_CHARS))
+            else:
+                _require(s.strip(),
+                         "{}.{}.{} 不能为空（群里要用它自称；"
+                         "想恢复默认就把这个字段去掉）".format(where, key, f))
+                _require("\n" not in s,
+                         "{}.{}.{} 里不能有换行".format(where, key, f))
+                _require(len(s) <= 40,
+                         "{}.{}.{} 太长（最多 40 字）".format(where, key, f))
+            item[f] = s
+        ph = val.get("phrases")
+        if ph is not None:
+            _require(isinstance(ph, dict),
+                     "{}.{}.phrases 必须是对象".format(where, key))
+            known = set(P.known_phrase_keys(key))
+            clean = {}
+            for pk, pv in ph.items():
+                pkey = str(pk).strip()
+                _require(pkey in known,
+                         "{}.{}.phrases.{} 不是已登记的话术（可用：{}）".format(
+                             where, key, pkey,
+                             ", ".join(sorted(known)[:6]) + "…" if len(known) > 6
+                             else ", ".join(sorted(known))))
+                _require(isinstance(pv, str),
+                         "{}.{}.phrases.{} 必须是字符串".format(where, key, pkey))
+                # 空串允许（= 这条话术留空），长度/换行仍然要卡
+                _require(len(pv) <= P.MSG_MAX_CHARS,
+                         "{}.{}.phrases.{} 有 {} 字，超过平台上限 {} 字".format(
+                             where, key, pkey, len(pv), P.MSG_MAX_CHARS))
+                _require(pv.count("\n") <= P.MSG_MAX_NEWLINES,
+                         "{}.{}.phrases.{} 有 {} 个换行，超过平台上限 {} 行".format(
+                             where, key, pkey, pv.count("\n"), P.MSG_MAX_NEWLINES))
+                clean[pkey] = pv
+            if clean:
+                item["phrases"] = clean
+        if item:
+            out[key] = item
+    return out
+
+
 def _migrate(raw: dict) -> tuple:
     """把旧版配置**就地升级**成当前版本。返回 (raw, 原版本号)。
 
     v1 → v2 **只是版本号变化**：三块覆盖节（`features`/`tuning`/`scopes`）
     是**可选**的（没写 = 没有覆盖 = 用代码默认值），所以旧文件不需要补空节 ——
     补了反而会把一堆空对象写进文件（`save()` 是照 raw 原样写的）。
+    v2 → v3 同理：新增的 `personas` 节也是可选的（没写 = 人设全用代码默认）。
     不认识的高版本**不猜**，交给 `_parse` 报错（宁可起不来，也不要按错的结构跑）。
     """
     ver = raw.get("version", SCHEMA_VERSION)
@@ -430,9 +541,12 @@ def _parse(raw: dict, defaults: dict) -> Config:
                 clean.append(cidv)
         scopes[nm] = tuple(clean)
 
+    # 人设文本/话术覆盖（P12-E）
+    pers = _persona_map(raw.get("personas"), "personas")
+
     return Config(groups=tuple(groups), mute=mute, screen=screen, push=push,
                   group_specs=specs, bots=tuple(bots),
-                  features=feats, tuning=tune, scopes=scopes,
+                  features=feats, tuning=tune, scopes=scopes, personas=pers,
                   migrated_from=migrated_from)
 
 

@@ -785,6 +785,7 @@ def render_html(data):
             "<span style='margin-left:auto'>"
             "<a href='/edit' style='color:#7aa2f7'>⚙ 配置</a> · "
             "<a href='/features' style='color:#7aa2f7'>🧩 功能与参数</a> · "
+            "<a href='/personas' style='color:#7aa2f7'>🎭 人设与话术</a> · "
             "<a href='/api/summary' style='color:#7aa2f7'>JSON</a> · "
             "<a href='/' style='color:#7aa2f7'>刷新</a> · "
             "<a href='/logout' style='color:#7aa2f7'>退出</a>"
@@ -1150,6 +1151,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, self._render_features_page(),
                        "text/html; charset=utf-8")
             return
+        if u.path == "/personas":
+            self._send(200, self._render_personas_page(),
+                       "text/html; charset=utf-8")
+            return
         if u.path.startswith("/static/"):
             self._send_static(u.path)
             return
@@ -1251,6 +1256,37 @@ class Handler(BaseHTTPRequestHandler):
             tuple(tune.SCOPE_DEFAULTS.items()), feats.CATEGORIES,
             feats, tune, error=error, notice=notice, changes=changes,
             csrf=self._csrf(), pending=pending, reset_note=reset_note)
+
+    def _render_personas_page(self, error="", notice="", changes=(), reset_note="",
+                              preview=None, preview_cid="", preview_msg="",
+                              shown=None):
+        """人设与话术页（P12-E）。
+
+        `shown` = 要**画回表单**的 personas 节（预览时用页面草稿，否则读文件）。
+        """
+        from admin import config_ui, personas_ui
+        from runtime import config_store
+        defaults = _config_defaults()
+        try:
+            raw = _raw_from_store(defaults)
+        except Exception as e:                                  # noqa: BLE001
+            return "<pre>读配置失败：{}</pre>".format(_e(e))
+        if shown is not None:
+            raw = json.loads(json.dumps(raw, ensure_ascii=False))
+            if shown:
+                raw["personas"] = shown
+            else:
+                raw.pop("personas", None)
+        pending = config_ui.pending_change(
+            config_store.config_path(), section_process().get("bot_started_epoch"))
+        if not preview_cid:
+            gs = raw.get("groups") or []
+            preview_cid = (gs[0].get("cid") if gs else "") or ""
+        return personas_ui.render_personas(
+            raw, raw.get("groups") or [], csrf=self._csrf(), error=error,
+            notice=notice, changes=changes, pending=pending,
+            reset_note=reset_note, preview=preview, preview_cid=preview_cid,
+            preview_msg=preview_msg)
 
     def _render_edit_page(self, error="", notice="", raw=None, changes=()):
         from admin import config_ui
@@ -1418,6 +1454,105 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, self._render_features_page(reset_note=note),
                           "text/html; charset=utf-8")
 
+    def _post_personas(self):
+        """保存 / 预览人设与话术。
+
+        **只覆盖 `personas` 一节**（不碰 groups / bots / features / tuning）：
+        这一页的表单再旧，也不可能删掉群或 Bot。
+
+        `action=preview` ⇒ **一个字都不写**，只用草稿渲染一遍（可选真调一次模型）。
+        """
+        from admin import config_ui, personas_ui
+        from runtime import config_store
+        form = self._read_form()
+        if form is None:
+            return self._send(400, self._render_personas_page(error="请求格式不对"),
+                              "text/html; charset=utf-8")
+        if not self._csrf_ok(form):
+            print("[admin] 人设保存被拒：CSRF token 不匹配", flush=True)
+            return self._send(400,
+                              self._render_personas_page(error="CSRF 校验失败，请重新打开页面"),
+                              "text/html; charset=utf-8")
+        defaults = _config_defaults()
+        old = _raw_from_store(defaults)
+        parsed = personas_ui.parse_personas(form, old)
+        action = (form.get("action") or [""])[0]
+        cid = (form.get("preview_cid") or [""])[0]
+        msg = (form.get("preview_msg") or [""])[0]
+        if action == "preview":
+            try_msg = msg.strip() if (form.get("preview_try") or [""])[0] else ""
+            pv = personas_ui.persona_preview(
+                {"personas": parsed["personas"]}, cid, try_msg)
+            print("[admin] 人设预览 群={} 人设={} 试说={}".format(
+                (cid or "")[:8], pv.get("key"), "是" if try_msg else "否"), flush=True)
+            return self._send(200, self._render_personas_page(
+                preview=pv, preview_cid=cid, preview_msg=msg,
+                shown=parsed["personas"]), "text/html; charset=utf-8")
+        summary = personas_ui.personas_diff(old, parsed)
+        if not summary:
+            return self._send(200, self._render_personas_page(notice="没有检测到改动"),
+                              "text/html; charset=utf-8")
+        new = json.loads(json.dumps(old, ensure_ascii=False))
+        if parsed["personas"]:
+            new["personas"] = parsed["personas"]
+        else:
+            new.pop("personas", None)
+        try:
+            config_store.save(new, defaults)      # 校验不过一个字都不写
+        except Exception as e:                    # noqa: BLE001
+            print("[admin] 人设保存被拒：{}".format(str(e)[:120]), flush=True)
+            return self._send(400, self._render_personas_page(
+                error="配置不合法，未写入：{}".format(e),
+                shown=parsed["personas"]), "text/html; charset=utf-8")
+        config_ui.audit_log(config_store.audit_path(), _client_ip(self), summary)
+        print("[admin] 人设/话术已保存 来源 {} 改动 {} 项".format(
+            _client_ip(self), len(summary)), flush=True)
+        return self._send(200, self._render_personas_page(
+            notice="已保存（{} 项改动）。**需要重启容器才生效**".format(len(summary)),
+            changes=summary), "text/html; charset=utf-8")
+
+    def _post_personas_reset(self):
+        """恢复默认：清掉一个人设（或全部）的文本/话术覆盖。"""
+        from admin import config_ui
+        from runtime import config_store
+        form = self._read_form()
+        if form is None or not self._csrf_ok(form):
+            return self._send(400,
+                              self._render_personas_page(error="CSRF 校验失败"),
+                              "text/html; charset=utf-8")
+        who = (form.get("persona") or [""])[0]
+        defaults = _config_defaults()
+        old = _raw_from_store(defaults)
+        cur = dict(old.get("personas") or {})
+        if who == "*":
+            if not cur:
+                return self._send(200, self._render_personas_page(
+                    reset_note="本来就都是默认值，没有要清的改动"),
+                    "text/html; charset=utf-8")
+            note = "已恢复全部人设的默认（清掉 {} 个人设的改动）".format(len(cur))
+            cur = {}
+        else:
+            if who not in cur:
+                return self._send(200, self._render_personas_page(
+                    reset_note="人设 {} 本来就都是默认值".format(who or "(空)")),
+                    "text/html; charset=utf-8")
+            cur.pop(who, None)
+            note = "已恢复人设 {} 的默认".format(who)
+        new = json.loads(json.dumps(old, ensure_ascii=False))
+        if cur:
+            new["personas"] = cur
+        else:
+            new.pop("personas", None)
+        try:
+            config_store.save(new, defaults)
+        except Exception as e:                                  # noqa: BLE001
+            return self._send(400, self._render_personas_page(
+                error="恢复默认失败：{}".format(e)), "text/html; charset=utf-8")
+        config_ui.audit_log(config_store.audit_path(), _client_ip(self), [note])
+        print("[admin] " + note + " 来源 " + _client_ip(self), flush=True)
+        return self._send(200, self._render_personas_page(
+            reset_note=note + "。**需要重启容器才生效**"), "text/html; charset=utf-8")
+
     def _post_rollback(self):
         from admin import config_ui
         from runtime import config_store
@@ -1463,6 +1598,14 @@ class Handler(BaseHTTPRequestHandler):
             if not self._require_session():
                 return
             return self._post_features()
+        if u.path == "/personas":
+            if not self._require_session():
+                return
+            return self._post_personas()
+        if u.path == "/personas/reset":
+            if not self._require_session():
+                return
+            return self._post_personas_reset()
         if u.path == "/edit/reset":
             if not self._require_session():
                 return

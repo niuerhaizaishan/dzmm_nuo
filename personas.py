@@ -9,6 +9,7 @@
 - 没注册的群一律用默认人设"nuo"（小小糯），行为与改动前完全一致。
 """
 import contextvars
+import re
 
 _CID = contextvars.ContextVar("persona_cid", default="")
 
@@ -141,6 +142,244 @@ def persona_key_for(cid: str = None) -> str:
     return _CONFIG_PERSONA.get(cid) or CID_PERSONA.get(cid) or "nuo"
 
 
+# ---------------------------------------------------------------- 人设文本覆盖（P12-E）
+#
+# 到 P12-E 之前，"改人设"必须改代码：文本写死在 PERSONAS 里、话术写死在 PHRASES 里。
+# 现在这两块都能被配置覆盖（页面编辑 → config.json 的 personas 节 → 注入这里）。
+# 仍然是**覆盖**而不是替换：配置里没写的字段/话术一律用代码默认值。
+
+CONTENT_OVERRIDES = {}     # persona key -> {"name_full":…, "name_short":…, "extra":…}
+PHRASE_OVERRIDES = {}      # persona key -> {phrase_key: text}
+
+# 临时覆盖（只影响当前上下文）：给运维后台的"试说一句"用 ——
+# 页面上改了还没保存，也要能先试听一下效果。
+# 用 contextvars 而不是"改全局再改回来"：面板是多线程的，
+# 改全局的窗口里（一次模型调用可能十几秒）别的请求会读到草稿。
+_TEXT_CTX = contextvars.ContextVar("persona_text_overrides", default=None)
+
+
+def _normalize(mapping) -> tuple:
+    """把一份原始覆盖表规范化成 (文本, 话术)。
+
+    ⚠️ 空串**留着**，不当成"没写"：页面上每一格显示的是"当前生效的文本"，
+    保存时逐格与代码默认比对 —— 值不同就写覆盖，**空串也算一种值**
+    （"这个人设不要 extra"是真实需求，丢掉空串会让它悄悄退回默认）。
+    `None` / 字段不存在才是"没写"。
+    """
+    cont, phr = {}, {}
+    for k, v in (mapping or {}).items():
+        if not isinstance(v, dict):
+            continue
+        key = str(k)
+        text = {f: str(v[f]) for f in ("name_full", "name_short", "extra")
+                if v.get(f) is not None}
+        if text:
+            cont[key] = text
+        frags = v.get("phrases") or {}
+        if isinstance(frags, dict):
+            clean = {str(pk): str(pv) for pk, pv in frags.items()
+                     if pv is not None}
+            if clean:
+                phr[key] = clean
+    return cont, phr
+
+
+def set_content_overrides(mapping) -> None:
+    """注入人设文本/话术覆盖（P12-E）。空值忽略（= 用代码默认）。"""
+    global CONTENT_OVERRIDES, PHRASE_OVERRIDES
+    CONTENT_OVERRIDES, PHRASE_OVERRIDES = _normalize(mapping)
+
+
+class use_overrides(object):
+    """上下文管理器：这一段里用临时覆盖（页面"试说一句"用）。
+
+        with personas.use_overrides(draft):
+            personas.set_cid(cid)
+            brains._call_llm(...)
+    """
+
+    def __init__(self, mapping):
+        self._pair = _normalize(mapping)
+        self._tok = None
+
+    def __enter__(self):
+        self._tok = _TEXT_CTX.set(self._pair)
+        return self
+
+    def __exit__(self, *exc):
+        _TEXT_CTX.reset(self._tok)
+        return False
+
+
+def _active() -> tuple:
+    return _TEXT_CTX.get() or (CONTENT_OVERRIDES, PHRASE_OVERRIDES)
+
+
+def content_overrides() -> dict:
+    """当前**全局**覆盖（自证/面板用；不看临时覆盖）。"""
+    out = {}
+    for key in set(CONTENT_OVERRIDES) | set(PHRASE_OVERRIDES):
+        item = dict(CONTENT_OVERRIDES.get(key) or {})
+        if PHRASE_OVERRIDES.get(key):
+            item["phrases"] = dict(PHRASE_OVERRIDES[key])
+        out[key] = item
+    return out
+
+
+def effective_persona(key: str) -> dict:
+    """某人设**当前生效**的文本（代码默认 + 覆盖）。"""
+    cont, _phr = _active()
+    base = dict(PERSONAS.get(key) or PERSONAS["nuo"])
+    base.update(cont.get(key) or {})
+    return base
+
+
+def phrases_for(key: str) -> dict:
+    """某人设**当前生效**的话术表（默认人设打底 → 该人设的 → 该人设的覆盖）。"""
+    _cont, phr = _active()
+    out = dict(PHRASES["nuo"])
+    out.update(PHRASES.get(key) or {})
+    out.update(phr.get(key) or {})
+    return out
+
+
+# 话术里允许出现的占位符（其余 `{xxx}` 会被当成笔误报出来）
+ALLOWED_PLACEHOLDERS = ("name", "item", "line", "who", "n", "k")
+
+# 账号通道发群文本的硬限制（见 runtime/outbound.py）：
+# 话术是**要发出去的整条消息**，超了会被平台截断。
+MSG_MAX_CHARS = 1000
+MSG_MAX_NEWLINES = 10
+# 人设正文是喂给模型的 system prompt 片段，没有平台限制，但要防"越写越长把上下文吃光"
+EXTRA_WARN_CHARS = 4000
+EXTRA_MAX_CHARS = 20000
+
+
+def known_phrase_keys(key: str = "nuo") -> tuple:
+    """**代码里**登记过的话术 key（不含配置覆盖）。
+
+    这是"话术登记册"：页面上只允许改这些 key，配置文件里写别的 key 直接报错。
+    ⚠️ 不能走 phrases_for()（那里面已经混进覆盖了），否则覆盖里塞的野 key
+    会自己把自己变成"合法"的。
+    """
+    return tuple(sorted(set(PHRASES["nuo"]) | set(PHRASES.get(key) or {})))
+
+
+# 话术的中文标签（页面用；新增 key 必须同时补这里，测试会拦住）
+PHRASE_LABELS = {
+    "unknown_cmd": "看不懂的指令",
+    "slash_space": "斜杠后带了空格",
+    "mem_saved": "记忆 · 已记住",
+    "mem_empty": "记忆 · 一条都没有",
+    "mem_list_head": "记忆 · 列表开头",
+    "mem_list_more": "记忆 · 列表省略行",
+    "mem_ask": "记忆 · 问要记什么（@版）",
+    "mem_ask2": "记忆 · 问要记什么（/记住版）",
+    "not_found": "查不到这个人",
+    "not_found_insult": "查不到这个人（羞辱指令）",
+    "sync_only_owner": "非房主触发同步",
+    "rank_empty": "排行榜里没人",
+    "no_vote": "没有进行中的投票",
+    "no_play": "没有进行中的玩法",
+    "no_dial": "没有进行中的调教",
+    "help_text": "/说明 的正文",
+    "intro_text": "新人进群欢迎语",
+    "query_working": "查档案 · 等待提示",
+    "register_working": "注册 · 等待提示",
+}
+
+
+def health(key: str) -> list:
+    """人设体检：把"改坏了"的地方挑出来（空列表 = 没问题）。
+
+    这些检查与页面上的提示同源 —— 页面显示的和保存时拒绝的必须是同一套标准。
+    """
+    out = []
+    if key not in PERSONAS:
+        return ["人设 {} 不存在（可用：{}）".format(key, ", ".join(PERSONAS))]
+    eff = effective_persona(key)
+    extra = str(eff.get("extra") or "")
+    if len(extra) > EXTRA_MAX_CHARS:
+        out.append("人设正文 {} 字，超过上限 {} 字".format(len(extra), EXTRA_MAX_CHARS))
+    elif len(extra) > EXTRA_WARN_CHARS:
+        out.append("人设正文 {} 字（偏长，建议 ≤{} 字）".format(
+            len(extra), EXTRA_WARN_CHARS))
+    for field in ("name_full", "name_short"):
+        v = str(eff.get(field) or "")
+        if not v.strip():
+            out.append("{} 不能为空（群里自称要用它）".format(field))
+        elif "\n" in v:
+            out.append("{} 里有换行".format(field))
+    # 话术：平台长度限制 + 占位符
+    allowed = set(ALLOWED_PLACEHOLDERS)
+    # 代码默认表：用来区分"本来就没内容"和"被清空了"
+    base_phrases = dict(PHRASES["nuo"])
+    base_phrases.update(PHRASES.get(key) or {})
+    for pk, text in sorted(phrases_for(key).items()):
+        t = str(text or "")
+        if not t.strip():
+            # 代码默认本来就是空的（如 nuo 的 help_text = 用 bot.py 里的 /说明 正文）
+            # 不是问题；只有"本来有内容、现在被清空"才要提示。
+            if str(base_phrases.get(pk) or "").strip():
+                out.append("话术 {} 是空的（发出去会是一条空消息）".format(pk))
+            continue
+        if len(t) > MSG_MAX_CHARS:
+            out.append("话术 {} 有 {} 字，超过平台上限 {} 字".format(
+                pk, len(t), MSG_MAX_CHARS))
+        elif t.count("\n") > MSG_MAX_NEWLINES:
+            out.append("话术 {} 有 {} 个换行，超过平台上限 {} 行".format(
+                pk, t.count("\n"), MSG_MAX_NEWLINES))
+        for ph in re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", t):
+            if ph not in allowed:
+                out.append("话术 {} 里的 {{{}}} 不是可用占位符（可用：{}）".format(
+                    pk, ph, "、".join(ALLOWED_PLACEHOLDERS)))
+    return out
+
+
+def summary() -> dict:
+    """人设文本层的自证摘要（启动日志用）。
+
+    回答：改了几个人设、改了哪几段文本、改了几条话术、体检有没有问题。
+    """
+    fields = sum(len([f for f in ("name_full", "name_short", "extra")
+                      if (CONTENT_OVERRIDES.get(k) or {}).get(f)])
+                 for k in CONTENT_OVERRIDES)
+    phrases = sum(len(v or {}) for v in PHRASE_OVERRIDES.values())
+    issues = []
+    for key in sorted(set(CONTENT_OVERRIDES) | set(PHRASE_OVERRIDES)):
+        for line in health(key):
+            issues.append("{}：{}".format(key, line))
+    return {"personas": len(set(CONTENT_OVERRIDES) | set(PHRASE_OVERRIDES)),
+            "fields": fields, "phrases": phrases, "issues": issues,
+            "total_personas": len(PERSONAS)}
+
+
+def describe_persona(key: str, cid: str = None) -> dict:
+    """给运维后台：一个人设的代码默认值 + 当前生效值 + 体检结果。
+
+    `cid` 给了就额外告诉你"这个群现在用的是不是它"。
+    """
+    default = dict(PERSONAS.get(key) or {})
+    eff = effective_persona(key)
+    dph = dict(PHRASES["nuo"])
+    dph.update(PHRASES.get(key) or {})
+    return {
+        "key": key,
+        "default": default,
+        "effective": eff,
+        "default_phrases": dph,
+        "effective_phrases": phrases_for(key),
+        "overrides": dict(CONTENT_OVERRIDES.get(key) or {}),
+        "phrase_overrides": dict(PHRASE_OVERRIDES.get(key) or {}),
+        "phrase_keys": list(known_phrase_keys(key)),
+        "phrase_labels": dict(PHRASE_LABELS),
+        "issues": health(key),
+        "in_use_by": None if cid is None else persona_key_for(cid),
+        "untouched": (not CONTENT_OVERRIDES.get(key)
+                      and not PHRASE_OVERRIDES.get(key)),
+    }
+
+
 # ---------------------------------------------------------------- 房间文案
 
 ROOM_GREET_TEMPLATE = """🌹 欢迎 {name} 来串门～
@@ -259,8 +498,8 @@ ROOM_LEWD_WORDS = ["抱抱", "抱一下", "亲一口", "亲亲", "舔", "摸", "
 # ---------------------------------------------------------------- 注入
 
 def persona_for(cid: str = None) -> dict:
-    """取某个群的人设（没注册的群 → 默认小小糯）."""
-    return PERSONAS.get(persona_key_for(cid)) or PERSONAS["nuo"]
+    """取某个群**当前生效**的人设（代码默认 + 配置覆盖；没注册的群 → 默认小小糯）."""
+    return effective_persona(persona_key_for(cid))
 
 
 def is_default(cid: str = None) -> bool:
@@ -343,11 +582,13 @@ PHRASES = {
 
 
 def p(key: str, cid: str = None, **kw) -> str:
-    """取当前群的固定话术（本群没有就回落默认人设；都没有返回空串）."""
+    """取当前群的固定话术（本群没有就回落默认人设；都没有返回空串）.
+
+    走 phrases_for()，所以配置里改过的话术在这里就已经生效了。
+    """
     # 用 persona_key_for 而不是 CID_PERSONA：配置指定的人设也要拿到它自己的话术，
     # 否则会出现"人设换成了房间管家、固定话术还是默认那套"的半吊子状态。
-    d = PHRASES.get(persona_key_for(cid)) or {}
-    s = d.get(key)
+    s = phrases_for(persona_key_for(cid)).get(key)
     if s is None:
         s = PHRASES["nuo"].get(key) or ""
     if kw:

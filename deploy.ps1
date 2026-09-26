@@ -30,8 +30,13 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('deploy','upload','compose','status','logs','rollback','sync','diff','health')]
+    [ValidateSet('deploy','upload','compose','status','logs','rollback','sync','diff','health','exec')]
     [string]$Action    = 'deploy',
+    # -Action exec: run one shell command on the server (with the ssh retry loop).
+    # This exists because the handshake to this host fails intermittently, so
+    # ad-hoc `ssh ...` from a shell prompt is a coin flip; everything through
+    # here gets the retries. Read-only / idempotent commands only, please.
+    [string]$Cmd       = '',
     [string]$Remote    = 'root@47.237.152.187',
     [string]$RemoteDir = '/opt/dzmm',
     [string]$LocalDir  = $PSScriptRoot,
@@ -135,22 +140,77 @@ function Get-CodeFiles {
 #   "Corrupted MAC on input". aes128-gcm@openssh.com (an AEAD cipher) works
 #   reliably. Without this pin, roughly every other deploy attempt died in
 #   the handshake -- which looked like "the server is down" but was not.
+#
+# 2026-09-26 (P12-E deploy) -- IMPORTANT correction to the note above:
+#   the loss is **intermittent and not tied to one combo**. On that day
+#   aes128-gcm failed 4 times in a row while
+#   `aes128-ctr + hmac-sha2-256-etm@openssh.com` succeeded -- and then that
+#   combo also failed 2 of 3 times. So no cipher is "the reliable one";
+#   the only reliable strategy is **retry**. $SshAttempts / $SshRetryDelaySec
+#   below implement that. The pin stays (it is a good default and the AEAD
+#   suite avoids the "Corrupted MAC" class of failures).
 $SshCipherOpts = @('-o', 'Ciphers=aes128-gcm@openssh.com')
+$SshAttempts = 5
+$SshRetryDelaySec = 6
 
 function Invoke-Ssh([string]$cmd) {
     # ServerAlive* : a long build/extract over one connection must not be dropped
     # as an idle socket.
-    ssh @SshCipherOpts -o BatchMode=yes -o ConnectTimeout=15 `
-        -o ServerAliveInterval=15 -o ServerAliveCountMax=4 $Remote "$cmd 2>&1"
-    if ($LASTEXITCODE -ne 0) { throw "SSH failed: $cmd" }
+    # Retry loop: every command routed through here is idempotent (upload /
+    # build / up -d / status / logs), so a retry is safe. A failed attempt
+    # usually dies in the handshake and never reaches the server at all.
+    #
+    # EAP dance: this script runs with $ErrorActionPreference='Stop', and under
+    # PowerShell 5.1 a native command writing to stderr (which ssh does on every
+    # failed attempt) becomes a TERMINATING error -- so the retry loop would
+    # never get to its second iteration. Hence 'Continue' around the call.
+    for ($i = 1; $i -le $SshAttempts; $i++) {
+        $eap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            # `2>&1 | Out-String` (not a bare `2>&1`): with EAP='Continue' the
+            # merged stderr records would still be PRINTED as red NativeCommandError
+            # noise on every failed attempt -- the pipeline consumes them instead,
+            # so only the retry lines above show up.
+            $out = (& ssh @SshCipherOpts -o BatchMode=yes -o ConnectTimeout=15 `
+                -o ServerAliveInterval=15 -o ServerAliveCountMax=4 $Remote "$cmd 2>&1" `
+                2>&1 | Out-String)
+            $code = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $eap
+        }
+        if ($code -eq 0) {
+            if ($i -gt 1) { Write-Host "  [ssh] attempt $i OK (previous $($i-1) handshake failures)" }
+            return $out
+        }
+        if ($i -lt $SshAttempts) {
+            Write-Host "  [ssh] attempt $i failed, retrying in ${SshRetryDelaySec}s..."
+            Start-Sleep -Seconds $SshRetryDelaySec
+        }
+    }
+    throw "SSH failed after $SshAttempts attempts: $cmd"
 }
 
 function Invoke-Scp([string]$src, [string]$dst, [switch]$Recurse) {
     $scpArgs = @('-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15',
                  '-o', 'ServerAliveCountMax=4') + $SshCipherOpts
     if ($Recurse) { $scpArgs += '-r' }
-    scp @scpArgs $src $dst
-    if ($LASTEXITCODE -ne 0) { throw "SCP failed: $src -> $dst" }
+    for ($i = 1; $i -le $SshAttempts; $i++) {
+        $eap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            scp @scpArgs $src $dst 2>&1 | Out-String
+            $code = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $eap
+        }
+        if ($code -eq 0) { return }
+        if ($i -lt $SshAttempts) {
+            Write-Host "  [scp] attempt $i failed, retrying in ${SshRetryDelaySec}s..."
+            Start-Sleep -Seconds $SshRetryDelaySec
+        }
+    }
+    throw "SCP failed after $SshAttempts attempts: $src -> $dst"
 }
 
 function Get-RelPaths([array]$files) {
@@ -280,6 +340,11 @@ switch ($Action) {
     }
     'logs' {
         Invoke-Ssh "docker logs --tail $LogLines dzmm-bot 2>&1"
+    }
+    'exec' {
+        if (-not $Cmd) { throw "-Action exec needs -Cmd '<shell command>'" }
+        Write-Host "[exec] $Cmd"
+        Invoke-Ssh $Cmd | Write-Host
     }
     'rollback' {
         $latest = (Invoke-Ssh "ls -t $RemoteDir/backup-code-*.tar.gz 2>/dev/null | head -1").Trim()

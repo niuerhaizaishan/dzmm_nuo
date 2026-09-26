@@ -402,7 +402,7 @@ print()
 print("配置（P11）:")
 try:
     import sys as _sys
-    _sys.path.insert(0, "/app/admin")
+    _sys.path.insert(0, str(GATE_ROOT / "admin"))
     import dashboard as _dash
     from runtime import config_store as _cs
     _defaults = _dash._config_defaults()
@@ -435,6 +435,48 @@ try:
             print("     已停用的群（enabled=false，不做任何事）：{}".format(", ".join(_off)))
 except Exception as e:                                      # noqa: BLE001
     check("配置自检", False, "{}: {}".format(type(e).__name__, e))
+
+print()
+print("人设文本（P12-E）:")
+try:
+    import personas as _pers
+
+    # 1) 登记册完整：每个话术都要有中文标签（否则页面上只有一串英文 key）
+    _nophrase = {}
+    for _k in _pers.PERSONAS:
+        _miss = sorted(set(_pers.known_phrase_keys(_k)) - set(_pers.PHRASE_LABELS))
+        if _miss:
+            _nophrase[_k] = _miss
+    check("话术都有中文标签（{} 个人设 / {} 条）".format(
+        len(_pers.PERSONAS), len(_pers.PHRASE_LABELS)), not _nophrase, _nophrase)
+
+    # 2) 注入配置里的覆盖**不报错**，并且真的改变生效值
+    from runtime import config_store as _cs
+    _texts = {}
+    try:
+        _texts = _cs.load(_defaults).personas
+    except Exception:                                       # noqa: BLE001
+        _texts = {}
+    _pers.set_content_overrides(_texts)
+    _s = _pers.summary()
+    print("     覆盖：人设={} 文本段={} 话术={}".format(
+        _s["personas"], _s["fields"], _s["phrases"]))
+    for _line in _s["issues"]:
+        print("     ⚠️ 体检 " + _line)
+    check("人设文本注入不报错", True)
+    # 3) 每个群的最终人设都能取到（页面/日志都靠它）
+    _keys = {_pers.persona_key_for(_cid) for _cid in _cs.load(_defaults).groups}
+    check("每个生效群都有可用人设", _keys <= set(_pers.PERSONAS), _keys)
+    # 4) 覆盖生效自证：配置里改过的名字必须真的换掉
+    for _k, _v in (_texts or {}).items():
+        _nn = _v.get("name_short")
+        if _nn:
+            _hit = any(_pers.persona_for(_cid)["name_short"] == _nn
+                       for _cid in _cs.load(_defaults).groups
+                       if _pers.persona_key_for(_cid) == _k)
+            check("人设 {} 的新名字「{}」已生效".format(_k, _nn), _hit)
+except Exception as e:                                      # noqa: BLE001
+    check("人设文本自检", False, "{}: {}".format(type(e).__name__, e))
 
 print()
 print("FAILED: {}".format(fails) if fails else "ALL CHECKS PASSED")
