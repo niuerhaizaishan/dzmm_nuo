@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 
 import personas as P  # noqa: E402
 
@@ -189,3 +190,46 @@ def test_summary_and_describe():
     assert d["effective"]["name_short"] == "玫瑰管家"
     assert d["default"]["name_short"] == P.PERSONAS["rose_butler"]["name_short"]
     assert d["untouched"] is False
+
+
+# ---------------------------------------------------------------- 5. 改名（tools/cfg_persona.py）
+
+def _tool():
+    import cfg_persona
+    return cfg_persona
+
+
+def test_rename_rewrites_names_and_every_self_reference():
+    """换 Bot 之后的改名：不只是两个字段 —— `extra` 与话术里的自称也必须换。
+
+    否则 `extra` 里那句"你自称「小小糯」"会赢（它自己写着"优先级最高"），
+    模型照旧自称旧名字 —— 看起来改了、其实没改。
+    """
+    T = _tool()
+    item, changes = T.build_rename("rose_butler", {"personas": {}}, P, "薇丝")
+    assert item["name_full"] == "薇丝" and item["name_short"] == "薇丝"
+    assert "小小糯" not in item["extra"], "extra 里不能残留旧名字"
+    assert item["extra"].count("薇丝") == P.PERSONAS["rose_butler"]["extra"].count("小小糯")
+    assert item["phrases"], "话术里指向自己的那几条也要换"
+    for k, v in item["phrases"].items():
+        assert "小小糯" not in v, k
+    assert any("name_full" in c for c in changes)
+    assert any("extra" in c for c in changes)
+    assert any("话术" in c for c in changes)
+
+
+def test_rename_from_custom_name():
+    """不是所有改名都从「小小糯」出发（房间管家本来就叫别的名字时）。"""
+    T = _tool()
+    raw = {"personas": {"rose_butler": {"extra": "你自称「小秘书」，别叫姐姐。"}}}
+    item, _ = T.build_rename("rose_butler", raw, P, "薇丝", frm="小秘书")
+    assert item["extra"] == "你自称「薇丝」，别叫姐姐。"
+
+
+def test_rename_keeps_an_override_that_needs_no_change():
+    """已有 extra 覆盖、里面没有旧名字 ⇒ 原样保留（不能被默认值顶掉）。"""
+    T = _tool()
+    raw = {"personas": {"rose_butler": {"extra": "只属于我的设定。"}}}
+    item, changes = T.build_rename("rose_butler", raw, P, "薇丝", frm="小小糯")
+    assert item["extra"] == "只属于我的设定。"
+    assert not any("extra" in c for c in changes)
