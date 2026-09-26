@@ -13,6 +13,42 @@
 | 路由 | `bot路由: 已启用 覆盖群=bd7fe6a4,4a56be71` ⇒ 玫瑰房的文本走薇丝-bot |
 | 人设 | `rose_butler` 改名为**薇丝**（热加载生效，未重启） |
 
+## 上线冒烟（2026-09-26 13:14，已通过）
+
+用**生产发送链**往玫瑰房发了一条，读回确认署名（不是裸调 API，所以顺带证明了路由与身份）：
+
+```
+发送链类型 = RoutingSender
+覆盖的群 = ['bd7fe6a4', '4a56be71']        ← 玫瑰房在路由里
+薇丝的 uid 算「我自己」= True | 我认的全部身份 = ['36916cb2', '503e3cb9', 'eee88c3d']
+bot路由: bot_ok cid=4a56be71 4b3452b7-8d6d-47af-9d48-81fc3b582301
+发送结果 ok = True | 耗时 0.1s
+路由计数 = {'bot_ok': 1, 'bot_rejected': 0, 'bot_ambiguous': 0, 'account': 0}
+占位账号被调用 = 没有（说明确实走的 Bot 通道）
+
+读回玫瑰房最近 12 条，Bot 署名的 2 条：
+   [36916cb2] type=system  机器人 薇丝-bot 已加入群聊
+   [36916cb2] type=text    🌹 薇丝来报到啦～（首次上线小测试）…
+==> 薇丝-bot 真的在玫瑰房发言了
+```
+
+关键点：`allow_fallback=False` —— Bot 通道失败**不回退账号**，所以 `ok=True` 与
+`account: 0` 就是"确实走的 Bot"，不会出现"看起来成功、其实是账号发的"。
+
+已固化成 **`tools/bot_smoke_check.py`**（`--cid` / `--text` / `--no-verify`）：
+以后每加一个 Bot，跑一次就知道"路由 + 身份 + 成员资格 + 能不能发言"四件事。
+（建议加 `-e DZMM_OUTBOX=off`，一次性进程别碰线上出站队列。）
+
+## 平台文档要点（`/studio/bots/docs`，SPA 需浏览器渲染才看得到正文）
+
+- **公开** Bot：任意普通群聊的**群主或管理员**都能加；
+- **私有** Bot：只有**创建者本人**能加，且创建者必须是目标群的群主/管理员；
+- **scenario 群聊不展示 Add Bot 入口**（这类群加不了）；
+- 加成功后群内会有系统消息、成员列表实时刷新；
+- HTTP API 只文档化了 `send-message`（**没有**"加群"接口）—— 加群是 UI/内部 tRPC 的事；
+- `X-Telegram-Bot-Api-Secret-Token` 是**校验平台推给我们**的回调用的
+  （我们收消息走 Socket.IO，所以 Webhook Secret 暂时用不到）。
+
 ## 关键教训：tRPC 的 **mutation 必须从页面里 fetch**，裸 requests 会 403
 
 这是本次唯一真正的坑，值得单独记：
