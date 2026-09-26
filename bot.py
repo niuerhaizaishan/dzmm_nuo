@@ -360,6 +360,39 @@ def _active_cid() -> str:
     return ctx.get_active_cid() or _ACTIVE_CID
 
 
+# P12-I：平台读的"这一跳"超时上限。
+# `dzmm.api()` 自己是 timeout=15 且**不重试** —— 一次卡住就是 15 秒，
+# 而它是在主循环里 await 的 ⇒ 那个群整整 15 秒不干活（日志里几小时就 40 次）。
+# 并行之后它只拖累自己那个群，但还是要有个更短的上限：卡住就放弃这一轮，下轮重试。
+PLATFORM_READ_TIMEOUT = 8.0
+
+
+def message_lag(msgs) -> float:
+    """最新一条**群友**消息从平台发出到现在隔了多少秒（拿不到就 -1）。
+
+    平台时间是 UTC，容器是本地时间（UTC+8）—— 这是 P12-I 用来分清
+    "平台/推送慢" 还是 "我们慢" 的关键数字：日志里的时间戳只能看到
+    "我们开始处理之后" 的耗时，看不到消息在路上等了多久。
+    """
+    newest = None
+    for m in msgs or ():
+        try:
+            if is_self(m.get("sent_by")):
+                continue
+            sa = str(m.get("sent_at") or "")
+            if len(sa) < 19:
+                continue
+            t = datetime.strptime(sa[:19], "%Y-%m-%d %H:%M:%S") \
+                + timedelta(hours=8)
+        except Exception:                                      # noqa: BLE001
+            continue
+        if newest is None or t > newest:
+            newest = t
+    if newest is None:
+        return -1.0
+    return time.time() - time.mktime(newest.timetuple())
+
+
 class Sender:
     """常驻 Playwright 浏览器：每个群一个常驻 page，发送时不再来回 goto。
 
@@ -2476,6 +2509,8 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
             meta["last_poll"] = time.time()
             had_new = False  # 本轮该群有没有新的用户消息
             old_last_id = None  # 本轮指令/@ 消息处理前的 last_id（生成失败回滚用）
+            _t_round = None  # P12-I 延迟自证：本轮开始计时（拿到消息才算）
+            _lag = -1.0      # 最新群友消息从平台发出到现在的秒数
             try:
                 # 读消息：Socket.IO 推送优先，HTTP 低频兜底（对账补漏）
                 sio_msgs = subscriber.drain(cid)
@@ -2489,7 +2524,18 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                     last_http_fallback[cid] = now_ts
                     if need_resync:
                         subscriber.clear_resync(cid)
-                    msgs = await asyncio.to_thread(get_messages, cid, 20)
+                    # P12-I：加超时上限 —— 平台卡住时最多等 8 秒，别把整个群拖住
+                    try:
+                        msgs = await asyncio.wait_for(
+                            asyncio.to_thread(get_messages, cid, 20),
+                            timeout=PLATFORM_READ_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        log("⏱️ [{}] 平台读消息超时 {:.0f}s，本轮跳过（下轮重试）".format(
+                            cid[:8], PLATFORM_READ_TIMEOUT))
+                        msgs = []
+                    except Exception as _re:
+                        log("⚠️ [{}] 平台读消息失败：{}".format(cid[:8], str(_re)[:70]))
+                        msgs = []
                     # HTTP 兜底成功 = 风控解除：清撞验证码状态 + 所有群提醒 + 补筛查延迟的新成员
                     if _captcha_active:
                         _captcha_active = False
@@ -2505,6 +2551,9 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                 else:
                     msgs = []
                 if msgs:
+                    # P12-I 延迟自证：起点 + "消息在路上等了多久"
+                    _t_round = time.time()
+                    _lag = message_lag(msgs)
                     group_state = state.get(cid) or {}
                     last_id = group_state.get("last_id")
                     # 定位 pending：Socket.IO 推送直接去重，HTTP 兜底用 last_id 定位
@@ -3296,6 +3345,13 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         else:
                             ok = await sender.send("🤖 " + vote_reply, cid)
                             log("✅" if ok else "❌")
+                # P12-I 延迟自证：这一轮"从平台发出到我们处理"隔了多久、我们花了多久。
+                # 只在慢的时候打，平时不刷屏；口径与 tools/latency_report.py 一致。
+                if _t_round is not None:
+                    _cost = time.time() - _t_round
+                    if _lag >= 1.5 or _cost >= 3.0:
+                        log("⏱️ [{}] 投递 {:.1f}s + 本轮处理 {:.1f}s".format(
+                            cid[:8], _lag, _cost))
             except Exception as e:
                 msg = str(e)
                 if "captcha" in msg.lower():
