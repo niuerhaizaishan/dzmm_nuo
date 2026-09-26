@@ -125,11 +125,22 @@ def switch_to(new_host):
     except Exception as e:
         log("改 token domain 失败: " + str(e)[:80])
         return False
-    # 3. 重启容器（重新加载 DZMM_HOST）
+    # 3. 重建容器（重新加载 DZMM_HOST）
+    # ⚠️ 必须是 `up -d --force-recreate`，**不能**只 `docker restart`：
+    #    环境变量是 compose 在**创建容器时**注入的，restart 不会重新读 .env
+    #    ⇒ 自动切换看似成功、实际容器里还是旧域名（2026-09-26 手工换线路时发现）。
     try:
-        subprocess.run(["docker", "restart", "dzmm-bot"], timeout=90)
+        r = subprocess.run(
+            ["docker", "compose", "up", "-d", "--force-recreate", "dzmm-bot"],
+            cwd=os.path.dirname(ENV_FILE) or "/opt/dzmm",
+            timeout=180, capture_output=True, text=True)
+        if r.returncode != 0:
+            # compose 不可用（老环境）→ 退化成 restart，但要说清楚它可能不生效
+            log("compose 重建失败（{}），退化为 docker restart（**可能不生效**）".format(
+                (r.stderr or "")[:60]))
+            subprocess.run(["docker", "restart", "dzmm-bot"], timeout=90)
     except Exception as e:
-        log("docker restart 失败: " + str(e)[:80])
+        log("重建容器失败: " + str(e)[:80])
         return False
     # 4. 飞书告警
     try:
