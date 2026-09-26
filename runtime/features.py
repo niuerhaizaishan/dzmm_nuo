@@ -181,7 +181,9 @@ _FEATURES_RAW = (
     # ---- C. 人物与档案（11）
     Feature("register", "注册档案", "people"),
     Feature("query", "查人", "people"),
-    Feature("rewrite", "改写档案", "people"),
+    # 注：盘点里曾把 `is_rewrite_cmd` 归成"改写档案"，实际上它**只服务场景重写**
+    # （`/重写 /重新生成 /重来 /重新写`，见 bot.py:1492），已经由 `scene_rewrite` 覆盖。
+    # 注册表的规矩是"只登记有真实触发 + 真实效果的功能"，所以这里**不设** `rewrite` 条目。
     Feature("archive_build", "档案自动构建", "people", params=(
         Param("profile.scan_max_api", "单次 get_user 上限", 150, "次", 1, 1000),
         Param("profile.notice_max", "单次通知上限", 10, "条", 1, 50),
@@ -266,6 +268,16 @@ _WIRED = (
     "scene_rewrite", "scene_end", "diaojiao", "help", "memory_remember",
     "memory_recall", "devil_roast", "intro", "sync", "register", "query",
     "trend", "rank_heat", "recap", "summary", "fortune", "poem", "insult",
+    # --- 第三批（房间玩法 / 入群筛查 / @消息子功能 / 告警 / 自动触发）---
+    "room_welcome", "room_refuse", "room_order", "room_flower", "room_ghost",
+    "room_lewd", "room_owner_cmd", "horoscope",
+    "screen", "screen_tourist", "screen_gender", "screen_welcome",
+    "screen_captcha_notice", "screen_pending",
+    "person_summary", "profile_card", "archive_build",
+    "dice_timeout", "diaojiao_idle", "heat", "heat_climax", "devil_cold",
+    "perf_enrich", "perf_novel",
+    "alert_cookie", "alert_token", "alert_captcha", "auto_recover",
+    "heartbeat", "health_check",
 )
 FEATURES = tuple(replace(f, stage="wired") if f.key in _WIRED else f
                  for f in _FEATURES_RAW)

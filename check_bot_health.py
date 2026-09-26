@@ -223,6 +223,12 @@ def check_profiles_size() -> int:
 # ---------- 主逻辑 ----------
 
 def main():
+    # P12-A：`health_check` = 巡检总开关（巡检/告警/去抖状态全用它）。
+    # 关掉后**只跳过本次巡检**，不写状态、不发告警 —— 相当于"暂时不巡检"。
+    from runtime.features import on as _feat_on
+    if not _feat_on("", "health_check"):
+        log("健康巡检已关闭（功能开关 health_check=off），跳过")
+        return 0
     state = load_state()
     alerts = state.setdefault("alerts", {})
     now = time.time()
@@ -285,15 +291,20 @@ def main():
     tk = check_token()
     access_remain = tk.get("access_remain_sec")
     refresh_days = tk.get("refresh_remain_days")
-    if access_remain is not None:
+    # P12-A：`health_check` 是巡检总开关；`alert_token` 只管 token 类的两条告警。
+    # 关掉 alert_token ⇒ 不再发 token 告警，但**续期/重登动作照常**（那是保命的，
+    # 不该被"少发一条通知"牵连）。
+    _alert_token = _feat_on("", "alert_token")
+    if access_remain is not None and _alert_token:
         transition("token", access_remain < ACCESS_EXPIRE_ALERT_SEC,
                    f"access_token 过期且续期失败（已过期 {(-access_remain)/60:.0f} 分钟）",
                    "token 续期恢复正常")
     if refresh_days is not None and refresh_days < REFRESH_WARN_DAYS:
         was_alerted = alerts.get("refresh_token", {}).get("alerted", False)
-        transition("refresh_token", True,
-                   f"refresh_token 即将到期（剩 {refresh_days:.0f} 天），需重新登录",
-                   "")
+        if _alert_token:
+            transition("refresh_token", True,
+                       f"refresh_token 即将到期（剩 {refresh_days:.0f} 天），需重新登录",
+                       "")
         # 首次触发（剩余<7天）时主动重登，刷新 refresh_token 实现"永续"（避免到期失效）
         if not was_alerted:
             _trigger_relogin()

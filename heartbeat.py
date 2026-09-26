@@ -18,6 +18,14 @@ def main():
     sys.path.insert(0, str(ROOT))
     import check_bot_health as ch
 
+    # P12-A：心跳/巡检/令牌告警是**全局**功能（不属于某个群），用 cid="" 判定。
+    # 关掉心跳 ⇒ 不发这条定期状态；巡检与告警各自独立（见 check_bot_health.py）。
+    from runtime.features import on as _feat_on
+    if not _feat_on("", "heartbeat"):
+        print("{} 心跳已关闭（功能开关 heartbeat=off），跳过".format(
+            time.strftime("%Y-%m-%d %H:%M:%S")))
+        return 0
+
     # 1. 进程
     count, pids = ch.check_process()
     proc_ok = count == 1

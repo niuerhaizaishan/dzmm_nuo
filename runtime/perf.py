@@ -16,6 +16,7 @@ from brains import (generate_perf_comment, generate_perf_ending,
 from dzmm import get_messages_all, get_messages_since, get_user
 from wx_alert import send_weixin
 from runtime import ctx
+from runtime.features import on as _feat_on     # P12-A：功能开关（唯一判定点）
 from runtime.group_state import _get_perf_state, _set_perf_state
 from runtime.heat import _add_heat
 from runtime.identity import (get_full_name, get_name, is_self, self_names,
@@ -280,6 +281,13 @@ async def _handle_perf_end(sender, cid: str, dry: bool):
     await _perf_send(sender, "🎬 公演结束！小小糯点评：\n" + ending, cid, dry)
 
     # 1.5 等待参与者补充收尾（20秒，避免漏掉公演结束后的补充台词）
+    # P12-A：`perf_novel` 关掉时**到此为止**：点评照发、公演照常结束，
+    # 但不生成小说、不落盘、不进待审流程（省掉十几次 pro 模型调用）。
+    perf["active"] = False
+    _set_perf_state(cid, perf)
+    if not _feat_on(cid, "perf_novel"):
+        log("🎬 [{}] 公演结束（未生成小说：perf_novel 已关闭）".format((cid or "")[:8]))
+        return
     await _perf_send(sender, "📝 想补充收尾的姐妹还有 20 秒哦～20 秒后我开始生成小说～", cid, dry)
     await asyncio.sleep(20)
     content = await asyncio.to_thread(_get_perf_content, cid, start_id)

@@ -17,6 +17,7 @@ from personas import (NUONUO_UID, ROOMS, ROSE_LUCKY_COLORS, ROSE_LUCKY_DIRS,
                       ROSE_SIGN_WORDS, ROSE_SIGN_YI, ROOM_FLOWER_NOUNS,
                       ROOM_FLOWER_VERBS, ROOM_FLOWER_WORDS, ROOM_MENU_WORDS,
                       ROOM_ORDER_VERBS)
+from runtime.features import on as _feat_on          # P12-A：功能开关（唯一判定点）
 from runtime.identity import _load_member_names, get_name, is_at_me, is_self
 from runtime.members import _get_msgs_by_uid
 from runtime.obs import log
@@ -62,7 +63,12 @@ def _room_owner(cid: str, uid: str) -> bool:
 
 
 def _is_room_trigger(cid: str, uid: str, text: str) -> bool:
-    """房间群：这条消息要不要管家回应（被点名 / 主人指令 / 客人点单）."""
+    """房间群：这条消息要不要管家回应（被点名 / 主人指令 / 客人点单）.
+
+    P12-A：房间玩法拆成四个可关的功能（`room_*`），**闸门就在这里** ——
+    因为"要不要回应"的判定全集中在这个函数里；关掉某项，那么这类消息
+    就不会进房间分支（表现 = 管家不接这一类话）。
+    """
     cfg = ROOMS.get(cid)
     if not cfg or not text or is_self(uid):
         return False
@@ -71,17 +77,23 @@ def _is_room_trigger(cid: str, uid: str, text: str) -> bool:
         return False  # / 指令走权限分支
     if ("小小糯" in t) or is_at_me(t):
         return True
-    if _is_flower_grab(t):
+    if _is_flower_grab(t) and _feat_on(cid, "room_flower"):
         return True  # 摘花 → 进房间分支（男生放任女鬼，其他人由 AI 婉拒）
-    if any(w in t for w in ROSE_SIGN_WORDS) or _sign_find(t):
+    if (any(w in t for w in ROSE_SIGN_WORDS) or _sign_find(t)) \
+            and _feat_on(cid, "horoscope"):
         return True  # 星座运势（待客服务，客人也能用）
-    if _sign_parse_birth(t) and any(k in t for k in ("我是", "生", "生日", "出生", "座")):
+    if _sign_parse_birth(t) and any(k in t for k in ("我是", "生", "生日", "出生", "座")) \
+            and _feat_on(cid, "horoscope"):
         return True  # 报生日
     if _room_owner(cid, uid):
         # 主人没点名也可能在下命令
+        if not _feat_on(cid, "room_owner_cmd"):
+            return False
         return (any(w in t for w in _ROOM_LAYOUT_WORDS)
                 or any(w in t for w in _ROOM_CONJURE_WORDS))
     # 客人：只有明确的点单才回应（被点名 / 进群问好另外处理）
+    if not _feat_on(cid, "room_order"):
+        return False
     return (any(v in t for v in ROOM_ORDER_VERBS)
             and any(w in t for w in ROOM_MENU_WORDS))
 

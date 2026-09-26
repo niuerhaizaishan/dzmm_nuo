@@ -9,6 +9,7 @@
 """
 import state_store
 
+from runtime.features import on as _feat_on     # P12-A：功能开关（唯一判定点）
 from runtime.identity import is_self
 
 __all__ = [
@@ -54,7 +55,13 @@ HEAT_STORY_PROTAGONIST = 15       # 剧情：主角（3748）
 
 
 def _add_heat(cid: str, uid: str, delta: int) -> None:
-    """给某人加发情值（持久化，排除小小糯）."""
+    """给某人加发情值（持久化，排除小小糯）.
+
+    P12-A：`heat` 关掉时**直接不加分**（发情值系统整体关闭）。
+    现存的分数与榜单数据**不删**（关功能不等于清数据），重新打开就继续用。
+    """
+    if not _feat_on(cid, "heat"):
+        return
     if not uid or is_self(uid) or delta <= 0:
         return
     # P8：单键读写 —— 只写该群那一行（原先每次都要重写全部群）

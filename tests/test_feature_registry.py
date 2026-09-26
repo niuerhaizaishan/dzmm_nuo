@@ -21,7 +21,8 @@ sys.path.insert(0, str(ROOT))
 
 from runtime import features as F  # noqa: E402
 
-SCAN_FILES = [ROOT / "bot.py"] + sorted((ROOT / "runtime").glob("*.py"))
+SCAN_FILES = [ROOT / "bot.py", ROOT / "heartbeat.py", ROOT / "check_bot_health.py"] \
+    + sorted((ROOT / "runtime").glob("*.py"))
 
 # 扫描 `_feat_on(<任意表达式>, "key")`；允许中间有空格/换行
 _FEAT_ON_RE = re.compile(r"_feat_on\(\s*[^,()]+,\s*\"([a-z_]+)\"\s*\)")
@@ -64,9 +65,11 @@ def _declared_tables():
 
 # ---------------------------------------------------------------- 1. 注册表自洽
 
-def test_registry_has_65_features():
-    assert len(F.FEATURES) == 65
-    assert len(set(F.keys())) == 65, "key 必须唯一"
+def test_registry_has_64_features():
+    """65 → 64：`rewrite`（改写档案）经核实**没有真实触发**（`is_rewrite_cmd`
+    只服务场景重写，已被 `scene_rewrite` 覆盖），按注册表自己的规矩删掉了。"""
+    assert len(F.FEATURES) == 64
+    assert len(set(F.keys())) == 64, "key 必须唯一"
 
 
 def test_every_feature_is_well_formed():
@@ -80,9 +83,9 @@ def test_every_feature_is_well_formed():
 
 
 def test_category_counts_match_the_plan():
-    """与 docs/功能与人设配置方案.md §9.1 的分组数量对齐。"""
+    """与 docs/功能与人设配置方案.md §9.1 的分组数量对齐（people 少 1 = 删掉 rewrite）。"""
     got = {c: len(v) for c, v in F.by_category().items()}
-    assert got == {"game": 15, "content": 12, "people": 11, "screen": 7,
+    assert got == {"game": 15, "content": 12, "people": 10, "screen": 7,
                    "schedule": 9, "room": 7, "alert": 4}
 
 
@@ -146,9 +149,12 @@ def test_every_gate_uses_a_registered_key():
 
 
 def test_wiring_progress_does_not_regress():
-    """已接线的数量只许多不许少（防止后续改动把闸门删掉）。"""
+    """P12-A 完成条件：**64 项全部接线**（少一项就说明有功能配了不生效）。"""
     wired = sum(1 for f in F.FEATURES if f.stage == "wired")
-    assert wired >= 9, "P12-A 第一批至少 9 项已接线，现在是 {}".format(wired)
+    assert wired == len(F.FEATURES), \
+        "还有 {} 项没接线：{}".format(
+            len(F.FEATURES) - wired,
+            [f.key for f in F.FEATURES if f.stage != "wired"])
 
 
 # ---------------------------------------------------------------- 3. 判定与复位
@@ -354,13 +360,23 @@ def test_rank_push_gate_is_wired_in_source():
 # ------------------------------------- 6. 命令分派链：归属表与兜底静默
 
 def test_cmd_attribution_table_covers_every_cmd_gate():
-    """分派链里每个闸门都要在归属表里有一份 —— 否则"关掉的功能"会漏进兜底聊天。"""
+    """分派链里每个**决定分支走不走**的闸门都要在归属表里有一份。
+
+    ⚠️ 例外：**分支体内**的闸门（例如 `/查` 里"对方没注册时用什么话术"的
+    `profile_card`）不决定命令归谁，只是同一命令的两种表现 —— 它们登记在下面
+    这份白名单里，必须写清理由；新增这样的闸门时也要一并登记。
+    """
     import bot
+    inner_ok = {
+        # `/查 X` 归 query 管；profile_card 只决定"没注册"那一路是 AI 介绍还是
+        # 一句"没找到"。关掉它 `/查` 照样能用，所以它不参与命令归属。
+        "profile_card",
+    }
     table_keys = {k for keys, _ in bot._CMD_FEATURE_ORDER for k in keys}
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
     chain = src[src.index("# 吹牛骰子命令（优先）"):src.index("elif at_msg:")]
     gate_keys = set(re.findall(r'_feat_on\(cid, "([a-z_]+)"\)', chain))
-    missing = gate_keys - table_keys
+    missing = gate_keys - table_keys - inner_ok
     assert not missing, "分派链里有闸门但归属表没登记：{}".format(sorted(missing))
 
 
@@ -454,6 +470,41 @@ def test_devil_switch_cannot_be_turned_on_when_feature_is_off(monkeypatch):
     assert bot._cmd_owned_by_disabled("c1", "/吐槽开") is True
     F.set_overrides({})
     assert bot._cmd_owned_by_disabled("c1", "/吐槽开") is False
+
+
+# ------------------------------------- 7. 第三批：房间 / 发情值 / 入群筛查
+
+def test_room_order_gate_decides_whether_butler_answers(state):
+    """客人点单要不要管家回应，由 `room_order` 决定（闸门在 `_is_room_trigger` 里）。"""
+    from personas import ROSE_CID
+    from runtime import sign
+    F.set_overrides({})
+    assert sign._is_room_trigger(ROSE_CID, "guest-uid-1", "想喝一杯酒") is True
+    F.set_overrides({"{}|room_order".format(ROSE_CID): False})
+    assert sign._is_room_trigger(ROSE_CID, "guest-uid-1", "想喝一杯酒") is False, \
+        "关掉点单后，客人的点单不再触发管家"
+
+
+def test_heat_gate_blocks_further_scoring(state):
+    """关掉 `heat` 就不再加分，但**已有的分数不删**。"""
+    import state_store
+    from runtime.heat import _add_heat
+    _add_heat("c1", "u1", 10)
+    assert (state_store.group_get("c1", "heat_value", {}) or {}).get("u1") == 10
+    F.set_overrides({"c1|heat": False})
+    _add_heat("c1", "u1", 10)
+    assert (state_store.group_get("c1", "heat_value", {}) or {}).get("u1") == 10, \
+        "关了发情值就不该再加分（已有分数保留）"
+
+
+def test_screen_off_still_welcomes_in_source():
+    """`screen` 只该包住"筛查踢人"那一支，不能包住整个入群块 ——
+    否则关掉筛查会把欢迎语、房间迎客一起关掉（那两件事另有开关）。"""
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    region = src[src.index("# 检测新成员加入"):src.index("# 检查 pending")]
+    assert 'cid in SCREEN_CIDS and _feat_on(cid, "screen")' in region
+    assert 'elif cid in SCREEN_CIDS:' in region, "关掉筛查要退化成「只欢迎不踢人」"
+    assert 'WELCOME_TEXT_PLAIN' in region
 
 
 def test_defaults_are_logically_equivalent_to_before(state):

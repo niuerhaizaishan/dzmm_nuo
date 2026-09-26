@@ -14,6 +14,7 @@ from brains import generate_diaojiao, generate_diaojiao_end
 from profiles import get_profile
 from runtime import ctx
 from runtime.fasao import _parse_scene_target
+from runtime.features import on as _feat_on     # P12-A：功能开关（唯一判定点）
 from runtime.group_state import _get_dj_state, _set_dj_state
 from runtime.heat import HEAT_DIAOJIAO_ROUND, _add_heat
 from runtime.identity import get_full_name
@@ -124,11 +125,15 @@ def _check_diaojiao(cid: str, pending: list) -> str:
         return None
     if phase == "等命令":
         # 30秒冷场 → 催一句 + 自编命令
+        # P12-A：`diaojiao_idle` 关掉时**不做自编**：状态推进到"等回应"照旧
+        # （否则这一局会永远卡在"等命令"），只是不再自动生成新命令。
         if now - dj.get("ask_at", now) > 30:
             dj["phase"] = "等回应"
             dj["last_activity"] = now
             dj["round"] = dj.get("round", 0) + 1
             _set_dj_state(cid, dj)
+            if not _feat_on(cid, "diaojiao_idle"):
+                return None
             try:
                 text = generate_diaojiao(_dj_target_text(target_uid), "自编一条新命令")
             except Exception:
