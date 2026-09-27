@@ -192,6 +192,7 @@ def test_secret_env_derived_from_token_env():
 
 def test_collect_secrets_reads_env(monkeypatch):
     class B:
+        """BotSpec 的形状（有 token_env）。"""
         def __init__(self, key, cid, tenv):
             self.key, self.cid, self.token_env = key, cid, tenv
 
@@ -201,6 +202,31 @@ def test_collect_secrets_reads_env(monkeypatch):
     got = W.collect_secrets([B("weisi_rose", ROSE, "DZMM_BOT_TOKEN_ROSE"),
                              B("nuo_main", BD, "DZMM_BOT_TOKEN")])
     assert got == {SECRET_ROSE: ("weisi_rose", ROSE)}, "没配 Secret 的 Bot 不该进白名单"
+
+
+def test_collect_secrets_accepts_dict_shape_too(monkeypatch):
+    monkeypatch.setenv("DZMM_BOT_SECRET_ROSE", SECRET_ROSE)
+    got = W.collect_secrets([{"key": "weisi_rose", "cid": ROSE,
+                              "token_env": "DZMM_BOT_TOKEN_ROSE"}])
+    assert got == {SECRET_ROSE: ("weisi_rose", ROSE)}
+
+
+def test_collect_secrets_from_identity_shape_yields_nothing(monkeypatch):
+    """P12-J 真事故：`bots_for_identity()` 的 dict **没有 token_env**，
+    传它一个 Secret 都收不到（日志只说"没有配置 Secret"，看起来像 .env 没配）。"""
+    monkeypatch.setenv("DZMM_BOT_SECRET_ROSE", SECRET_ROSE)
+    identity_shape = [{"key": "weisi_rose", "name": "薇丝-bot", "short": "薇丝",
+                       "cid": ROSE, "uid": "36916cb2-..."}]
+    assert W.collect_secrets(identity_shape) == {}
+
+
+def test_run_all_passes_bot_specs_not_identity_dicts():
+    """源码级钉住：`_run_all` 必须传 `_CFG.bots`（带 token_env）。"""
+    import bot as B
+    import inspect as I
+    src = I.getsource(B._run_all)
+    assert "_wh.collect_secrets(_CFG.bots)" in src
+    assert "collect_secrets(_CFG.bots_for_identity" not in src
 
 
 # ---------------------------------------------------------------- 加载方式（踩过的坑）

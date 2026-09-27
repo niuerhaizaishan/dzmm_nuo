@@ -136,18 +136,28 @@ def secret_env_for(token_env: str) -> str:
     return t.replace("TOKEN", "SECRET") if "TOKEN" in t else t + "_SECRET"
 
 
+def _field(b, name: str, default=""):
+    """从 dict 或 dataclass 里取字段（两种形状都要认）。"""
+    if isinstance(b, dict):
+        return b.get(name, default)
+    return getattr(b, name, default)
+
+
 def collect_secrets(bots) -> dict:
     """{secret 值: (bot_key, cid)} —— 只收非空的。
 
-    `bots` 是 `config_store.BotSpec` 列表（有 `token_env` / `cid` / `key`）。
+    `bots` 需要**带 `token_env`** 的形状：`config_store.Config.bots`（BotSpec）✓。
+    ⚠️ 别传 `bots_for_identity()`：那是给 identity 用的 dict（只有 key/name/short/
+    cid/uid，**没有 token_env**）—— P12-J 踩过这个坑（结果是一个 Secret 都收不到，
+    日志只说"没有配置 Secret"，看起来像 .env 没配）。
     """
     out = {}
     for b in bots or ():
-        tenv = getattr(b, "token_env", "") or ""
+        tenv = str(_field(b, "token_env") or "")
         senv = secret_env_for(tenv)
         val = (os.environ.get(senv) or "").strip() if senv else ""
         if val:
-            out[val] = (getattr(b, "key", ""), getattr(b, "cid", ""))
+            out[val] = (str(_field(b, "key") or ""), str(_field(b, "cid") or ""))
     return out
 
 

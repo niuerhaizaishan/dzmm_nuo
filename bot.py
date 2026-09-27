@@ -3510,7 +3510,10 @@ async def _run_all(interval: float, dry: bool, once: bool) -> None:
             # ⚠️ 必须按路径加载：上面刚 import 过 sio_subscribe，它会把项目根目录
             # 从 sys.path 里摘掉（见 _load_root_module 的说明）。
             _wh = _load_root_module("webhook_server")
-            _secrets = _wh.collect_secrets(_CFG.bots_for_identity())
+            # ⚠️ 必须传 `_CFG.bots`（BotSpec，带 token_env）——
+            # `bots_for_identity()` 是给 identity 的 dict，没有 token_env，
+            # 传它会导致一个 Secret 都收不到（P12-J 踩过）。
+            _secrets = _wh.collect_secrets(_CFG.bots)
             if not _secrets:
                 log("P12-J: 开了 Webhook 端口但没有配置 Secret"
                     "（.env 需要 DZMM_BOT_SECRET / DZMM_BOT_SECRET_ROSE），跳过")
