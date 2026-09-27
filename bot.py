@@ -287,6 +287,7 @@ from runtime.perf import _check_perf_timeout  # P12-A：公演超时解锁（原
 from runtime.diaojiao import is_dj_end_cmd, _dj_target_text, _dj_end_text, is_diaojiao_cmd, start_diaojiao, _check_diaojiao, DJ_PARTICIPATE_HINT  # P8 第 4 步：搬到 runtime/diaojiao.py
 from runtime import intro_photo as _intro_photo  # P12-L：自我介绍配图（只发图，不带字）
 from runtime import room_layout as _room_layout  # P12-N：改布局/复原 → 发对应的房间图
+from runtime import ghost_photo as _ghost_photo  # P12-O：女鬼场景配图
 
 # DZMM 主站 origin（多线路切换：env_config 从 DZMM_HOST 环境变量读）
 ORIGIN = env_config.get_dzmm_origin()
@@ -3228,6 +3229,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         cfg = ROOMS.get(cid) or {}
                         log("🌹 [" + cid[:8] + "] 房间消息: " + r_text[:40])
                         _layout_after = ""      # P12-N：这句回复之后要补哪张布局图
+                        _ghost_after = False    # P12-O：这句回复之后要不要补女鬼图
                         old_last_id = group_state.get("last_id", "")
                         group_state["last_id"] = msgs[-1]["message_id"]
                         state[cid] = group_state
@@ -3278,6 +3280,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             save_state(state)
                             log("👻 [" + cid[:8] + "] " + get_name(r_uid)[:12] + " 摘花，放出红衣女鬼")
                             reply = _personas.fill(ROOM_GHOST_TEXT, cid)
+                            _ghost_after = True     # P12-O：放出女鬼 → 补那张图
                         elif (_feat_on(cid, "horoscope")
                               and (_sr := await _sign_reply(
                                   cid, r_uid, r_text,
@@ -3353,6 +3356,14 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                         elif r_text:
                                             await _room_layout.maybe_send(
                                                 sender, cid, r_text, r_uid, reason="改布局")
+                                    # P12-O：放女鬼 / 命令进入女鬼场景 → 补那张图
+                                    if ok:
+                                        if _ghost_after:
+                                            await _ghost_photo.send(
+                                                sender, cid, reason="摘花放鬼")
+                                        elif r_text:
+                                            await _ghost_photo.maybe_send(
+                                                sender, cid, r_text, r_uid, reason="命令")
                             else:
                                 raise RuntimeError("生成失败(空回复): 房间消息")
 
