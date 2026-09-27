@@ -60,6 +60,104 @@ def test_health_is_clean():
     assert P.health("ruojin") == [], P.health("ruojin")
 
 
+# ---------------------------------------------------------------- P12-AH 人情味 / 口语 / 装饰
+#
+# 屋主 2026-09-27："① 高冷和 S 中间稍微有点人情味（时不时抽象/开玩笑）；
+# ② 回复里加「！！！❤️❤️❤️❤️」修饰；③ 不要太生硬"，追加"更多口语化、更亲近点"。
+# 三个决定：❤️ 给糖/认可/收尾约每 2-3 条一次、**正文也挂**、玩笑"每四五条一句冷的"。
+# ⚠️ 这一期的风险是**滑回软糯**（P12-Y 花一轮才压住），所以下面既有"要有的"，
+#    也有"绝不许再出现的"。
+
+AH_BEFORE = (ROOT / "tools" / "fixtures" / "ruojin_extra_p12ah_before.txt")
+
+
+def test_ah_adds_the_human_side_but_keeps_the_s():
+    e = P.RUOJIN_EXTRA
+    assert "▍活人气" in e
+    for frag in ("每四五条", "一本正经地把他拆穿", "自嘲", "考核"):
+        assert frag in e, frag
+    # 玩笑的边界：玩法期间不许笑场
+    assert "玩法进行中" in e and "不搞笑" in e
+    assert "不堆网络烂梗" in e and "丢主导权" in e
+
+
+def test_ah_goes_more_colloquial_and_drops_written_style():
+    e = P.RUOJIN_EXTRA
+    # 书面腔/术语被换掉
+    for written in ("幼态化", "陈述句多于问句", "白描", "描述层面", "不求宠"):
+        assert written not in e, "书面用语还在：{}".format(written)
+    # 换成口语的说法
+    for spoken in ("装嫩", "少问、多陈述", "一句大白话", "玩法上", "说人话，别说公文"):
+        assert spoken in e, spoken
+    # 对照示例（few-shot 比规则管用）
+    assert "▍怎么说人话" in e
+    assert e.count("→") >= 4, "正反例对照至少要四组"
+
+
+def test_ah_decorates_with_the_marks_and_keeps_one_definition():
+    assert P.RUOJIN_WARM_MARKS == "！！！❤️❤️❤️❤️"
+    e = P.RUOJIN_EXTRA
+    assert P.RUOJIN_WARM_MARKS in e, "提示词里要带上这串（否则模型不知道长什么样）"
+    assert "一条消息最多一处" in e, "控频是这串值不值钱的关键"
+    assert "每两三条" in e
+    # 屋主当天选的：正文也挂
+    assert "玩法正文里也要带" in e
+    # ⚠️ 第一版只写"可以带"，实测 5 条回复里出现 0 次 —— 必须写成"要真用出来"，
+    #    并且明确它**不算卖萌**（否则模型会跟"别堆♡"那条合并理解）
+    assert "要真用出来" in e
+    assert "不算" in e and "卖萌" in e
+    # 话术表里只有一处登记，且能取到
+    assert P.p("warm_marks", RUOJIN_CID) == P.RUOJIN_WARM_MARKS
+    # 不许漏到别的群
+    auth = "bd7fe6a4-0065-4551-ad3d-94116dba8f9c"
+    assert P.p("warm_marks", auth) == "", "认证群不该拿到若瑾的装饰串"
+
+
+def test_ah_colloquial_does_not_mean_shorter():
+    """第一版写"能两个字说完就别写四个字"，实测把均句长从 24 压到 19、总字数 150→97。"""
+    e = P.RUOJIN_EXTRA
+    assert "口语化不等于答得少" in e
+    assert "能两个字说完就别写四个字" not in e
+    assert "一百到三百来字" in e, "长度口径不许被口语化冲掉"
+
+
+def test_ah_tone_whitelist_and_moe_blacklist():
+    assert "得了吧" in P.RUOJIN_TONE_WORDS and "你说呢" in P.RUOJIN_TONE_WORDS
+    assert P.RUOJIN_TONE_WORDS in P.RUOJIN_EXTRA
+    # 卖萌信号任何时候都不许进 extra 的"可用"清单
+    for bad in ("呀", "嘛", "啦", "哦"):
+        assert bad not in P.RUOJIN_TONE_WORDS
+    assert "不撒娇" in P.RUOJIN_EXTRA and "不装嫩" in P.RUOJIN_EXTRA
+
+
+def test_ah_paragraph_cap_is_gone_like_the_base_prompt():
+    """P12-AG 已按屋主意见取消段落限制，她的 extra 不能还留着"最多两三段"。"""
+    assert "最多分段两三段" not in P.RUOJIN_EXTRA
+    assert "分段随意" in P.RUOJIN_EXTRA
+
+
+def test_ah_phrases_are_warmer_but_still_her():
+    cid = RUOJIN_CID
+    assert P.p("mem_saved", cid) == "记住了！！！"
+    assert P.p("fasao_end", cid).startswith("🎲 到这里")
+    assert P.RUOJIN_WARM_MARKS in P.p("dj_end", cid)
+    assert "❤️" in P.p("reg_ok", cid, who="糯糯")
+    # 仍然不许出现软糯标记（现有断言之外的定点检查）
+    for key in ("mem_saved", "fasao_end", "dj_end", "reg_ok", "no_play", "not_found"):
+        txt = P.p(key, cid, who="糯糯")
+        for mark in ("～", "呀", "嘛", "啦", "♡", "人家"):
+            assert mark not in txt, "{} 里有软萌标记 {!r}: {}".format(key, mark, txt)
+
+
+def test_ah_has_a_before_snapshot_to_compare_against():
+    """A/B 对照的基准文本要留在仓库里（`tools/probe_voice_register.py` 用它跑"旧版"）。"""
+    assert AH_BEFORE.is_file(), "缺少 P12-AH 之前的 extra 快照"
+    old = AH_BEFORE.read_text(encoding="utf-8")
+    assert "▍活人气" not in old, "快照必须是**改之前**的版本"
+    assert "幼态化" in old and "陈述句多于问句" in old
+    assert old != P.RUOJIN_EXTRA
+
+
 def test_default_groups_are_untouched():
     """认证群还是小小糯（别把若瑾的覆盖招呼到别人头上）."""
     from personas import ROOMS
