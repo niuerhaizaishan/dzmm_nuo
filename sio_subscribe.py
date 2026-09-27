@@ -20,6 +20,7 @@ import os
 import sys
 import json
 import time
+from collections import OrderedDict
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path = [p for p in sys.path if p not in ("", _ROOT)]  # 避开项目自己的 socketio.py
@@ -45,14 +46,35 @@ class SioSubscriber:
         self._connected = asyncio.Event()
         self._last_connect_ts = 0.0
         self._reconnect_count = 0
+        # P12-J：**跨来源去重**。Webhook（平台直推）与 Socket.IO（侧车账号推送）
+        # 是两条独立的路，同一条消息可能两边都到 —— 内容一模一样、message_id 相同。
+        # 不去重的话主循环会把它当成两条新消息 ⇒ 机器人**回两次**。
+        # 主循环那边原有的去重只认"上一条 last_id"，挡不住这种重复。
+        self._seen_ids: "OrderedDict[str, float]" = OrderedDict()
+        self._seen_cap = 500
 
     # ---------- 对外接口 ----------
+    def _dup(self, msg: dict) -> bool:
+        """True = 这条 message_id 已经见过（跨来源重复），应丢弃。"""
+        mid = str((msg or {}).get("message_id") or "")
+        if not mid:
+            return False
+        if mid in self._seen_ids:
+            return True
+        self._seen_ids[mid] = time.time()
+        while len(self._seen_ids) > self._seen_cap:
+            self._seen_ids.popitem(last=False)
+        return False
+
     def push(self, cid: str, msg: dict) -> int:
         """把一条消息放进这个群的待处理队列，返回入队后条数。
 
         P12-J：Webhook 收到平台直推的消息时用它入队 —— 于是"读消息"有两条来源
         （Socket.IO 与 Webhook），而主循环那边一行都不用改（`drain` 取的是同一个队列）。
+        重复来源的消息在这里被丢掉（见 `_dup`）。
         """
+        if self._dup(msg):
+            return len(self._buffer.get(cid) or [])
         buf = self._buffer.setdefault(cid, [])
         buf.append(msg)
         return len(buf)
@@ -203,7 +225,9 @@ class SioSubscriber:
                     return
                 async with self._lock:
                     if cid in self.groups:
-                        self._buffer.setdefault(cid, []).append(msg)
+                        # P12-J：走 push() 而不是直接 append —— 它带走跨来源去重
+                        # （webhook 可能已经送过同一条）
+                        self.push(cid, msg)
                     else:
                         # 私聊（one_on_one）消息，累积到私聊 buffer
                         self._private_buffer.setdefault(cid, []).append(msg)

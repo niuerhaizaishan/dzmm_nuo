@@ -220,6 +220,39 @@ def test_collect_secrets_from_identity_shape_yields_nothing(monkeypatch):
     assert W.collect_secrets(identity_shape) == {}
 
 
+def test_sio_subscriber_dedupes_across_sources():
+    """P12-J：Webhook（平台直推）与 Socket.IO（侧车账号）是两条路，
+    同一条消息可能两边都到 —— 队列入口必须按 message_id 去重，
+    否则主循环把它当两条新消息 ⇒ 机器人**回两次**。"""
+    import sio_subscribe
+
+    sub = sio_subscribe.SioSubscriber([ROSE])
+    msg = {"message_id": "dup-42", "chatroom_id": ROSE, "sent_by": "u-1",
+           "content": {"type": "text", "text": "薇丝"}}
+    assert sub.push(ROSE, dict(msg)) == 1
+    assert sub.push(ROSE, dict(msg)) == 1, "第二条重复不该再入队（条数仍是 1）"
+    got = sub.drain(ROSE)
+    assert len(got) == 1, "去重失败：drain 拿到 {} 条".format(len(got))
+    # 不同 id 照常入队
+    assert sub.push(ROSE, {"message_id": "other-1", "chatroom_id": ROSE}) == 1
+    # 没有 message_id 的不去重（宁可重复也不能丢）
+    assert sub.push(ROSE, {"chatroom_id": ROSE}) == 2
+    assert sub.push(ROSE, {"chatroom_id": ROSE}) == 3
+
+
+def test_sio_subscriber_dedupe_window_is_bounded():
+    import sio_subscribe
+
+    sub = sio_subscribe.SioSubscriber([ROSE])
+    for i in range(sub._seen_cap + 20):
+        sub.push(ROSE, {"message_id": "m{}".format(i), "chatroom_id": ROSE})
+    assert len(sub._seen_ids) <= sub._seen_cap, "去重表必须有上限，不能无限长"
+    # 窗口外的最老 id 会被忘掉（可接受：平台重推窗口是分钟级）
+    before = len(sub._seen_ids)
+    sub.push(ROSE, {"message_id": "m0", "chatroom_id": ROSE})
+    assert len(sub._seen_ids) == before
+
+
 def test_run_all_passes_bot_specs_not_identity_dicts():
     """源码级钉住：`_run_all` 必须传 `_CFG.bots`（带 token_env）。"""
     import bot as B
