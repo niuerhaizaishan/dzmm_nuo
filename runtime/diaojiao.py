@@ -11,7 +11,9 @@ import time
 from datetime import datetime, timedelta
 
 from brains import generate_diaojiao, generate_diaojiao_end
-from personas import me as _pme                   # 自称：按群人设名（小小糯/薇丝）
+from personas import me as _pme, p as _phrase     # 自称/固定话术：按群人设
+                                                # ⚠️ 别名别用 `_p`（本文件里
+                                                # 有 `x, y = ...` 的解包，容易撞）
 from profiles import get_profile
 from runtime.tuning import get as _tune   # P12-B：可调参数（唯一读口）
 from runtime import ctx
@@ -33,6 +35,21 @@ __all__ = [
 
 
 DJ_PARTICIPATE_HINT = "想参与的姐妹也来玩呀～发 /命令 xxx 或直接 /xxx 都行（加不加「命令」都可以）～30秒没人我就自己继续啦～"
+
+
+# P12-V：调教这一族文案原来**写死在代码里**（"哦～""姐妹""30秒没人命令呀"），
+# 换个人设（例如纯 S 的若瑾）就会把小小糯那套软糯口吻漏出来。
+# 现在全部走话术表：`dj_*` 这几个 key 的**代码默认值就是上面原文**，
+# 所以没配覆盖的群行为一个字不变；要换口吻就在人设话术里覆盖。
+def _dj_phrase(cid: str, key: str, fallback: str, **kw) -> str:
+    try:
+        return _phrase(key, cid, **kw) or fallback
+    except Exception:                                          # noqa: BLE001
+        return fallback
+
+
+def _dj_hint(cid: str) -> str:
+    return _dj_phrase(cid, "dj_hint", DJ_PARTICIPATE_HINT)
 
 
 def is_dj_end_cmd(cmd: str) -> bool:
@@ -69,10 +86,11 @@ def start_diaojiao(cid: str, cmd: str, sender_uid: str) -> str:
     """发起调教，返回第一轮命令消息."""
     rest = is_diaojiao_cmd(cmd)
     if not rest:
-        return "格式：/调教 目标 命令（例如 /调教 糯糯 学狗叫）"
+        return _dj_phrase(cid, "dj_format",
+                          "格式：/调教 目标 命令（例如 /调教 糯糯 学狗叫）")
     target_uid, full, keywords = _parse_scene_target(rest)
     if not target_uid:
-        return "没找到调教目标哦～换个人试试？"
+        return _dj_phrase(cid, "dj_no_target", "没找到调教目标哦～换个人试试？")
     command = " ".join(keywords)
     if not command:
         # 没指定命令 → 根据发起人 + 目标 XP 自编
@@ -92,7 +110,8 @@ def start_diaojiao(cid: str, cmd: str, sender_uid: str) -> str:
     text = (text or "").strip()
     if not text:
         text = full + "，" + _pme(cid) + "命令你：" + command + "～"
-    return "🔗 调教开始！目标：" + full + "～\n" + text + "\n\n" + DJ_PARTICIPATE_HINT
+    head = _dj_phrase(cid, "dj_start", "🔗 调教开始！目标：{who}～", who=full)
+    return head + "\n" + text + "\n\n" + _dj_hint(cid)
 
 
 def _check_diaojiao(cid: str, pending: list) -> str:
@@ -106,7 +125,7 @@ def _check_diaojiao(cid: str, pending: list) -> str:
     if now - dj.get("last_activity", now) > _tune("diaojiao.timeout", cid):
         end_text = _dj_end_text(target_uid, dj)
         _set_dj_state(cid, {"active": False})
-        msg = "⏱️ 调教结束啦（5分钟没动静）～"
+        msg = _dj_phrase(cid, "dj_timeout", "⏱️ 调教结束啦（5分钟没动静）～")
         if end_text:
             msg += "\n" + end_text
         return msg
@@ -123,7 +142,10 @@ def _check_diaojiao(cid: str, pending: list) -> str:
                     dj["round"] = dj.get("round", 0) + 1
                     _set_dj_state(cid, dj)
                     _add_heat(cid, target_uid, _tune("heat.diaojiao_round", cid))  # 被调教一轮
-                    return "目标回应啦～谁想发下一条命令？发 /命令 xxx 或直接 /xxx 都行（目标自己也能发哦～）30秒没人发我就自己来～"
+                    return _dj_phrase(
+                        cid, "dj_replied",
+                        "目标回应啦～谁想发下一条命令？发 /命令 xxx 或直接 /xxx 都行"
+                        "（目标自己也能发哦～）30秒没人发我就自己来～")
         return None
     if phase == "等命令":
         # 30秒冷场 → 催一句 + 自编命令
@@ -141,6 +163,7 @@ def _check_diaojiao(cid: str, pending: list) -> str:
             except Exception:
                 text = ""
             text = (text or "").strip()
-            return "30秒没人发命令呀～那我继续啦～\n" + text + "\n\n" + DJ_PARTICIPATE_HINT
+            return (_dj_phrase(cid, "dj_idle", "30秒没人发命令呀～那我继续啦～")
+                    + "\n" + text + "\n\n" + _dj_hint(cid))
         return None
     return None

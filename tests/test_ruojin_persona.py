@@ -94,3 +94,54 @@ def test_bot_wires_the_prefix_and_drops_the_robot_mark():
     assert "_insult_prefix(cid, get_full_name(target_uid))" in src
     assert 'reply if _no_prefix else ("🤖 " + reply)' in src
     assert "_no_prefix = False" in src
+
+
+# ---------------------------------------------------------------- 调教话术（P12-V）
+
+DJ_KEYS = ("dj_format", "dj_no_target", "dj_start", "dj_timeout",
+           "dj_replied", "dj_idle", "dj_hint")
+CUTE_MARKS = ("哦～", "呀", "姐妹", "啦～", "～\n", "～。")
+
+
+def test_diaojiao_phrases_default_to_the_old_literals():
+    """没配覆盖的群（认证群/玫瑰房）一个字都不能变 —— 默认值 = 原来的硬编码字面量."""
+    auth = "bd7fe6a4-0065-4551-ad3d-94116dba8f9c"
+    assert P.p("dj_format", auth) == "格式：/调教 目标 命令（例如 /调教 糯糯 学狗叫）"
+    assert P.p("dj_no_target", auth) == "没找到调教目标哦～换个人试试？"
+    assert P.p("dj_start", auth, who="糯糯") == "🔗 调教开始！目标：糯糯～"
+    assert P.p("dj_timeout", auth) == "⏱️ 调教结束啦（5分钟没动静）～"
+    assert "30秒没人发我就自己来" in P.p("dj_replied", auth)
+    assert P.p("dj_idle", auth) == "30秒没人发命令呀～那我继续啦～"
+    from runtime.diaojiao import DJ_PARTICIPATE_HINT
+    assert P.p("dj_hint", auth) == DJ_PARTICIPATE_HINT
+
+
+def test_ruojin_diaojiao_phrases_are_s_voiced():
+    """若瑾是纯 S：调教这套文案不能漏出「哦～/呀/姐妹」的软糯口吻."""
+    for key in DJ_KEYS:
+        txt = P.p(key, RUOJIN_CID, who="糯糯")
+        assert txt, "{} 必须有若瑾版本".format(key)
+        for mark in CUTE_MARKS:
+            assert mark not in txt, "{} 里还有软萌口吻 {!r}：{}".format(key, mark, txt)
+    assert "{who}" not in P.p("dj_start", RUOJIN_CID, who="糯糯")
+
+
+def test_diaojiao_flow_uses_the_phrases(monkeypatch):
+    """`start_diaojiao` 真的走话术表（不是又写死一份）—— 用若瑾的音色验一次."""
+    from runtime import ctx
+    from runtime import diaojiao as dj
+
+    monkeypatch.setattr(dj, "_parse_scene_target", lambda rest: ("u-1", "糯糯", ["学狗叫"]))
+    monkeypatch.setattr(dj, "_dj_target_text", lambda uid: "目标资料")
+    monkeypatch.setattr(dj, "generate_diaojiao", lambda *a, **kw: "跪下。")
+    monkeypatch.setattr(dj, "_set_dj_state", lambda *a, **kw: None)
+    monkeypatch.setattr(dj, "get_profile", lambda uid: {"xp": []})
+    ctx.set_active_cid(RUOJIN_CID)
+    try:
+        out = dj.start_diaojiao(RUOJIN_CID, "/调教 糯糯 学狗叫", "u-2")
+    finally:
+        ctx.reset_active_cid()
+    assert out.startswith("🔗 调教开始。目标：糯糯。"), out
+    assert "跪下。" in out
+    assert out.rstrip().endswith(P.p("dj_hint", RUOJIN_CID)), out
+    assert "想参与的姐妹" not in out
