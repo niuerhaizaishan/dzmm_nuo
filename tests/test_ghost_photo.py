@@ -91,7 +91,27 @@ def test_bot_wires_both_ghost_paths():
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
     assert "_ghost_photo.send(" in src, "摘花放鬼那条要发图"
     assert "_ghost_photo.maybe_send(" in src, "命令进入女鬼场景那条要发图"
-    assert "_ghost_after = True" in src
+    assert '_ghost_after = "摘花放鬼"' in src
+    assert '_ghost_after = "命令"' in src
+
+
+def test_ghost_command_really_enters_the_state():
+    """屋主 2026-09-27："要进状态啊" —— 命令必须真的把房间切进女鬼状态，
+    而不是只演一段 + 发张图（否则链路不闭环：没人能"复原"这间屋子）。"""
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    i = src.index("命令女鬼上场")
+    window = src[max(0, i - 700):i + 700]
+    assert 'group_state["rose_ghost"] = {"active": True' in window
+    assert "_personas.fill(ROOM_GHOST_TEXT, cid)" in window
+
+
+def test_owner_ghost_command_reaches_the_room_branch():
+    """光说"变成女鬼"（不带管家名字）也要能进房间分支，否则命令石沉大海。"""
+    from runtime.sign import _is_room_trigger
+    assert _is_room_trigger(ROSE, VV, "变成女鬼") is True
+    assert _is_room_trigger(ROSE, NUONUO, "演一下女鬼场景") is True
+    assert _is_room_trigger(ROSE, GUEST, "变成女鬼") is False     # 客人不算下命令
+    assert _is_room_trigger(ROSE, VV, "女鬼真吓人") is False      # 闲聊不触发
 
 
 def test_dedupe_is_shared_with_other_photos():

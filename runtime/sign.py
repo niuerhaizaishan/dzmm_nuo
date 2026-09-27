@@ -91,8 +91,16 @@ def _is_room_trigger(cid: str, uid: str, text: str) -> bool:
         # 主人没点名也可能在下命令
         if not _feat_on(cid, "room_owner_cmd"):
             return False
-        return (any(w in t for w in _ROOM_LAYOUT_WORDS)
-                or any(w in t for w in _ROOM_CONJURE_WORDS))
+        if any(w in t for w in _ROOM_LAYOUT_WORDS) \
+                or any(w in t for w in _ROOM_CONJURE_WORDS):
+            return True
+        # P12-O：屋主命令女鬼上场（"变成女鬼"/"演一下女鬼场景"）也算下命令 ——
+        # 否则光说"变成女鬼"（没带管家名字）根本进不了房间分支，命令就石沉大海。
+        try:
+            from runtime import ghost_photo as _gp
+            return bool(_gp.wants_photo(t, cid, uid))
+        except Exception:                                    # noqa: BLE001
+            return False
     # 客人：只有明确的点单才回应（被点名 / 进群问好另外处理）
     if not _feat_on(cid, "room_order"):
         return False

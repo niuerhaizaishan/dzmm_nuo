@@ -3258,7 +3258,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         cfg = ROOMS.get(cid) or {}
                         log("🌹 [" + cid[:8] + "] 房间消息: " + r_text[:40])
                         _layout_after = ""      # P12-N：这句回复之后要补哪张布局图
-                        _ghost_after = False    # P12-O：这句回复之后要不要补女鬼图
+                        _ghost_after = ""       # P12-O：这句回复之后要不要补女鬼图（原因）
                         old_last_id = group_state.get("last_id", "")
                         group_state["last_id"] = msgs[-1]["message_id"]
                         state[cid] = group_state
@@ -3310,7 +3310,20 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             save_state(state)
                             log("👻 [" + cid[:8] + "] " + get_name(r_uid)[:12] + " 摘花，放出红衣女鬼")
                             reply = _personas.fill(ROOM_GHOST_TEXT, cid)
-                            _ghost_after = True     # P12-O：放出女鬼 → 补那张图
+                            _ghost_after = "摘花放鬼"     # P12-O：放出女鬼 → 补那张图
+                        elif (_feat_on(cid, "room_ghost")
+                              and _ghost_photo.wants_photo(r_text, cid, r_uid)):
+                            # 屋主命令进入女鬼场景（2026-09-27 屋主："要进状态啊"）。
+                            # 与"男生摘花"共用同一套状态与固定剧本，链路因此闭环：
+                            # 命令 → 女鬼上场（图）→ 屋里没人接话 → 屋主回来 →
+                            # 屋子复原（`ROOM_GHOST_BACK`）+ 自动补玫瑰房那张图。
+                            group_state["rose_ghost_ts"] = time.time()
+                            group_state["rose_ghost"] = {"active": True, "ts": time.time()}
+                            state[cid] = group_state
+                            save_state(state)
+                            log("👻 [" + cid[:8] + "] " + get_name(r_uid)[:12] + " 命令女鬼上场")
+                            reply = _personas.fill(ROOM_GHOST_TEXT, cid)
+                            _ghost_after = "命令"
                         elif (_feat_on(cid, "horoscope")
                               and (_sr := await _sign_reply(
                                   cid, r_uid, r_text,
@@ -3390,7 +3403,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                     if ok:
                                         if _ghost_after:
                                             await _ghost_photo.send(
-                                                sender, cid, reason="摘花放鬼")
+                                                sender, cid, reason=_ghost_after)
                                         elif r_text:
                                             await _ghost_photo.maybe_send(
                                                 sender, cid, r_text, r_uid, reason="命令")
