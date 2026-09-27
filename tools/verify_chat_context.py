@@ -44,13 +44,16 @@ HISTORY = [
 print()
 print("=== ① 多轮上下文 + ② 长度 ===")
 ctx.set_active_cid(RUOJIN)
+P.set_cid(RUOJIN)          # ⚠️ 人设看的是 personas 的 cid（主循环里是 set_persona_cid）
 t0 = time.time()
 out = brains.generate_reply(HISTORY, max_tokens=800, context_msgs=20)
-print("  [工作群] {} 秒  {} 字 / {} 行".format(round(time.time() - t0, 1),
-                                             len(out), out.count("\n") + 1))
+print("  [工作群/若瑾] {} 秒  {} 字 / {} 行".format(round(time.time() - t0, 1),
+                                                 len(out), out.count("\n") + 1))
 print("  正文：", out.replace("\n", "⏎")[:300])
 print("  是否接着上一轮（提到生气/需求/键盘/茶 之一）：",
       any(k in out for k in ("气", "需求", "键盘", "茶")))
+print("  是不是若瑾口吻（不该自称小小糯、不该用～）：",
+      "小小糯" not in out)
 
 print()
 print("=== ③ 用自己的知识回答（观点题）===")
@@ -58,14 +61,27 @@ t0 = time.time()
 out2 = brains.generate_reply(
     [{"sender": "临屿（男生）", "text": "你怎么看加班这件事？说点你自己的看法"}],
     max_tokens=800, context_msgs=20)
-print("  [工作群] {} 秒  {} 字".format(round(time.time() - t0, 1), len(out2)))
+print("  [工作群/若瑾] {} 秒  {} 字".format(round(time.time() - t0, 1), len(out2)))
 print("  正文：", out2.replace("\n", "⏎")[:300])
-deflect = ("不太清楚", "建议看看", "没有数据", "无法回答", "我不知道")
-print("  有没有打太极（不该出现）：", [d for d in deflect if d in out2] or "无")
+
+
+def deflects(t: str) -> list:
+    """只把"整句推掉"算打太极：开头就是不知道，或者很短且只有不知道。"""
+    head = t.strip()[:24]
+    starters = ("这个我不太清楚", "我不太清楚", "我没有数据", "无法回答", "我不知道")
+    if any(head.startswith(s) for s in starters):
+        return ["开头就推掉"]
+    if len(t) < 60 and any(s in t for s in starters):
+        return ["很短且只有不知道"]
+    return []
+
+
+print("  有没有打太极（不该出现）：", deflects(out2) or "无")
 
 print()
 print("=== 对照：认证群（小小糯，同样问题）===")
 ctx.set_active_cid(AUTH)
+P.set_cid(AUTH)
 out3 = brains.generate_reply(
     [{"sender": "紫苑（女生）", "text": "小小糯，你怎么看加班这件事？"}],
     max_tokens=800, context_msgs=20)
