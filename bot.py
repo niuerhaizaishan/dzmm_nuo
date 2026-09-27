@@ -2614,8 +2614,12 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                     group_state = state.get(cid) or {}
                     last_id = group_state.get("last_id")
                     # 定位 pending：Socket.IO 推送直接去重，HTTP 兜底用 last_id 定位
+                    # ⚠️ `_requeued` 的消息必须放行：它是"上一轮没轮到、被放回队列"的，
+                    # 而它往往正好是上一批的批尾（== last_id），不放行就又丢了。
                     if from_sio:
-                        pending = [m for m in msgs if m.get("message_id") != last_id]
+                        pending = [m for m in msgs
+                                   if m.get("message_id") != last_id
+                                   or m.get("_requeued")]
                     else:
                         if last_id:
                             idx = -1
@@ -2730,24 +2734,55 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                 await _send(sender, cid, "🤖 " + wtxt.replace("{name}", jname), dry)
 
                     # 检查 pending 里有没有 / 指令或 @ 消息
+                    # ⚠️ 这里**不能**见到第一条命令就 break：`drain()` 已经把整个队列
+                    # 取空了，同一批里剩下的命令/@ 消息如果不放回队列就会被静默丢掉
+                    # （2026-09-27 现场：紫苑的 /运势 和一条 /写诗 同批到达，从此消失）。
                     cmd = ""
                     cmd_sender = ""
                     at_msg = ""
                     at_sender = ""
                     room_hit = None  # (uid, 原文) 需要管家回应的房间消息
+                    _cmd_msg = None
+                    _at_msg_obj = None
+                    _room_obj = None
+                    _leftover = []   # 本轮没轮到、但必须留到下一轮的
                     for m in pending:
                         if is_self(m.get("sent_by")):
                             continue  # 跳过 bot 自己的消息，避免 self-echo
                         t = (m.get("content") or {}).get("text", "").strip()
                         if t.startswith("/"):
-                            cmd = t
-                            cmd_sender = m.get("sent_by", "")
-                            break
-                        if not at_msg and is_at_me(t, cid):
-                            at_msg = t
-                            at_sender = m.get("sent_by", "")
-                        if not room_hit and _is_room_trigger(cid, m.get("sent_by", ""), t):
-                            room_hit = (m.get("sent_by", ""), t)
+                            if not cmd:
+                                cmd = t
+                                cmd_sender = m.get("sent_by", "")
+                                _cmd_msg = m
+                            else:
+                                _leftover.append(m)      # 同一批里的第二/三条命令
+                            continue
+                        if is_at_me(t, cid):
+                            if not at_msg:
+                                at_msg = t
+                                at_sender = m.get("sent_by", "")
+                                _at_msg_obj = m
+                            else:
+                                _leftover.append(m)
+                        if _is_room_trigger(cid, m.get("sent_by", ""), t):
+                            if room_hit is None:
+                                room_hit = (m.get("sent_by", ""), t)
+                                _room_obj = m
+                            else:
+                                _leftover.append(m)
+                    # `cmd` 优先于 @ / 房间分支：没轮到的那条也要放回去
+                    if cmd and _at_msg_obj is not None:
+                        _leftover.append(_at_msg_obj)
+                    if (cmd or at_msg) and _room_obj is not None:
+                        _leftover.append(_room_obj)
+                    if _leftover:
+                        try:
+                            subscriber.requeue(cid, _leftover)
+                            log("♻️ [{}] 同批还有 {} 条没轮到，已放回队列".format(
+                                cid[:8], len(_leftover)))
+                        except Exception as _e:                # noqa: BLE001
+                            log("⚠️ [{}] 放回队列失败：{}".format(cid[:8], str(_e)[:60]))
 
                     # 房间群：客人发 / 指令 → 变成一次"婉拒"的房间回应（只有主人能下命令）
                     if cmd and cid in ROOM_CIDS and not _room_owner(cid, cmd_sender):

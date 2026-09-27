@@ -150,3 +150,48 @@ def test_dry_mode_has_no_retry_worker(dbdir):
         assert asyncio.run(sender.retry_once()) == 0
     finally:
         store.close()
+
+
+# ---------------------------------------------------------------- 同批多命令不能丢
+
+def test_requeue_puts_messages_back_without_dedupe():
+    """P12-J 真事故：主循环每轮只处理**一条**命令，而 `drain()` 会把整个队列取空 ——
+    同一批里剩下的命令就被静默丢了（紫苑发 `/运势` 没反应，因为同批先有一条 `/写诗`）。
+
+    放回队列要**绕过去重表**（它们不是重复，只是还没轮到），并打 `_requeued` 标记
+    （主循环的 last_id 过滤会丢掉"批尾那条"，而放回的往往正好是批尾）。
+    """
+    import sio_subscribe
+
+    sub = sio_subscribe.SioSubscriber([ROSE])
+    a = {"message_id": "c1", "chatroom_id": ROSE, "content": {"text": "/写诗 x"}}
+    b = {"message_id": "c2", "chatroom_id": ROSE, "content": {"text": "/运势"}}
+    sub.push(ROSE, a)
+    sub.push(ROSE, b)
+    got = sub.drain(ROSE)
+    assert len(got) == 2
+    # 假设主循环挑走 a（/写诗），把 b 放回
+    assert sub.requeue(ROSE, [b]) == 1
+    again = sub.drain(ROSE)
+    assert len(again) == 1 and again[0]["message_id"] == "c2"
+    assert again[0].get("_requeued") is True
+    # 再放回一次也要能进来（去重表不该拦它）
+    assert sub.requeue(ROSE, [again[0]]) == 1
+    assert len(sub.drain(ROSE)) == 1
+
+
+def test_loop_does_not_break_on_the_first_command():
+    """源码级钉住：命令扫描不许"见到第一条就 break"，并且要 requeue 剩下的。"""
+    import inspect
+    import bot as B
+    src = inspect.getsource(B.main_loop)
+    a1 = "# 检查 pending 里有没有 / 指令或 @ 消息"
+    a2 = "# `cmd` 优先于 @ / 房间分支"
+    assert a1 in src and a2 in src, "命令扫描那段的锚点变了，请更新这条测试"
+    seg = src[src.index(a1):src.index(a2)]
+    # 只看真代码：注释里也会出现 "break" 这个词
+    code = [ln for ln in seg.splitlines() if not ln.strip().startswith("#")]
+    assert not any("break" in ln for ln in code), \
+        "又出现'见到第一条命令就 break'了 —— 同批的命令会丢"
+    assert "_leftover" in seg, "没看到把剩余消息收集起来的逻辑"
+    assert "subscriber.requeue(cid, _leftover)" in src

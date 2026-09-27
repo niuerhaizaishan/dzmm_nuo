@@ -82,6 +82,26 @@ class SioSubscriber:
         buf.append(msg)
         return len(buf)
 
+    def requeue(self, cid: str, msgs: list) -> int:
+        """把"这一轮没轮到处理"的消息放回队列（**不做去重**）。
+
+        为什么需要：主循环每轮只处理**一条**命令（`cmd` 优先，先到先处理），
+        而 `drain()` 会把整个 buffer 取空 —— 同一批里剩下的命令就这么被静默丢掉了。
+        2026-09-27 现场：紫苑发 `/运势` 没反应，因为同一批里先有一条 `/写诗`，
+        主循环挑走 `/写诗` 后 `last_id` 直接跳到批尾，`/运势` 再没人看过。
+        放回去时**要绕过去重表** —— 它们不是重复，只是还没轮到。
+        """
+        if not msgs:
+            return len(self._buffer.get(cid) or [])
+        buf = self._buffer.setdefault(cid, [])
+        for m in msgs:
+            # 打标记：主循环的 `last_id` 过滤会丢掉"批尾那条"，
+            # 而被放回队列的往往正好是批尾（它就是最新的一条）
+            if isinstance(m, dict):
+                m["_requeued"] = True
+            buf.append(m)
+        return len(buf)
+
     def drain(self, cid: str) -> list:
         """非阻塞取某群累积的新消息（一次性取空）。"""
         return self._buffer.pop(cid, [])
