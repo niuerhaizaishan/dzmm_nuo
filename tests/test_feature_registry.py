@@ -413,6 +413,28 @@ def test_cmd_attribution_order_follows_the_chain():
         "归属表顺序与分派链不一致：代码 {} vs 表 {}".format(common, table_order)
 
 
+def test_generic_stop_word_gets_a_hint_instead_of_silence():
+    """没进行中的玩法时，`/结束` 要回一句提示，不能静默（屋主 2026-09-27 定的口径）。
+
+    实测"/结束 没反应"有一半是"本来就没有在进行的玩法"：命令落空 → 静默 →
+    用户以为机器人坏了。所以分派链里加了一条**兜底提示**分支（在真正的收尾分支之后）。
+
+    ⚠️ 只认**通用**停止词：`/剧情结束`、`/调教结束` 这类点名的归各自功能管 ——
+    功能关掉时该静默还静默（"这个群没开这个玩法"不能被当成闲聊或提示答）。
+    """
+    import bot
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    chain = src[src.index("# 吹牛骰子命令（优先）"):src.index("elif at_msg:")]
+    i_hint = chain.index("elif _is_stop_word(cmd):")
+    i_else = chain.index("\n                        else:\n")
+    assert i_hint < i_else, "兜底提示必须在真正的收尾分支之后、兜底聊天之前"
+    assert 'p("no_play", cid)' in chain[i_hint:i_else], "提示文案走话术 no_play"
+
+    assert bot._is_stop_word("/结束") and bot._is_stop_word("/停止")
+    assert not bot._is_stop_word("/剧情结束"), "点名的结束词归剧情管"
+    assert not bot._is_stop_word("/调教结束"), "点名的结束词归调教管"
+
+
 def test_disabled_feature_makes_its_command_silent(monkeypatch):
     """关掉一个功能后，它的命令必须**静默**（不能被兜底聊天接走）。"""
     import bot

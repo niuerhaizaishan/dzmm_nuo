@@ -65,13 +65,21 @@ def _ts(v):
     return out
 
 
-def _prefer_json_state(jv, sv) -> str:
-    """状态机键：JSON 赢还是 sqlite 赢？返回 'json' / 'sql'。"""
+def _prefer_json_state(jv, sv, now: float) -> str:
+    """状态机键：JSON 赢还是 sqlite 赢？返回 'json' / 'sql'。
+
+    ⚠️ 加**新鲜度**闸门：JSON 里可能躺着几天前的 active 状态（例如认证群那份
+    09-25 的发骚会话）。那玩意儿并回去就成了"群里明明没在发骚，却被
+    "进行中"屏蔽住" —— 比丢状态更糟。只有一小时内的 JSON 状态才允许覆盖。
+    """
     if sv is None:
         return "json"
     if _active(jv) and not _active(sv):
+        t = _ts(jv)
+        if t and t < now - 3600:
+            return "stale"
         return "json"
-    if _ts(jv) > _ts(sv):
+    if _ts(jv) > _ts(sv) and _ts(jv) >= now - 3600:
         return "json"
     return "sql"
 
@@ -83,8 +91,10 @@ def _short(v, n=70):
 
 def merge(dry: bool) -> None:
     store = Store(DB)
+    now = time.time()
     plan = {"group_new": [], "group_json_wins": [], "group_conflict": [],
-            "profile_new": [], "profile_filled": [], "profile_conflict": []}
+            "group_stale": [], "profile_new": [], "profile_filled": [],
+            "profile_conflict": []}
 
     # ---------------- 群状态
     if STATE_JSON.exists():
@@ -102,10 +112,13 @@ def merge(dry: bool) -> None:
                     changed = True
                     plan["group_new"].append((cid, k, _short(jv)))
                 elif k in STATE_KEYS:
-                    if _prefer_json_state(jv, sv) == "json":
+                    verdict = _prefer_json_state(jv, sv, now)
+                    if verdict == "json":
                         merged[k] = jv
                         changed = True
                         plan["group_json_wins"].append((cid, k, _short(jv)))
+                    elif verdict == "stale":
+                        plan["group_stale"].append((cid, k, _short(jv)))
                 elif jv != sv:
                     plan["group_conflict"].append((cid, k, _short(sv), _short(jv)))
             if changed and not dry:
@@ -137,12 +150,15 @@ def merge(dry: bool) -> None:
                     plan["profile_conflict"].append((uid, k))
 
     print("=== 计划（{}）===".format("dry-run，未落库" if dry else "已落库"))
-    print("群：新增键 {} 个 / JSON 覆盖状态机键 {} 个 / 冲突（不动，仅报告）{} 个".format(
-        len(plan["group_new"]), len(plan["group_json_wins"]), len(plan["group_conflict"])))
+    print("群：新增键 {} 个 / JSON 覆盖状态机键 {} 个 / 过期不并 {} 个 / 冲突（不动，仅报告）{} 个".format(
+        len(plan["group_new"]), len(plan["group_json_wins"]),
+        len(plan["group_stale"]), len(plan["group_conflict"])))
     for cid, k, v in plan["group_new"][:20]:
         print("   + {} {}".format(str(cid)[:8], k))
     for cid, k, v in plan["group_json_wins"]:
         print("   ~ {} {} = {}".format(str(cid)[:8], k, v))
+    for cid, k, v in plan["group_stale"][:10]:
+        print("   ! {} {} 的 JSON 副本已过期，保持 sqlite：{}".format(str(cid)[:8], k, v[:50]))
     for cid, k, sv, jv in plan["group_conflict"][:15]:
         print("   ? {} {}  sqlite={}  json={}".format(str(cid)[:8], k, sv, jv))
     print("档案：新增 {} 人 / 补字段 {} 人 / 冲突 {} 处".format(

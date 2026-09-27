@@ -67,6 +67,9 @@ def test_orientation_flag_only_on_ruojin():
 def test_female_target_also_gets_the_hard_rule(monkeypatch):
     """屋主 2026-09-27："对女生也调整为露骨、淫贱" → 默认男女一视同仁（都拉满）."""
     monkeypatch.setattr(brains, "RANDOM_INSULT_PROB", 1.0)
+    # ⚠️ "拉满"那条走的是 HARD_INSULT_PROB（0.75），不是 RANDOM_INSULT_PROB ——
+    #    只压 RANDOM 的话这条断言会 25% 概率随机挂掉（曾经就是这么飘的）。
+    monkeypatch.setattr(brains, "HARD_INSULT_PROB", 1.0)
     seen = _capture(monkeypatch)
     brains.generate_insult("昵称：阿雅\n性别：女", gender="女生", straight=True)
     got = seen["content"]
@@ -90,6 +93,7 @@ def test_plain_for_female_switch_still_works(monkeypatch):
 
 def test_male_target_keeps_the_old_flavour(monkeypatch):
     monkeypatch.setattr(brains, "RANDOM_INSULT_PROB", 1.0)
+    monkeypatch.setattr(brains, "HARD_INSULT_PROB", 1.0)   # 同上：拉满那条用的概率
     seen = _capture(monkeypatch)
     brains.generate_insult("昵称：小张\n性别：男", gender="男生", straight=True)
     got = seen["content"]

@@ -3191,6 +3191,14 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         elif is_poem_cmd(cmd) is not None and _feat_on(cid, "poem"):
                             # 写诗：随机文学方向，根据档案+发言写短诗
                             reply = await asyncio.to_thread(poem, cmd, cmd_sender)
+                        elif _is_stop_word(cmd):
+                            # 通用停止词（/结束 /停止 /停下 /终止），但上面那些**真正的收尾
+                            # 分支一个都没接**（没有进行中的玩法）⇒ 回一句提示。
+                            # 屋主 2026-09-27 定的口径：这里别静默 —— 实测"/结束 没反应"
+                            # 有一半就是"本来就没有在进行的玩法"，静默会让人以为机器人坏了。
+                            # ⚠️ 只认**通用**停止词：`/剧情结束`、`/调教结束` 这类点名的
+                            #    不算（它们归各自功能，功能关了就照旧静默）。
+                            reply = p("no_play", cid)
                         else:
                             # 羞辱指令（返回 None 表示不是羞辱）
                             insult_target = is_insult_cmd(cmd)
