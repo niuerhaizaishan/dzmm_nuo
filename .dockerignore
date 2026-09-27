@@ -1,0 +1,79 @@
+# Build context = the whole tree (compose: build: .), so this file is what
+# `COPY . .` will NOT copy into dzmm-bot:latest.
+#
+# 2026-09-27 audit (P0): without this file the built image contained
+#   .env, .env.bak-*, .dzmm_token.json, .dzmm_token.json.bak-*,
+#   profiles.json (666 KB of member PII), state.json
+# i.e. platform credentials plus personal data of every archived member,
+# sitting inside an image layer. Everything credential- or PII-shaped is
+# excluded below, and the deploy gate now refuses to ship without this file.
+#
+# Patterns are matched against paths relative to the context root; a leading
+# "/" pins a pattern to the top level (that is how prompts/*.md stays in while
+# root-level notes go out).
+
+# ---- credentials & session ------------------------------------------------
+.env
+.env.*
+.dzmm_token.json
+.dzmm_token.json.*
+.dzmm_login.json
+.dzmm_login*.json
+token.emergency
+bot.paused
+.session.lock
+.session_version.json
+
+# ---- runtime state and PII ------------------------------------------------
+state.json
+profiles.json
+profile_scan.json
+check_health_state.json
+renew_fail_state.json
+renew_emergency_state.json
+data/
+novels/
+logs/
+pw_profile*/
+*.log
+
+# ---- source-only trees (not needed at runtime) ----------------------------
+tests/
+tools/
+docs/
+probe/
+deploy/
+.pylibs/
+.pytest_cache/
+.git/
+.github/
+
+# ---- build / backup artifacts and junk ------------------------------------
+*.tar.gz
+backup-*
+*.bak
+*.bak-*
+*.bak[0-9]
+*.bak[0-9][0-9]
+profiles.json.*
+state.json.*
+__pycache__/
+*.pyc
+_tmp/
+._*
+# Junk left behind by a mistyped curl ("%{http_code}n", a 0-byte file) --
+# seen in the build context on 2026-09-27.
+%*
+# Root-only one-off dev scripts (production modules never start with "_")
+/_*.py
+# Host-side ops files (Caddy/systemd/scripts) -- they belong on the host, not
+# inside the bot image. entrypoint.sh is required and is NOT matched here.
+Caddyfile
+backup.sh
+resume.sh
+*.service
+/config/config_backups/
+docker-compose*.yml
+deploy.ps1
+/deploy_gate.py
+/*.md

@@ -14,6 +14,22 @@ services:
     image: dzmm-bot:latest
     container_name: dzmm-bot
     restart: unless-stopped
+    # 2026-09-27 体检（P0）：宿主机只有 1.87G 内存且**没有 swap**，容器原先
+    # 没有任何上限，而容器里常驻 5 个 chrome-headless —— 一次内存尖峰会被内核
+    # OOM 杀掉（杀掉的多半是 chromium 或 python 主进程，表现为"机器人突然失联"）。
+    # 1.3G 是"够用 + 给宿主机与 caddy 留余量"的值（实测占用 358M）。
+    mem_limit: 1300m
+    # /dev/shm：Docker 默认只给 64MB，而容器里常驻 5 个 chromium（且启动参数里
+    # **没有** --disable-dev-shm-usage）—— 64MB 是 chromium 崩溃的经典原因，
+    # 表现就是"机器人突然不回话"。512MB 够用，且计入上面的内存上限。
+    shm_size: 512m
+    # 日志轮转：原先 json-file 无上限，长期吃盘（容器重建才会清）。
+    # 注意 bot.log 是**挂载到宿主机**的独立文件，不受这里影响。
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       CONTAINER_MODE: "1"
       # 本地走宿主机 Clash；云端香港/新加坡直连设空字符串（.env 里 DZMM_PROXY=）

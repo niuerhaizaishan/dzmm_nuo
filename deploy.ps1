@@ -132,7 +132,10 @@ function Get-CodeFiles {
         # the group" and the log only shows a platform rejection.
         ($_.Name -match '\.(py|sh|yml|yaml|service|js|css|png|jpg)$') -or
         ($isPrompt -and ($_.Name -match '\.md$')) -or
-        ($_.Name -in @('Dockerfile', 'requirements.txt'))
+        # .dockerignore MUST ship: the image is built on the server from this
+        # tree, and without the ignore file `COPY . .` bakes .env /
+        # .dzmm_token.json / profiles.json into the image (2026-09-27 audit, P0).
+        ($_.Name -in @('Dockerfile', 'requirements.txt', '.dockerignore'))
     }
 }
 
@@ -306,7 +309,8 @@ function Push-CodeFiles {
     # restarting on half a tree. NOTE: keep this file ASCII-only -- non-ASCII
     # literals in a .ps1 break the parser on this host.
     $names = @($rels | ForEach-Object { $_ -replace '\\', '/' })
-    $need = @('bot.py', 'brains.py', 'runtime/obs.py', 'runtime/prompts.py')
+    $need = @('bot.py', 'brains.py', 'runtime/obs.py', 'runtime/prompts.py',
+              '.dockerignore')
     $miss = @($need | Where-Object { $names -notcontains $_ })
     $prompts = @($names | Where-Object { $_ -like 'prompts/*.md' }).Count
     if ($miss.Count -or $prompts -lt 30 -or $names.Count -lt 100) {
@@ -356,7 +360,14 @@ switch ($Action) {
 
         Write-Host "[1/3] backup remote code -> $tar"
         # Whole-tree backup (minus runtime data) so subdirs can be restored.
-        Invoke-Ssh "cd $RemoteDir && tar czf $tar --exclude=./data --exclude=./novels --exclude=./__pycache__ --exclude='*.log' --exclude='*.tar.gz' . 2>/dev/null || true"
+        # Credentials / PII are excluded as well: these tarballs pile up on the
+        # server and used to contain .env, .dzmm_token.json, state.json and
+        # profiles.json (2026-09-27 audit, P0). They are host state, not code --
+        # a rollback must never bring them back.
+        Invoke-Ssh "cd $RemoteDir && tar czf $tar --exclude=./data --exclude=./novels --exclude=./__pycache__ --exclude='*.log' --exclude='*.tar.gz' --exclude=./.env --exclude='./.env.*' --exclude=./.dzmm_token.json --exclude='./.dzmm_token.json.*' --exclude=./.dzmm_login.json --exclude='./.dzmm_login*.json' --exclude=./state.json --exclude=./profiles.json --exclude=./profile_scan.json --exclude='./pw_profile*' --exclude=./token.emergency --exclude=./bot.paused . 2>/dev/null || true"
+        # Keep only the newest 10 code backups (they were never pruned: 49 of
+        # them had accumulated by 2026-09-27).
+        Invoke-Ssh "cd $RemoteDir && ls -1t backup-code-*.tar.gz 2>/dev/null | tail -n +11 | xargs -r rm -f; ls -1 backup-code-*.tar.gz 2>/dev/null | wc -l"
 
         Write-Host "[2/3] uploading code files (recursive, keeps layout)..."
         $n = Push-CodeFiles
