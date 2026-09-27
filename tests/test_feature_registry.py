@@ -372,7 +372,7 @@ def test_cmd_attribution_table_covers_every_cmd_gate():
         # 一句"没找到"。关掉它 `/查` 照样能用，所以它不参与命令归属。
         "profile_card",
     }
-    table_keys = {k for keys, _ in bot._CMD_FEATURE_ORDER for k in keys}
+    table_keys = {k for entry in bot._CMD_FEATURE_ORDER for k in entry[0]}
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
     chain = src[src.index("# 吹牛骰子命令（优先）"):src.index("elif at_msg:")]
     gate_keys = set(re.findall(r'_feat_on\(cid, "([a-z_]+)"\)', chain))
@@ -403,7 +403,7 @@ def test_cmd_attribution_order_follows_the_chain():
         if m.group(1) not in src_order:
             src_order.append(m.group(1))
     table_order = []
-    for keys, _ in bot._CMD_FEATURE_ORDER:
+    for keys, _, _gate in bot._CMD_FEATURE_ORDER:
         # 只比**主键**（元组第一个）：共享/落空转发的次要键（如 `/选` 的 story、
         # `/发骚结束` 的 scene）本来就要跟主键排在一起，不能参与顺序比较。
         if keys[0] not in table_order:
@@ -431,22 +431,64 @@ def test_disabled_feature_makes_its_command_silent(monkeypatch):
     assert bot._cmd_owned_by_disabled("c1", "/选 1") is True
 
 
+def test_shared_stop_word_survives_a_disabled_feature(monkeypatch):
+    """`/结束` 是骰子/发骚/调教**共用**的收尾词：关掉骰子不能把发骚的收尾一起吞掉。
+
+    2026-09-27 实测事故：若瑾那个群只开 `scene`+`insult` → 用户发 `/结束` 想收尾发骚，
+    却因为"第一个匹配是骰子"且骰子被关掉 → 静默。
+    """
+    import bot
+    bot._set_fasao_state("c1", {})                # 没有进行中的发骚
+    F.set_overrides({"c1|dice": False})           # 只关骰子
+    assert bot._cmd_owned_by_disabled("c1", "/结束") is False, \
+        "调教还开着（它会接住这个停止词）⇒ 不能静默"
+
+    # 真的有一场发骚在进行 ⇒ 即使骰子关着，也必须放行（这就是那起事故）
+    bot._set_fasao_state("c1", {"active": True})
+    assert bot._cmd_owned_by_disabled("c1", "/结束") is False, \
+        "发骚进行中、scene_end 开着 ⇒ 必须放行给 end_fasao"
+
+    # 发骚关了（其余收尾也没开）⇒ 才静默
+    F.set_overrides({"c1|dice": False, "c1|scene": False, "c1|scene_end": False,
+                     "c1|diaojiao": False})
+    assert bot._cmd_owned_by_disabled("c1", "/结束") is True, \
+        "所有认它的功能都关了 ⇒ 才静默"
+    bot._set_fasao_state("c1", {})
+    F.set_overrides({})
+    assert bot._cmd_owned_by_disabled("c1", "/结束") is False
+
+
 def test_fallthrough_commands_are_attributed_correctly(monkeypatch):
     """**落空转发**的命令：归属挂在多个功能上，任何一个开着就不静默。
 
     `/发骚结束` 在没有进行中的场景时，实际会被"发起场景"那个分支处理
-    （代码注释里登记过这个行为）。所以：
-      - `scene_end` 关、`scene` 开 ⇒ 不静默（场景会把它变成一次发起）；
-      - 两个都关 ⇒ 静默。
+    （代码注释里登记过这个行为 —— 归属表里它是**独立的一项**，不是靠元组第二个键兜的）：
+
+      - 没有进行中的发骚 ⇒ `scene_end` 那一支压根不会接（闸门关），
+        所以此时"scene_end 关着"**不是**它没人接的原因；接下来看 `scene` 那一支：
+          - `scene` 开 ⇒ 不静默（场景会把它变成一次发起）；
+          - `scene` 关 ⇒ 静默。
+      - 有进行中的发骚 ⇒ `scene_end` 那一支会接，关着就静默。
     """
     import bot
+    bot._set_fasao_state("c1", {})                # 没有进行中的发骚
     F.set_overrides({"c1|scene_end": False})
-    assert bot._cmd_owned_by_disabled("c1", "/发骚结束") is False
-    F.set_overrides({"c1|scene": False})
     assert bot._cmd_owned_by_disabled("c1", "/发骚结束") is False, \
-        "还有一个开着就不静默（场景分支会处理它）"
+        "发起场景开着 ⇒ 它会接住这条命令"
+    F.set_overrides({"c1|scene": False})
+    assert bot._cmd_owned_by_disabled("c1", "/发骚结束") is True, \
+        "两支都关着且没有进行中的场景 ⇒ 静默"
     F.set_overrides({"c1|scene": False, "c1|scene_end": False})
     assert bot._cmd_owned_by_disabled("c1", "/发骚结束") is True
+
+    # 发骚进行中：收尾那一支真的会接 ⇒ 关掉它就静默
+    bot._set_fasao_state("c1", {"active": True})
+    F.set_overrides({"c1|scene_end": False})
+    assert bot._cmd_owned_by_disabled("c1", "/发骚结束") is True, \
+        "发骚进行中，收尾被关 ⇒ 静默（别再把它变成一次发起）"
+    F.set_overrides({})
+    assert bot._cmd_owned_by_disabled("c1", "/发骚结束") is False
+    bot._set_fasao_state("c1", {})
 
 
 def test_continue_is_attributed_by_last_action(state):

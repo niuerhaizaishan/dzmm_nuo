@@ -2190,68 +2190,108 @@ def _continue_allowed(cid: str) -> bool:
     return _feat_on(cid, "scene_continue")
 
 
+# ---- 归属表用的"此刻这一支会不会接手"闸门 -------------------------------
+# 只开局的骰子命令不用等局开始；收局/续局/叫数要局在进行。
+
+_DICE_ALWAYS_CMDS = ("/吹牛骰子", "/加入", "/牌局", "/看骰", "/开始", "/开")
+
+
+def _gate_dice(cid: str, cmd: str) -> bool:
+    if cmd in _DICE_ALWAYS_CMDS or parse_call(cmd.lstrip("/")) is not None:
+        return True
+    return bool(_dice_state().get("active"))
+
+
+def _gate_perf(cid: str, cmd: str) -> bool:
+    return bool(_get_perf_state(cid).get("active"))
+
+
+def _gate_story(cid: str, cmd: str) -> bool:
+    return bool(_get_story_state(cid).get("active"))
+
+
+def _gate_vote(cid: str, cmd: str) -> bool:
+    return bool(_get_vote_state(cid).get("active"))
+
+
+def _gate_fasao(cid: str, cmd: str) -> bool:
+    return bool(_get_fasao_state(cid).get("active"))
+
+
 # 命令 → 功能 的归属表（**顺序必须与 cmd 分派链一致**）。
 # 只用于兜底分支的一个判断：这条命令是不是属于某个**被关掉**的功能？
 # 是 ⇒ 静默（不回、也不交给兜底聊天），否则"关掉投票"会变成
 # "投票指令被当成闲聊回答" —— 功能没关干净。
 #
-# 每一项是 `((key, ...), 谓词)`，**键是元组**：
-# 共享分支/落空转发的命令会挂在多个功能上，只要还有**任意一个**开着，
-# 就不算"被关掉"。例如：
-#   - `/选 N` 一个分支同时服务投票与剧情 ⇒ ("vote", "story")
-#   - `/发骚结束` 没有进行中的场景时会**落空转发**到"发起场景" ⇒ ("scene_end", "scene")
-#   - 停止词 `/结束` 在骰子局进行中归骰子 ⇒ 骰子那一项里也含这些词
+# 每一项是 `((key, ...), 谓词, 闸门)`：
+#   - **键是元组**：共享分支/落空转发的命令挂在多个功能上，任意一个开着就算"还开着"：
+#       - `/选 N` 一个分支同时服务投票与剧情 ⇒ ("vote", "story")
+#       - `/发骚结束` 没有进行中的场景时会**落空转发**到"发起场景" ⇒ 由后面的
+#         ("scene",) 那一项兜住（不是靠元组第二个键）
+#   - **闸门** `gate(cid, cmd) -> bool`：分派链里那一支**此刻**会不会接手（None = 一定会）。
+#     它回答的是"被关掉的功能，是不是这条命令没被处理的**原因**"。
+#
+# ⚠️ 只看命令、不看状态会错杀（2026-09-27 实测事故）：
+#   `/结束` 既是骰子的收局、也是发骚/调教的收尾。若瑾那个群只开 `scene`+`insult`，
+#   用户发 `/结束` 想收尾发骚 → 旧实现只认第一个匹配（骰子）且骰子关着 → 静默，
+#   发骚根本轮不到收尾。可骰子那一支**根本没在等这条命令**（群里没有骰子局），
+#   所以"骰子关着"不是它没人接的原因 —— 不能据此静默。
 _CMD_FEATURE_ORDER = (
     (("dice",), lambda c: c in ("/吹牛骰子", "/加入", "/牌局", "/看骰", "/开始",
                                 "/下一轮", "/开", "/退出", "/结束")
-     or parse_call(c.lstrip("/")) is not None),
-    (("perf",), is_perf_end_cmd),
-    (("perf_review",), lambda c: is_review_cmd(c) is not None),
-    (("perf",), is_perf_start_cmd),
-    (("story",), is_story_end_cmd),
-    (("vote",), is_vote_end_cmd),
-    (("vote", "story"), lambda c: is_vote_choice_cmd(c) is not None),
-    (("scene_end", "scene"), is_fasao_end_cmd),
-    (("diaojiao",), is_dj_end_cmd),
-    (("help",), lambda c: c.startswith("/ ")),
-    (("diaojiao",), lambda c: is_dj_command_cmd(c) is not None),
-    (("diaojiao",), lambda c: is_diaojiao_cmd(c) is not None),
-    (("scene_continue", "insult"), is_continue_cmd),
-    (("scene_rewrite",), lambda c: is_rewrite_cmd(c) is not None),
-    (("story",), is_story_start_cmd),
-    (("vote",), is_vote_start_cmd),
-    (("help",), lambda c: is_help_cmd(c) or is_guide_cmd(c)),
-    (("memory_remember",), lambda c: is_remember_cmd(c) is not None),
-    (("memory_recall",), is_recall_cmd),
-    (("devil_roast",), lambda c: is_devil_cmd(c) is not None),
-    (("intro",), is_intro_cmd),
-    (("sync",), is_sync_cmd),
-    (("register",), lambda c: is_register_cmd(c) is not None),
-    (("query",), is_profile_cmd),
-    (("trend",), is_trend_board_cmd),
-    (("rank_heat",), is_rank_cmd),
-    (("recap",), lambda c: is_recap_cmd(c) is not None),
-    (("trend",), lambda c: is_trend_cmd(c) is not None),
-    (("summary",), is_summary_cmd),
-    (("fortune",), is_fortune_cmd),
-    (("scene",), is_scene_cmd),
-    (("poem",), lambda c: is_poem_cmd(c) is not None),
-    (("insult",), lambda c: is_insult_cmd(c) is not None),
+     or parse_call(c.lstrip("/")) is not None, _gate_dice),
+    (("perf",), is_perf_end_cmd, _gate_perf),
+    (("perf_review",), lambda c: is_review_cmd(c) is not None, None),
+    (("perf",), is_perf_start_cmd, None),
+    (("story",), is_story_end_cmd, _gate_story),
+    (("vote",), is_vote_end_cmd, _gate_vote),
+    (("vote", "story"), lambda c: is_vote_choice_cmd(c) is not None, None),
+    (("scene_end",), is_fasao_end_cmd, _gate_fasao),
+    (("diaojiao",), is_dj_end_cmd, None),
+    (("help",), lambda c: c.startswith("/ "), None),
+    (("diaojiao",), lambda c: is_dj_command_cmd(c) is not None, None),
+    (("diaojiao",), lambda c: is_diaojiao_cmd(c) is not None, None),
+    (("scene_continue", "insult"), is_continue_cmd, None),
+    (("scene_rewrite",), lambda c: is_rewrite_cmd(c) is not None, None),
+    (("story",), is_story_start_cmd, None),
+    (("vote",), is_vote_start_cmd, None),
+    (("help",), lambda c: is_help_cmd(c) or is_guide_cmd(c), None),
+    (("memory_remember",), lambda c: is_remember_cmd(c) is not None, None),
+    (("memory_recall",), is_recall_cmd, None),
+    (("devil_roast",), lambda c: is_devil_cmd(c) is not None, None),
+    (("intro",), is_intro_cmd, None),
+    (("sync",), is_sync_cmd, None),
+    (("register",), lambda c: is_register_cmd(c) is not None, None),
+    (("query",), is_profile_cmd, None),
+    (("trend",), is_trend_board_cmd, None),
+    (("rank_heat",), is_rank_cmd, None),
+    (("recap",), lambda c: is_recap_cmd(c) is not None, None),
+    (("trend",), lambda c: is_trend_cmd(c) is not None, None),
+    (("summary",), is_summary_cmd, None),
+    (("fortune",), is_fortune_cmd, None),
+    (("scene",), is_scene_cmd, None),
+    (("poem",), lambda c: is_poem_cmd(c) is not None, None),
+    (("insult",), lambda c: is_insult_cmd(c) is not None, None),
 )
 
 
 def _cmd_owned_by_disabled(cid: str, cmd: str) -> bool:
-    """这条命令属于某个被关掉的功能吗？（只看**第一个**匹配的归属）
+    """这条命令是不是"被关掉的功能本来会接手"？（⇒ 静默，不交给兜底聊天）
 
-    一个归属可能挂多个功能（共享分支/落空转发）：**只要还有一个开着**，
-    就返回 False（不静默）—— 否则关掉 A 会把还在用的 B 的命令一起吞掉。
+    按分派链顺序找**第一支此刻真会接手**的分支（谓词命中 + 闸门开着）：
+      - 它的功能开着 → False（派发链自己会处理）；
+      - 它的功能关着 → True（这就是"功能关了、命令还在用"）。
+    一支都不会接手（或压根没人认它） → False（走兜底聊天，与以前一致）。
     """
-    for keys, pred in _CMD_FEATURE_ORDER:
+    for keys, pred, gate in _CMD_FEATURE_ORDER:
         try:
-            if pred(cmd):
-                return not any(_feat_on(cid, k) for k in keys)
+            if not pred(cmd):
+                continue
+            if gate is not None and not gate(cid, cmd):
+                continue
         except Exception:                                      # noqa: BLE001
             continue
+        return not any(_feat_on(cid, k) for k in keys)
     return False
 
 
