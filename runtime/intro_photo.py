@@ -16,11 +16,10 @@
 ⚠️ 同一个问题可能在同一轮里被两条路径各看到一次（@ 分支 + 房间分支），
 所以 `maybe_send` 带一个按 `(cid, 原文)` 的短去重窗口，避免同一个问题连发两张图。
 """
-import asyncio
 import re
-import time
 
 from personas import all_names, p as _p
+from runtime import bot_photo
 from runtime.obs import log
 
 __all__ = ["photo_url", "wants_photo", "send", "maybe_send", "reset_dedupe",
@@ -43,10 +42,9 @@ _WHO_WORDS = ("是谁", "谁啊", "哪位", "介绍", "干什么", "做什么", 
 MAX_CHARS = 60
 # 只靠"名字 + 问身份的词"命中时，句子要更短才算（这种判定最松，得收紧）
 MAX_CHARS_NAME = 30
-# 同一句的重复保护窗口（秒）：挡住 @ 分支与房间分支对同一条消息各发一次
-DEDUP_SEC = 120.0
-
-_sent: dict = {}
+# 同一句的重复保护窗口（秒）：挡住 @ 分支与房间分支对同一条消息各发一次。
+# P12-N 起去重表搬到了 `runtime/bot_photo.py`（与房间布局图共用一份）。
+DEDUP_SEC = bot_photo.DEDUP_SEC
 
 
 def photo_url(cid: str = None) -> str:
@@ -77,57 +75,27 @@ def wants_photo(text: str, cid: str = None) -> bool:
 
 
 def reset_dedupe() -> None:
-    """清掉去重表（测试用）."""
-    _sent.clear()
-
-
-def _dup(cid: str, text: str) -> bool:
-    """这条消息刚发过图吗（发了就跳过）."""
-    key = (cid, re.sub(r"\s+", "", str(text or "")))
-    now = time.time()
-    for k, ts in list(_sent.items()):                        # 顺手清理过期项
-        if now - ts > DEDUP_SEC:
-            _sent.pop(k, None)
-    if now - _sent.get(key, 0.0) < DEDUP_SEC:
-        return True
-    _sent[key] = now
-    return False
+    """清掉去重表（测试用）—— 去重表在 `bot_photo` 里，与布局图共用一份."""
+    bot_photo.reset_dedupe()
 
 
 async def send(sender, cid: str, reason: str = "") -> bool:
-    """发配图。没配 URL / 没有 Bot 通道 / 发送失败 → False（**绝不抛**给主循环）.
+    """发自我介绍配图。没配 URL / 没有 Bot 通道 / 发送失败 → False（**绝不抛**）.
 
-    为什么只走官方 Bot：房间群里发消息的是**薇丝-bot**，若改走账号侧车，
-    图片会以另一个身份（小小糯～）出现，人设立刻穿帮。
+    实际发送在 `runtime/bot_photo.py`（房间布局图走同一条出口）。
     """
     url = photo_url(cid)
     if not url:
         return False
-    try:
-        getter = getattr(sender, "bot_for", None)
-        bot = getter(cid) if callable(getter) else None
-    except Exception as e:                                   # noqa: BLE001
-        log("🖼️ [{}] 找不到 Bot 通道：{}".format(cid[:8], str(e)[:60]))
-        return False
-    if bot is None:
-        log("🖼️ [{}] 本群没有 Bot 发送器，配图跳过".format(cid[:8]))
-        return False
-    try:
-        mid = await asyncio.to_thread(bot.send_photo_url, cid, url)
-    except Exception as e:                                   # noqa: BLE001
-        log("🖼️ [{}] 配图发送失败（{}）：{}".format(
-            cid[:8], reason or "-", "{}: {}".format(type(e).__name__, str(e))[:100]))
-        return False
-    log("🖼️ [{}] 自我介绍配图已发（{}）mid={}".format(
-        cid[:8], reason or "-", str(mid)[:8]))
-    return True
+    return await bot_photo.send(sender, cid, url,
+                                reason="自我介绍" + ("·" + reason if reason else ""))
 
 
 async def maybe_send(sender, cid: str, text: str, reason: str = "") -> bool:
     """自然语言路径：先判意图，再判重复，最后发."""
     if not wants_photo(text, cid):
         return False
-    if _dup(cid, text):
+    if bot_photo.dup(cid, "intro:" + text):
         log("🖼️ [{}] 这条刚发过配图，跳过：{}".format(cid[:8], str(text)[:20]))
         return False
     return await send(sender, cid, reason=reason or "自然语言")

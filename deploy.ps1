@@ -126,7 +126,11 @@ function Get-CodeFiles {
         # admin/static/app.js). Forgetting them here means the page loads but
         # the script 404s -- and, worse, it fails silently (the page still works
         # without JS, so nobody notices the feature is missing).
-        ($_.Name -match '\.(py|sh|yml|yaml|service|js|css)$') -or
+        # png/jpg: P12-L/N public images (deploy/img/: the butler portrait plus
+        # the four room-layout shots). They live only in the directory Caddy
+        # serves, so without them a fresh deploy = "images 404, no picture in
+        # the group" and the log only shows a platform rejection.
+        ($_.Name -match '\.(py|sh|yml|yaml|service|js|css|png|jpg)$') -or
         ($isPrompt -and ($_.Name -match '\.md$')) -or
         ($_.Name -in @('Dockerfile', 'requirements.txt'))
     }
@@ -150,8 +154,9 @@ function Get-CodeFiles {
 #   below implement that. The pin stays (it is a good default and the AEAD
 #   suite avoids the "Corrupted MAC" class of failures).
 $SshCipherOpts = @('-o', 'Ciphers=aes128-gcm@openssh.com')
-# 重试次数/间隔可以用环境变量调（2026-09-26 实测最坏的时候成功率约 1/5，
-# 5 次不够用；一次 `-Action exec` 里跑长命令时尤其难受，所以给个旋钮）。
+# Attempt count / delay are tunable via env vars (measured 2026-09-26: at the
+# worst the handshake succeeded only ~1 in 5 tries; 5 attempts is not enough,
+# especially for a long-running `-Action exec`). Hence the knob.
 #   $env:DZMM_SSH_ATTEMPTS = 20 ; .\deploy.ps1 -Action upload
 $SshAttempts = 10
 $SshRetryDelaySec = 6
@@ -293,6 +298,21 @@ function Push-CodeFiles {
     $files = @(Get-CodeFiles)
     if ($files.Count -eq 0) { throw "no deployable code files under $script:BaseDir" }
     $rels = Get-RelPaths $files
+    # 2026-09-27 incident: when a deploy ran CONCURRENTLY with the full pytest
+    # suite, Get-ChildItem aborted mid-walk and -ErrorAction SilentlyContinue
+    # swallowed it, so only 42 files were enumerated. Production ended up
+    # half-updated (old bot.py, new modules missing) while the log just said
+    # "packed 42 files" and looked successful. Hard gate below: abort instead of
+    # restarting on half a tree. NOTE: keep this file ASCII-only -- non-ASCII
+    # literals in a .ps1 break the parser on this host.
+    $names = @($rels | ForEach-Object { $_ -replace '\\', '/' })
+    $need = @('bot.py', 'brains.py', 'runtime/obs.py', 'runtime/prompts.py')
+    $miss = @($need | Where-Object { $names -notcontains $_ })
+    $prompts = @($names | Where-Object { $_ -like 'prompts/*.md' }).Count
+    if ($miss.Count -or $prompts -lt 30 -or $names.Count -lt 100) {
+        $why = "missing=[{0}] prompts={1} total={2}" -f ($miss -join ','), $prompts, $names.Count
+        throw "incomplete file list (enumeration interrupted?): $why -- aborted, nothing uploaded"
+    }
     if (Get-Command tar -ErrorAction SilentlyContinue) {
         Push-WithTar $rels
     } else {

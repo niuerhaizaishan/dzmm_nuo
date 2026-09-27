@@ -286,6 +286,7 @@ from runtime.fasao import is_fasao_cmd, fasao, is_scene_cmd, _parse_scene_target
 from runtime.perf import _check_perf_timeout  # P12-A：公演超时解锁（原先没有超时）
 from runtime.diaojiao import is_dj_end_cmd, _dj_target_text, _dj_end_text, is_diaojiao_cmd, start_diaojiao, _check_diaojiao, DJ_PARTICIPATE_HINT  # P8 第 4 步：搬到 runtime/diaojiao.py
 from runtime import intro_photo as _intro_photo  # P12-L：自我介绍配图（只发图，不带字）
+from runtime import room_layout as _room_layout  # P12-N：改布局/复原 → 发对应的房间图
 
 # DZMM 主站 origin（多线路切换：env_config 从 DZMM_HOST 环境变量读）
 ORIGIN = env_config.get_dzmm_origin()
@@ -3226,6 +3227,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         r_uid, r_text = room_hit
                         cfg = ROOMS.get(cid) or {}
                         log("🌹 [" + cid[:8] + "] 房间消息: " + r_text[:40])
+                        _layout_after = ""      # P12-N：这句回复之后要补哪张布局图
                         old_last_id = group_state.get("last_id", "")
                         group_state["last_id"] = msgs[-1]["message_id"]
                         state[cid] = group_state
@@ -3247,6 +3249,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             save_state(state)
                             log("🌹 [" + cid[:8] + "] " + get_name(r_uid)[:12] + " 回来，女鬼退场")
                             reply = _personas.fill(ROOM_GHOST_BACK, cid, who=get_name(r_uid))
+                            _layout_after = _room_layout.DEFAULT_LAYOUT   # 屋子复原 = 玫瑰房
                         elif ghost_on and _feat_on(cid, "room_ghost"):
                             # 女鬼还在：再摘花 → 警告+恐吓；其他话一律不接（小小糯在门外）
                             if _is_flower_grab(r_text) and \
@@ -3342,6 +3345,14 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                     if ok and r_text:
                                         await _intro_photo.maybe_send(
                                             sender, cid, r_text, reason="自然语言")
+                                    # P12-N：改布局 → 补对应的房间图；屋子复原 → 玫瑰房那张
+                                    if ok:
+                                        if _layout_after:
+                                            await _room_layout.send_layout(
+                                                sender, cid, _layout_after, reason="屋子复原")
+                                        elif r_text:
+                                            await _room_layout.maybe_send(
+                                                sender, cid, r_text, r_uid, reason="改布局")
                             else:
                                 raise RuntimeError("生成失败(空回复): 房间消息")
 
