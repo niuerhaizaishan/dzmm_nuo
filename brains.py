@@ -190,6 +190,22 @@ INSULT_STYLES = [
     "记仇翻旧账：专挑她最近发言里的原话和骚点打脸，以子之矛攻子之盾，骂得她无地自容",
 ]
 
+# P12-T：**异性恋人设 + 女性目标** 时改用的风格库 —— 只毒舌、不涉情欲
+# （屋主口径："纯 S 属性、异性恋"；2026-09-27 实测：光靠人设提示词压不住
+#  "色气挑逗"那种写死"露骨描写身体"的风格，所以在这里做**硬过滤**）。
+INSULT_STYLES_PLAIN = [
+    "记仇翻旧账：专挑她最近发言里的原话打脸，以子之矛攻子之盾，就事论事怼到无话可说",
+    "阴阳怪气：明褒实贬、反讽，句句戳她端着、装样子的部分，措辞文明但刀刀见血",
+    "戳破人设：把她签名/简介里的自我标榜与最近言行摆在一起，点出反差",
+    "居高临下：以上位者口吻点评她的幼稚没分寸，冷淡、不给台阶",
+    "揭穿逻辑：挑她话里的自相矛盾穷追猛打，问到她自己圆不回来",
+]
+
+# 女性目标（异性恋人设）时的硬约束：不许出现情欲/身体描写
+PLAIN_INSULT_RULE = ("【本群口径 · 优先级最高】目标是女性、而你是异性恋：**只毒舌，不涉情欲** —— "
+                     "不许写身体部位、性器官、性行为，也不许用「发情/湿/淫荡/骚/母狗」这类字眼。"
+                     "骂态度、骂逻辑、骂丢人的事，一样可以狠。")
+
 # 随机羞辱词库：脱离档案/发言的直白露骨下贱羞辱素材（概率混合用，增加多样性）
 RANDOM_INSULT_PROB = 0.35  # 每次羞辱约 35% 概率掺入随机羞辱词库
 RANDOM_INSULT_WORDS = {
@@ -710,23 +726,35 @@ def generate_rank(rank_text: str, api_key: str = DEFAULT_KEY) -> str:
     return _call_llm(RANK_PROMPT, rank_text, api_key, max_tokens=600)
 
 
-def generate_insult(target_text: str, custom: str = "", history: list = None, api_key: str = DEFAULT_KEY):
+def generate_insult(target_text: str, custom: str = "", history: list = None, api_key: str = DEFAULT_KEY,
+                    gender: str = "", straight: bool = False):
     """一键羞辱：随机风格 + 角度避让 + 概率混合随机羞辱。
 
     history: 上次羞辱记录 [{style, text, at}, ...]，用于角度避让（排除上次风格 + 提示换角度）。
     返回 (text, style)，style 供调用方记录历史做下次避让。
+
+    P12-T：`straight=True`（异性恋人设）且 `gender="女"` 时走**只毒舌不涉情欲**的一套
+    （换风格库 + 不掺露骨词库 + 显式约束）。默认参数 = 老行为，一个字不变。
     """
     history = history or []
+    # 性别标签是「女生/男生/未知」（见 runtime.members._gender_label），
+    # 所以用前缀判断，别写死等于"女"。
+    plain = bool(straight and str(gender or "").strip().startswith("女"))
+    pool = INSULT_STYLES_PLAIN if plain else INSULT_STYLES
     # 选风格：随机，但角度避让——排除上次风格（避免连续同风格）
-    style = random.choice(INSULT_STYLES)
+    style = random.choice(pool)
     if history:
         last_style = history[-1].get("style", "")
-        others = [s for s in INSULT_STYLES if s != last_style]
+        others = [s for s in pool if s != last_style]
         if others:
             style = random.choice(others)
-    content = "本次羞辱风格（务必照此风格写，保持露骨淫荡）：" + style + "\n\n" + target_text
+    content = ("本次羞辱风格（务必照此风格写" + ("，但保持不带情欲" if plain else "，保持露骨淫荡")
+               + "）：" + style + "\n\n" + target_text)
+    if plain:
+        content += "\n\n" + PLAIN_INSULT_RULE
     # 概率混合：约 35% 概率掺入随机羞辱词库（脱离档案/发言，增加多样性）
-    if random.random() < RANDOM_INSULT_PROB:
+    # ⚠️ 女目标 + 异性恋人设时**不掺**（那个词库全是性词）
+    if not plain and random.random() < RANDOM_INSULT_PROB:
         content += "\n\n" + _sample_random_insult_block()
     # 角度避让：注入上次羞辱内容，要求换全新角度
     if history:

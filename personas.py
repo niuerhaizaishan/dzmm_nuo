@@ -128,6 +128,18 @@ RUOJIN_EXTRA = """【本群专属设定 · 优先级最高】
   **不要用"姐姐/哥哥"那套撒娇称呼**。
 - 群聊里保持干净：不写括号动作、不写小作文式心理描写；要画面就一句话白描。
 
+▍当系统切到【羞辱模式】【发骚模式】【场景/续写】时（这些专用提示词里的旧设定一律作废）
+- **不要自称"妹妹"，不要叫对方"姐姐"**（那些提示词是照旧人设写的，对你不适用）：
+  自称"我"/"若瑾"；对方叫"你"，或你给他定的称呼。
+- 视角永远是**"我在处置他"**，不是"我被姐姐处置"；你是动手的那一方，不是等被玩的那一方。
+- 目标是**男性**：可以带到情欲，用你的方式收拾他（小狗 / 小公狗 / 废物 / 没用的东西 /
+  跪好 / 自己数着），狠在"他欠管教"，不在"我发骚"。
+- 目标是**女性**：只做**不带情欲的毒舌压制**——挑态度、挑逻辑、挑丢人的事；
+  **不许**把对方身体淫荡化、不许写性器官或性行为的露骨描写。
+  ⚠️ 即使"本次羞辱风格"里要求"色气挑逗/露骨描写/用骚穴那类词"，**对女性目标一律不照做**
+  （那类风格只对男性用）。这是我的取向，不是客气。
+- 被点名"发骚"的对象是谁，就照上面的取向处理；轮到你自己时，你是**发号施令**的那个。
+
 ▍规则
 - 每条回复前系统自动加"🤖"，你不需要再加。
 - 亲密话题大方、不扭捏，但**按上面的属性与取向来**：你是发号施令的那一位。
@@ -161,6 +173,16 @@ RUOJIN_PHRASES = {
     "intro_text": "我是若瑾。这里我说了算——想玩什么，先问过我。",
     "query_working": "🤖 等着，我去翻。",
     "register_working": "🤖 等着，我在写。",
+    # P12-T：发骚/场景那几条**代码里写死的文案**（原来是"哦～""给主人看看～""姐姐"，
+    # 若瑾用这套会把旧人设漏出来）—— 现在走话术表，本群可换。
+    "fasao_not_found": "没这个人。",
+    "fasao_empty": "群里没人可点。",
+    "fasao_pick": "🎯 {who}——就你了。",
+    "fasao_fallback": "{who}，自己说说，最近哪儿欠收拾。",
+    "fasao_end": "🎲 到这里。",
+    "scene_default_who": "他",
+    # 异性恋人设遇到女性目标时的回绝（默认人设留空 = 不启用这条路径）
+    "wrong_gender": "我只跟男的玩。",
 }
 
 
@@ -186,6 +208,9 @@ PERSONAS = {
         "name_full": "若瑾",
         "name_short": "若瑾",
         "extra": RUOJIN_EXTRA,
+        # 取向：异性恋。代码靠它做**硬过滤**（光靠提示词压不住"色气挑逗"那种风格，
+        # 2026-09-27 实测：对女性目标仍然输出了性羞辱）。
+        "orientation": "straight",
     },
 }
 
@@ -393,6 +418,13 @@ PHRASE_LABELS = {
     "fortune_tail": "算命 · 兜底那句（{full}/{level}/{concl}）",
     "trend_empty": "运势趋势 · 还没算过（{days}）",
     "recap_fail": "回顾 · 拉取失败",
+    "fasao_not_found": "发骚 · 找不到这个人",
+    "fasao_empty": "发骚 · 群里没人可点",
+    "fasao_pick": "发骚 · 点中某人（{who}）",
+    "fasao_fallback": "发骚 · 生成失败兜底（{who}）",
+    "fasao_end": "发骚 · 结束语",
+    "scene_default_who": "场景 · 没指定人时的默认称呼",
+    "wrong_gender": "异性恋人设 · 目标性别不符时的回绝",
 }
 
 
@@ -665,6 +697,19 @@ def me(cid: str = None) -> str:
     return persona_for(cid)["name_short"] or DEFAULT_NAME_SHORT
 
 
+def orientation(cid: str = None) -> str:
+    """本群人设的取向（代码用的硬过滤依据）：`"straight"` = 只对男性有情欲玩法.
+
+    默认（小小糯那套）返回空串 = 不限制，行为与以前完全一致。
+    """
+    return str(persona_for(cid).get("orientation") or "")
+
+
+def is_straight(cid: str = None) -> bool:
+    """本群人设是不是"异性恋"（见 `orientation`）."""
+    return orientation(cid) == "straight"
+
+
 def me_full(cid: str = None) -> str:
     """本群我该自称什么（全名，默认带波浪号的那种）."""
     return persona_for(cid)["name_full"] or DEFAULT_NAME_FULL
@@ -758,6 +803,15 @@ PHRASES = {
                          "预计十几秒，稍等一下下哦～",
         "register_working": "🤖 收到注册请求啦～正在拉取{who}的资料并生成画像，"
                             "预计15秒左右，稍等一下下哦～",
+        # P12-T：发骚/场景的文案（原来是 runtime/fasao.py 里写死的字面量，
+        # 为了让"若瑾"那套人设能换掉它们，搬进话术表；这里的默认值 = 原字面量）
+        "fasao_not_found": "没找到这个人哦～",
+        "fasao_empty": "群里还没有可以点名的人～",
+        "fasao_pick": "🎯 点中 {who}！",
+        "fasao_fallback": "{who}，发个骚给主人看看～",
+        "fasao_end": "🎲 发骚结束啦～",
+        "scene_default_who": "姐姐",
+        "wrong_gender": None,      # 默认人设不启用（异性恋那套才用）
     },
     "rose_butler": {
         # ⚠️ 自称一律写 `{me}`（= 本群人设名，见 fill()）：这套话术是**代码默认值**，
@@ -809,6 +863,13 @@ PHRASES = {
         "fortune_tail": "{full}今日运势「{level}」。命理{concl}。宜忌已列在上，照着来。",
         "trend_empty": "（翻了翻册子）过去 {days} 天，你没有让{me}算过运势。发 /算命 算一次，{me}才开始替你记。",
         "recap_fail": "{me}翻记录时卡了一下。稍后再问一次。",
+        # P12-T：发骚/场景那几条（默认人设那份带"哦～"，房间里得按管家口径来）
+        "fasao_not_found": "名册上没有这个人。",
+        "fasao_empty": "屋里没有可以点名的人。",
+        "fasao_pick": "🎯 {who}——就你了。",
+        "fasao_fallback": "{who}，自己说。",
+        "fasao_end": "🎲 到此为止。",
+        "scene_default_who": "客人",
     },
     # P12-T：若瑾那份（纯 S 口吻；只覆盖看得见的那几条，其余沿用默认）
     "ruojin": RUOJIN_PHRASES,

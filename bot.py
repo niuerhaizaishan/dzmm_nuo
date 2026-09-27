@@ -3145,7 +3145,11 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                     _add_heat(cid, target_uid, _tune("heat.insult_target", cid))
                                     history = _get_insult_history(target_uid)
                                     text = _append_memory_ref(text, cid, get_full_name(target_uid))
-                                    reply, style = await asyncio.to_thread(generate_insult, text, custom, history)
+                                    # P12-T：异性恋人设对女性目标只毒舌不涉情欲（代码级过滤）
+                                    reply, style = await asyncio.to_thread(
+                                        generate_insult, text, custom, history,
+                                        gender=_gender_label(target_uid),
+                                        straight=_personas.is_straight(cid))
                                     _record_insult(target_uid, style, reply)
                                     # 记录上一段（供 /继续 续写）
                                     _set_last_action(cid, {
