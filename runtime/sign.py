@@ -13,8 +13,9 @@ from datetime import datetime
 from brains import generate_horoscope
 from dzmm import get_user
 from personas import (NUONUO_UID, ROOMS, ROSE_LUCKY_COLORS, ROSE_LUCKY_DIRS,
-                      ROSE_LUCKY_ITEMS, ROSE_MOONS, ROSE_SIGNS, ROSE_SIGN_JI,
-                      ROSE_SIGN_WORDS, ROSE_SIGN_YI, ROOM_FLOWER_NOUNS,
+                      ROSE_LUCKY_ITEMS, ROSE_MOONS, ROSE_SIGNS, ROSE_SIGN_EMOJI,
+                      ROSE_SIGN_JI, ROSE_SIGN_MATCH, ROSE_SIGN_WORDS,
+                      ROSE_SIGN_YI, ROOM_FLOWER_NOUNS,
                       ROOM_FLOWER_VERBS, ROOM_FLOWER_WORDS, ROOM_MENU_WORDS,
                       ROOM_ORDER_VERBS, me as _pme)   # `{me}`/自称：本群管家叫什么
 from runtime.features import on as _feat_on          # P12-A：功能开关（唯一判定点）
@@ -26,7 +27,8 @@ import state_store
 __all__ = [
     "_room_owner", "_is_room_trigger", "_is_flower_grab", "_sign_from_md",
     "_sign_intent", "_sign_find", "_sign_parse_birth", "_sign_stored",
-    "_sign_remember", "_sign_calc", "_sign_recent", "_sign_card", "_sign_reply",
+    "_sign_remember", "_sign_calc", "_sign_recent", "_split_sections",
+    "_sign_card", "_sign_reply",
 ]
 
 
@@ -204,26 +206,39 @@ def _sign_remember(cid: str, uid: str, sign: str, month: int, day: int) -> None:
 
 
 def _sign_calc(uid: str, sign: str, date_str: str) -> dict:
-    """确定性算分：同一个人、同一天、同一个星座 → 结果固定（和认证群五行运势一致）."""
+    """确定性算分：同一个人、同一天、同一个星座 → 结果固定（和认证群五行运势一致）.
+
+    P12-K：在原来的四维（爱情/事业/财运/心情）+ 幸运物/方位/色/宜忌之外，
+    补了模板口径要用的三样 —— **健康分**、**幸运数字**、**速配星座**。
+    四维的口径一个字没动（星象榜名次与分数行不受影响），新增项各取哈希里
+    还没用到的片段，同样是"同人同日同座必相同"。
+    """
     h = hashlib.md5((uid + "|" + date_str + "|" + sign).encode("utf-8")).hexdigest()
-    nums = [int(h[i:i + 4], 16) for i in range(0, 24, 4)]
+    nums = [int(h[i:i + 4], 16) for i in range(0, 24, 4)]     # 6 个，够分
     dims = {
         "爱情": 52 + nums[0] % 44,
         "事业": 52 + nums[1] % 44,
         "财运": 52 + nums[2] % 44,
         "心情": 52 + nums[3] % 44,
     }
+    match_pool = ROSE_SIGN_MATCH.get(sign) or ("天秤",)
     luck = {
         "item": ROSE_LUCKY_ITEMS[nums[0] % len(ROSE_LUCKY_ITEMS)],
         "dir": ROSE_LUCKY_DIRS[nums[1] % len(ROSE_LUCKY_DIRS)],
         "color": ROSE_LUCKY_COLORS[nums[2] % len(ROSE_LUCKY_COLORS)],
         "yi": ROSE_SIGN_YI[nums[3] % len(ROSE_SIGN_YI)],
         "ji": ROSE_SIGN_JI[nums[4] % len(ROSE_SIGN_JI)],
+        # 模板口径的「幸运三件套」：颜色沿用上面的 color，这里补数字与速配星座
+        "num": nums[5] % 9 + 1,
+        "match": match_pool[int(h[28:32], 16) % len(match_pool)],
     }
+    # 五段正文里【健康运势】用得到的一个分（单独取一段哈希，不动上面的四维）
+    health = 52 + int(h[24:28], 16) % 44
     # 月相按日期取（全房间一致，仅氛围）
     dt = datetime.strptime(date_str, "%Y-%m-%d")
     luck["moon"] = ROSE_MOONS[(dt.timetuple().tm_yday // 4) % len(ROSE_MOONS)]
-    return {"dims": dims, "luck": luck, "total": sum(dims.values()) // len(dims)}
+    return {"dims": dims, "luck": luck, "health": health,
+            "total": sum(dims.values()) // len(dims)}
 
 
 def _sign_recent(uid: str, cid: str) -> str:
@@ -235,9 +250,75 @@ def _sign_recent(uid: str, cid: str) -> str:
         return ""
 
 
+# 五段正文：规范名（内部键）→ 卡片上印的标题
+_SIGN_SECTION_TITLES = (
+    ("综合", "综合运势"),
+    ("爱情", "爱情运势"),
+    ("事业学业", "事业学业"),
+    ("财富", "财富运势"),
+    ("健康", "健康运势"),
+)
+
+# 模型可能写别的叫法，一律归到规范名
+_SIGN_ALIAS = {
+    "综合运势": "综合", "综合": "综合",
+    "爱情运势": "爱情", "爱情": "爱情",
+    "事业学业": "事业学业", "学业": "事业学业", "事业": "事业学业",
+    "财富运势": "财富", "财富": "财富", "财运": "财富",
+    "健康运势": "健康", "健康": "健康",
+}
+
+
+def _split_sections(text: str) -> dict:
+    """把 AI 写的五段拆成 `{规范名: 正文}`；凑不够三段就返回 `{}`。
+
+    这是"让模型别跑偏"的**安全网**，不是靠模型守规矩：标签写成
+    `【爱情运势】`/`【爱情】`/`爱情运势：`/带序号、或者干脆漏掉一两段，
+    这里都能收；实在认不出来就返回空，调用方退回旧的单段卡片（绝不开天窗）。
+    """
+    s = str(text or "").replace("**", "").replace("\r", "")
+    s = s.replace("[", "【").replace("]", "】")
+    s = s.replace("【", "\n【").replace("】", "】\n")
+    out, cur, buf = {}, None, []
+
+    def _flush():
+        if cur and buf:
+            out.setdefault(cur, " ".join(buf).strip())
+
+    for raw in s.split("\n"):
+        ln = raw.strip()
+        if not ln:
+            continue
+        head = re.sub(r"^[0-9]{1,2}\s*[.、)）]\s*", "", ln)      # 去掉"1."这类序号
+        if not head:
+            continue
+        m = re.fullmatch(r"【?\s*([\u4e00-\u9fa5]{2,6})\s*】?\s*[:：]?", head)
+        if m and _SIGN_ALIAS.get(m.group(1)):
+            _flush()
+            cur, buf = _SIGN_ALIAS[m.group(1)], []
+            continue
+        m = (re.match(r"^【\s*([\u4e00-\u9fa5]{2,6})\s*】\s*(.*)$", head)
+             or re.match(r"^([\u4e00-\u9fa5]{2,6})\s*[:：]\s*(.*)$", head))
+        if m and _SIGN_ALIAS.get(m.group(1)):
+            _flush()
+            cur = _SIGN_ALIAS[m.group(1)]
+            buf = [m.group(2)] if m.group(2).strip() else []
+            continue
+        if cur:
+            buf.append(ln)
+    _flush()
+    out = {k: v for k, v in out.items() if len(v) >= 4}          # 空壳段（只有一个词）丢掉
+    return out if len(out) >= 3 else {}
+
+
 async def _sign_card(cid: str, uid: str, sign: str, month: int, day: int,
                      who: str = "客人") -> str:
-    """组装星座运势卡（固定 ≤10 行，AI 只写最后一段）."""
+    """组装星座运势卡（P12-K 模板口径）.
+
+    结构：**分数 + 宜忌打头** → **五段正文**（综合/爱情/事业学业/财富/健康）
+    → **幸运三件套**（颜色 / 数字 / 速配星座）。分数与宜忌是我们的确定性数据，
+    正文由 AI 一次写五段；模型没按格式来时退回"分数 + 一段点评"（尾巴照旧）。
+    """
     info = None
     for n, el, ruler, kw in [(s[0], s[1], s[2], s[5]) for s in ROSE_SIGNS]:
         if n == sign:
@@ -249,30 +330,44 @@ async def _sign_card(cid: str, uid: str, sign: str, month: int, day: int,
     today = datetime.now().strftime("%Y-%m-%d")
     r = _sign_calc(uid, sign, today)
     d, lk = r["dims"], r["luck"]
+    emo = ROSE_SIGN_EMOJI.get(sign, "🌙")
     try:
         para = await asyncio.to_thread(
             generate_horoscope, sign, el, ruler, lk["moon"], d, lk["yi"], lk["ji"],
-            today, who, ("最近发言：" + _sign_recent(uid, cid)) if _sign_recent(uid, cid) else "")
+            today, who, ("最近发言：" + _sign_recent(uid, cid)) if _sign_recent(uid, cid) else "",
+            r["health"], r["total"])
     except Exception as e:
         log("星座点评生成失败: " + str(e)[:60])
         para = ""
-    para = " ".join(str(para or "").split())
-    if not para:
-        para = ("（抬手拂过窗边那枝玫瑰，花瓣上浮起细碎的光）"
-                + "今天的星象不算平顺，把节奏放慢一点反而顺。"
-                + "（把一杯温水推到你手边）宜" + lk["yi"] + "，忌" + lk["ji"] + "，其余交给时间。")
+    secs = _split_sections(para)
+    one = " ".join(str(para or "").split())          # 退回单段时用（把换行/空白压平）
     md_txt = str(month).zfill(2) + "-" + str(day).zfill(2)
-    return "\n".join([
-        "🌹 今日星象 · " + sign + "座",
+    lines = [
+        "🌹 今日星象 · " + emo + " " + sign + "座",
         "————————————",
         "🪐 " + el + "象 · 守护星" + ruler + " · 月相：" + lk["moon"] + " · " + md_txt + "生",
         "💗爱情" + str(d["爱情"]) + " · 💼事业" + str(d["事业"])
         + " · 💰财运" + str(d["财运"]) + " · 🌙心情" + str(d["心情"]),
-        "🍀 幸运：" + lk["item"] + " · " + lk["dir"] + " · " + lk["color"],
+        "🍀 幸运：" + lk["item"] + " · " + lk["dir"],
         "📅 宜" + lk["yi"] + " ｜ 忌" + lk["ji"],
         "————————————",
-        para,
+    ]
+    if secs:
+        for canon, title in _SIGN_SECTION_TITLES:
+            if secs.get(canon):
+                lines.append("【" + title + "】" + secs[canon])
+    else:
+        if not one:
+            one = ("（抬手拂过窗边那枝玫瑰，花瓣上浮起细碎的光）"
+                   + "今天的星象不算平顺，把节奏放慢一点反而顺。"
+                   + "（把一杯温水推到你手边）宜" + lk["yi"] + "，忌" + lk["ji"] + "，其余交给时间。")
+        lines.append(one)
+    lines.extend([
+        emo + " 幸运颜色：" + lk["color"],
+        emo + " 幸运数字：" + str(lk["num"]),
+        emo + " 速配星座：" + lk["match"] + "座",
     ])
+    return "\n".join(lines)
 
 
 async def _sign_reply(cid: str, uid: str, text: str, who: str = "客人") -> str:

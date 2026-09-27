@@ -673,8 +673,11 @@ class Sender:
                 # 逐行输入：行间用 Shift+Enter 换行（不发送），最后 Enter 发送。
                 # insert_text 一次性插入（已实测 React 正确接收，比逐字符 type 快 ~500 倍）。
                 lines = [ln for ln in text.split("\n")]
-                if len(lines) > 10:
-                    lines = lines[:10]
+                # P12-K：玫瑰房星象卡改五段式后有 18~20 行，旧上限 10 会把卡片砍半
+                # （`personas.ROSE_SIGN_MAX_LINES`）。这条链路只在官方 Bot API
+                # 明确拒绝时兜底用，多贴几行没有副作用。
+                if len(lines) > _personas.ROSE_SIGN_MAX_LINES:
+                    lines = lines[:_personas.ROSE_SIGN_MAX_LINES]
                 for i, line in enumerate(lines):
                     await self.page.keyboard.insert_text(line)
                     if i < len(lines) - 1:
