@@ -206,6 +206,15 @@ PLAIN_INSULT_RULE = ("【本群口径 · 优先级最高】目标是女性、而
                      "不许写身体部位、性器官、性行为，也不许用「发情/湿/淫荡/骚/母狗」这类字眼。"
                      "骂态度、骂逻辑、骂丢人的事，一样可以狠。")
 
+# 男性目标（S 人设）时的"拉满"约束：屋主 2026-09-27「再淫贱、露骨一些」
+HARD_INSULT_RULE = ("【本群口径 · 优先级最高】目标是男性、而你是纯 S 的支配方：**拉到最满，不许留台阶** —— "
+                    "直接写身体与器官（鸡巴/后穴/屁股/喉咙…）、写他的生理反应（硬、流水、发抖）、"
+                    "写你要他做的动作（跪好、撅起来、张嘴、自己数着）；用「母狗/公狗/肉便器/废物」这类称谓，"
+                    "怎么下贱怎么写。你是动手的那一个：命令句多于感叹句，结尾留一个必须回答的钩子。")
+
+# 男性目标（S 人设）时掺随机词库的概率比默认更高（默认 0.35 是给小糯那套的）
+HARD_INSULT_PROB = 0.75
+
 # 随机羞辱词库：脱离档案/发言的直白露骨下贱羞辱素材（概率混合用，增加多样性）
 RANDOM_INSULT_PROB = 0.35  # 每次羞辱约 35% 概率掺入随机羞辱词库
 RANDOM_INSULT_WORDS = {
@@ -739,7 +748,11 @@ def generate_insult(target_text: str, custom: str = "", history: list = None, ap
     history = history or []
     # 性别标签是「女生/男生/未知」（见 runtime.members._gender_label），
     # 所以用前缀判断，别写死等于"女"。
-    plain = bool(straight and str(gender or "").strip().startswith("女"))
+    gl = str(gender or "").strip()
+    # 未知性别 + 异性恋人设 → 走**保守**那条（只毒舌）：宁可骂轻，也不要押错取向。
+    female_side = gl.startswith("女") or (straight and not gl.startswith("男"))
+    plain = bool(straight and female_side)
+    hard = bool(straight and gl.startswith("男"))     # S 人设 + 男性目标 → 拉满
     pool = INSULT_STYLES_PLAIN if plain else INSULT_STYLES
     # 选风格：随机，但角度避让——排除上次风格（避免连续同风格）
     style = random.choice(pool)
@@ -752,9 +765,12 @@ def generate_insult(target_text: str, custom: str = "", history: list = None, ap
                + "）：" + style + "\n\n" + target_text)
     if plain:
         content += "\n\n" + PLAIN_INSULT_RULE
-    # 概率混合：约 35% 概率掺入随机羞辱词库（脱离档案/发言，增加多样性）
-    # ⚠️ 女目标 + 异性恋人设时**不掺**（那个词库全是性词）
-    if not plain and random.random() < RANDOM_INSULT_PROB:
+    elif hard:
+        content += "\n\n" + HARD_INSULT_RULE
+    # 概率混合：默认约 35% 概率掺入随机羞辱词库（脱离档案/发言，增加多样性）
+    # ⚠️ 女目标 + 异性恋人设时**不掺**（那个词库全是性词）；男性目标是 S 人设时掺得更勤。
+    prob = 0.0 if plain else (HARD_INSULT_PROB if hard else RANDOM_INSULT_PROB)
+    if random.random() < prob:
         content += "\n\n" + _sample_random_insult_block()
     # 角度避让：注入上次羞辱内容，要求换全新角度
     if history:

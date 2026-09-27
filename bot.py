@@ -233,7 +233,7 @@ from runtime.obs import log  # P8 第 4 步：搬到 runtime/obs.py
 from runtime.identity import self_uids, is_self, self_names, self_names_longest_first, _load_member_names, get_full_name, get_name, is_at_me, mentions_self, NUO_UID, BOT_UID, BOT_NAME, BOT_NAME_SHORT, _name_cache, register_bots, resolve_bot_uids as _resolve_bot_uids, learn_bot_uid, bot_uids  # P8 第 4 步：搬到 runtime/identity.py（P12-H 加多 Bot 身份）
 from runtime.dice import _dice_state, _dice_save, _dice_current_player, _dice_send_private, _dice_board_text, _dice_deal_round, _dice_start_cmd, _dice_join_cmd, _dice_exit_cmd, _dice_begin_cmd, _dice_next_round_cmd, _dice_call_cmd, _dice_open_cmd, _dice_quit_cmd, _dice_skip_cmd, _dice_status_text  # P8 第 4 步：搬到 runtime/dice.py
 from runtime.text import _get_opencc, _normalize_cn, _simplify, _strip_parenthesis, _is_stop_word, _dedupe_options, _normalize_choice, _extract_deadline_seconds, _squash, _clean_name, _norm_poem, _CJK_VARIANT, STOP_WORDS, _OPENCC_T2S  # P8 第 4 步：搬到 runtime/text.py
-from runtime.members import _extract_msgs, _get_msgs_by_uid, _member_profile_text, _find_in_profiles, _find_user_in_msgs, find_user_by_name, _find_uid_by_name, _gender_label, _random_member_uid, _archive_text_from_profile, _history_lines, _profile_history, HISTORY_MAX  # P8 第 4 步：搬到 runtime/members.py
+from runtime.members import _extract_msgs, _get_msgs_by_uid, _member_profile_text, _find_in_profiles, _find_user_in_msgs, find_user_by_name, _find_uid_by_name, _gender_label, _gender_of, _random_member_uid, _archive_text_from_profile, _history_lines, _profile_history, HISTORY_MAX  # P8 第 4 步：搬到 runtime/members.py
 from runtime.fortune import is_fortune_cmd, fortune, _fortune_calc, _fortune_score, _fortune_level, _record_fortune, _get_fortune_history, _char_wx, _name_wx, _ganzhi, _relation, FORTUNE_APOLOGY, _GAN, _ZHI, _WX_GAN, _WX_ZHI, _GZ_BASE, _WX_ORDER, _WX_BASE, _WX_LUCK, _WX_YI, _WX_JI, _SHENG, _KE, _CHONG, _SHENGXIAO, _CHAR_WX, _REL_SCORE, _REL_TEXT, _LIUCHONG, _LIUHE, _ZHI_SCORE, _ZHI_PENALTY  # P8 第 4 步：搬到 runtime/fortune.py
 from runtime.trend import is_trend_cmd, is_trend_board_cmd, _trend_days, _trend_spark, _trend_chong, _trend_stats, _wd_cn, _md_cn, week_trend, week_trend_board, TREND_CIDS, TREND_DEFAULT_DAYS, TREND_MAX_DAYS  # P8 第 4 步：搬到 runtime/trend.py
 from runtime.recap import is_recap_cmd, _recap_intent, _recap_window, _day0, _msg_ts, _fmt_ts, _recap_mentions, _recap_transcript, recap_absent, RECAP_CIDS, RECAP_MAX_MSGS, RECAP_MAX_HOURS, RECAP_COOLDOWN  # P8 第 4 步：搬到 runtime/recap.py
@@ -3145,10 +3145,12 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                     _add_heat(cid, target_uid, _tune("heat.insult_target", cid))
                                     history = _get_insult_history(target_uid)
                                     text = _append_memory_ref(text, cid, get_full_name(target_uid))
-                                    # P12-T：异性恋人设对女性目标只毒舌不涉情欲（代码级过滤）
+                                    # P12-T：**先识别性别**（档案没有就查一次平台），
+                                    # 再按取向决定走"只毒舌"还是"拉满"那条。
+                                    _g = await asyncio.to_thread(_gender_of, target_uid, cid)
                                     reply, style = await asyncio.to_thread(
                                         generate_insult, text, custom, history,
-                                        gender=_gender_label(target_uid),
+                                        gender=_g,
                                         straight=_personas.is_straight(cid))
                                     _record_insult(target_uid, style, reply)
                                     # 记录上一段（供 /继续 续写）

@@ -17,7 +17,20 @@ for k in ("fasao_not_found", "fasao_empty", "fasao_pick", "fasao_fallback",
     print("  {:20s} {!r}".format(k, personas.p(k, CID, who="小张")))
 
 print()
-print("========== 羞辱 · 目标=男性（代码级过滤路径：straight=True）==========")
+print("========== 性别识别（新群成员：档案 vs 实时识别）==========")
+try:
+    from dzmm import get_members
+    from runtime.members import _gender_label, _gender_of
+    ms = get_members(CID) or {}
+    print("群成员数：", len(ms))
+    for uid, name in list(ms.items())[:8]:
+        print("  {:16s} 档案={:4s} → 识别={}".format(
+            str(name)[:16], _gender_label(uid), _gender_of(uid, CID)))
+except Exception as e:                                      # noqa: BLE001
+    print("失败：{}: {}".format(type(e).__name__, e))
+
+print()
+print("========== 羞辱 · 目标=男性（straight=True → 拉满那套）==========")
 male = ("昵称：小张\n性别：男\n签名：健身教练，撸铁十年\n"
         "简介：嘴上没输过，手上没赢过\n最近发言：今天又被老板骂了 / 我也没办法啊")
 try:

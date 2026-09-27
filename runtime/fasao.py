@@ -26,7 +26,7 @@ from runtime.group_state import (_get_fasao_state, _set_fasao_state,
 from runtime.heat import HEAT_FASAO_PICK, HEAT_SCENE_PICK, _add_heat
 from runtime.identity import get_full_name, is_self
 from runtime.members import (_find_in_profiles, _find_user_in_msgs,
-                             _gender_label, _random_member_uid)
+                             _gender_of, _random_member_uid)
 from runtime.memory import _retrieve_memory
 from runtime.obs import log
 from runtime.text import _is_stop_word, _strip_parenthesis
@@ -92,9 +92,9 @@ def fasao(cmd: str) -> str:
         full = get_full_name(uid) if uid else ""
         if not uid:
             return _phrase("fasao_empty", cid) or "群里还没有可以点名的人。"
-    # P12-T：异性恋人设（若瑾）不跟女性目标玩情欲玩法 —— 代码级过滤，
-    # 不指望模型自己遵守（2026-09-27 实测：光写人设它照样照搬风格）。
-    if _personas.is_straight(cid) and _gender_label(uid) == "女生":
+    # P12-T：异性恋人设（若瑾）不跟女性目标玩情欲玩法 —— 代码级过滤。
+    # **先识别性别**：档案没写就查一次平台（`_gender_of`），别再靠"未知"蒙。
+    if _personas.is_straight(cid) and _gender_of(uid, cid) == "女生":
         return _phrase("wrong_gender", cid) or "这个我不玩。"
     try:
         text = generate_heat_fasao(full)
@@ -150,13 +150,13 @@ def scene(cmd: str) -> str:
             _phrase("scene_default_who", ctx.get_active_cid()) or "姐姐")
     if selected_uid:
         _cid = ctx.get_active_cid()
-        glabel = _gender_label(selected_uid)
+        glabel = _gender_of(selected_uid, _cid)      # 先识别性别（档案优先，缺了查平台）
         # P12-T：异性恋人设（若瑾）不跟女性目标玩情欲玩法 —— 放在**加发情值之前**：
         # 被回绝的目标不该涨分。
         if _personas.is_straight(_cid) and glabel == "女生":
             return _phrase("wrong_gender", _cid) or "这个我不玩。"
         _add_heat(_cid, selected_uid, _tune("heat.scene_pick", _cid))
-    glabel = _gender_label(selected_uid) if selected_uid else "未知"
+    glabel = _gender_of(selected_uid, ctx.get_active_cid()) if selected_uid else "未知"
     # 读取目标 XP + 资料（签名/简介/画像，供增加上下文）
     xp = []
     profile_ctx = []

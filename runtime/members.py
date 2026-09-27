@@ -11,7 +11,7 @@ import random
 import time
 
 from dzmm import get_messages_all, get_user
-from profiles import get_profile, load_profiles
+from profiles import get_profile, load_profiles, upsert_profile
 from runtime import ctx
 from runtime.identity import (_load_member_names, _name_cache, get_full_name,
                               get_name, is_self)
@@ -21,7 +21,7 @@ from runtime.text import _normalize_cn, _simplify, _squash
 __all__ = [
     "_extract_msgs", "_get_msgs_by_uid", "_member_profile_text",
     "_find_in_profiles", "_find_user_in_msgs", "find_user_by_name",
-    "_find_uid_by_name", "_gender_label", "_random_member_uid",
+    "_find_uid_by_name", "_gender_label", "_gender_of", "_random_member_uid",
     "_archive_text_from_profile", "_history_lines", "_profile_history",
 ]
 
@@ -149,6 +149,41 @@ def _gender_label(uid: str) -> str:
     if g in ("female", "lesbian", "女", "f", "百合"):
         return "女生"
     return "未知"
+
+
+def _gender_of(uid: str, cid: str = None, write_back: bool = True) -> str:
+    """这人什么性别：「女生」/「男生」/「未知」—— **档案优先，档案没写就实时查一次平台**.
+
+    与 `_gender_label` 的区别：那个只看本地档案（查不到就是"未知"）；这个会补一次
+    `getChatroomUser` 并顺手写回档案。
+
+    P12-T（屋主："先识别性别，然后再根据性别生成"）：羞辱/发骚要用它**先定性别再分路**。
+    ⚠️ 会发一次平台请求：调用方要么在 sync 上下文（本来就跑在线程里），
+    要么自己套 `asyncio.to_thread`。
+    """
+    lab = _gender_label(uid)
+    if lab != "未知" or not uid:
+        return lab
+    try:
+        u = get_user(cid or ctx.get_active_cid(), uid) or {}
+    except Exception:                                        # noqa: BLE001
+        return "未知"
+    g = str(u.get("gender") or "").strip().lower()
+    if g in ("male", "man", "男", "m"):
+        out = "男生"
+    elif g in ("female", "lesbian", "女", "f", "百合"):
+        out = "女生"
+    else:
+        return "未知"
+    if write_back:
+        try:                       # 写回档案，免得每次都查（与 `_room_male` 同一套）
+            p = get_profile(uid) or {}
+            if p:
+                p["gender"] = "male" if out == "男生" else "female"
+                upsert_profile(uid, p)
+        except Exception:                                    # noqa: BLE001
+            pass
+    return out
 
 
 def _random_member_uid(exclude: set = None):

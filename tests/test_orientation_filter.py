@@ -97,10 +97,19 @@ def test_default_persona_is_untouched(monkeypatch):
     assert any(s in got for s in brains.INSULT_STYLES), "用的是原来那套风格库"
 
 
-def test_unknown_gender_is_not_treated_as_female(monkeypatch):
+def test_unknown_gender_takes_the_safe_side(monkeypatch):
+    """性别识别不出来时走**保守**那条（只毒舌）——宁可骂轻，也不要押错取向。"""
     seen = _capture(monkeypatch)
     brains.generate_insult("昵称：某人\n性别：未知", gender="未知", straight=True)
-    assert "只毒舌" not in seen["content"]
+    assert "只毒舌" in seen["content"]
+
+
+def test_male_gender_gets_the_hard_rule(monkeypatch):
+    """男性目标 + S 人设 → 注入"拉满"约束，且掺词库概率更高（屋主：再淫贱露骨一些）."""
+    seen = _capture(monkeypatch)
+    brains.generate_insult("昵称：小张\n性别：男", gender="男生", straight=True)
+    assert "拉到最满" in seen["content"]
+    assert brains.HARD_INSULT_PROB > brains.RANDOM_INSULT_PROB
 
 
 # ---------------------------------------------------------------- 发骚/场景过滤
@@ -108,7 +117,7 @@ def test_unknown_gender_is_not_treated_as_female(monkeypatch):
 def test_scene_refuses_female_target_for_straight_persona(monkeypatch, ruojin_ctx):
     from runtime import fasao
     monkeypatch.setattr(fasao, "_parse_scene_target", lambda t: ("u-f", "阿雅", []))
-    monkeypatch.setattr(fasao, "_gender_label", lambda uid: "女生")
+    monkeypatch.setattr(fasao, "_gender_of", lambda uid, cid=None, **kw: "女生")
     monkeypatch.setattr(fasao, "_phrase", lambda key, cid=None, **kw: "我只跟男的玩。")
     heats = []
     monkeypatch.setattr(fasao, "_add_heat", lambda *a, **kw: heats.append(a))
@@ -119,7 +128,7 @@ def test_scene_refuses_female_target_for_straight_persona(monkeypatch, ruojin_ct
 def test_scene_allows_male_target(monkeypatch, ruojin_ctx):
     from runtime import fasao
     monkeypatch.setattr(fasao, "_parse_scene_target", lambda t: ("u-m", "小张", []))
-    monkeypatch.setattr(fasao, "_gender_label", lambda uid: "男生")
+    monkeypatch.setattr(fasao, "_gender_of", lambda uid, cid=None, **kw: "男生")
     monkeypatch.setattr(fasao, "_pick_combo_by_xp", lambda xp: ("场景", "体位", "附加"))
     monkeypatch.setattr(fasao, "generate_scene", lambda s: "（桩场景）")
     monkeypatch.setattr(fasao, "_set_last_action", lambda *a, **kw: None)
@@ -134,6 +143,6 @@ def test_fasao_refuses_female_target(monkeypatch, ruojin_ctx):
     from runtime import fasao
     monkeypatch.setattr(fasao, "_find_in_profiles", lambda t: ("u-f", {}))
     monkeypatch.setattr(fasao, "get_full_name", lambda uid: "阿雅")
-    monkeypatch.setattr(fasao, "_gender_label", lambda uid: "女生")
+    monkeypatch.setattr(fasao, "_gender_of", lambda uid, cid=None, **kw: "女生")
     monkeypatch.setattr(fasao, "_phrase", lambda key, cid=None, **kw: "我只跟男的玩。")
     assert fasao.fasao("/发骚 阿雅") == "我只跟男的玩。"
