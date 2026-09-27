@@ -2426,7 +2426,11 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
     group_meta = {cid: {"interval": FAST_INTERVAL, "last_poll": 0.0} for cid in groups}
 
     HTTP_FALLBACK_INTERVAL = 600  # HTTP 兜底对账间隔（秒）；断线补拉不受此限
+    # P12-J：socket 抖动时的"补拉"最少间隔 —— 抖动一次就补拉一次会把平台读打成风暴
+    HTTP_RESYNC_MIN_GAP = 60.0
     last_http_fallback = {cid: 0.0 for cid in groups}
+    last_read_attempt = {cid: 0.0 for cid in groups}
+    last_read_skip_log = {cid: 0.0 for cid in groups}
     _was_sio_connected = False  # 上一次 Socket.IO 连接状态（恢复检测用边沿：断→连）
     _last_scan_day = str(_scan_load().get("day") or "")  # 上次档案扫描日期（每天 06:00 一次）
 
@@ -2543,23 +2547,46 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                     msgs = sio_msgs
                     from_sio = True
                 elif (need_resync or (now_ts - last_http_fallback.get(cid, 0) >= HTTP_FALLBACK_INTERVAL)) and now_ts >= http_backoff_until:
-                    last_http_fallback[cid] = now_ts
-                    if need_resync:
-                        subscriber.clear_resync(cid)
-                    # P12-I：加超时上限 —— 平台卡住时最多等 8 秒，别把整个群拖住
+                    # P12-J：socket 抖动时它会不停置 resync 标记，而每次补拉都是一次平台
+                    # 调用 —— 实测形成"每 30 秒一次读、每次 8~10 秒"的风暴（既拖慢自己，
+                    # 也在给平台加压）。两道闸：
+                    #   ① 冷却期内**不打接口**（我们自己的限流器在冷却时会 sleep 到超时，
+                    #      打了也只是白等 + 继续加压）；
+                    #   ② 同一个群的补拉最少隔 HTTP_RESYNC_MIN_GAP 秒。
+                    _cd = 0.0
                     try:
-                        msgs = await asyncio.wait_for(
-                            asyncio.to_thread(get_messages, cid, 20),
-                            timeout=PLATFORM_READ_TIMEOUT)
-                    except asyncio.TimeoutError:
-                        log("⏱️ [{}] 平台读消息超时 {:.0f}s，本轮跳过（下轮重试）".format(
-                            cid[:8], PLATFORM_READ_TIMEOUT))
+                        from throttle_guard import cooldown_remaining as _cdrem
+                        _cd = float(_cdrem())
+                    except Exception:                          # noqa: BLE001
+                        _cd = 0.0
+                    _since_read = now_ts - last_read_attempt.get(cid, 0.0)
+                    if _cd > 0:
+                        if now_ts - last_read_skip_log.get(cid, 0.0) > 120:
+                            last_read_skip_log[cid] = now_ts
+                            log("⏳ [{}] 限流冷却中（剩 {:.0f}s），本轮不读消息".format(
+                                cid[:8], _cd))
                         msgs = []
-                    except Exception as _re:
-                        log("⚠️ [{}] 平台读消息失败：{}".format(cid[:8], str(_re)[:70]))
-                        msgs = []
+                    elif need_resync and _since_read < HTTP_RESYNC_MIN_GAP:
+                        msgs = []          # 刚读过就抖动：别一路补拉，下轮再说
+                    else:
+                        last_read_attempt[cid] = now_ts
+                        last_http_fallback[cid] = now_ts
+                        if need_resync:
+                            subscriber.clear_resync(cid)
+                        # 上限只用来**保护主循环**；它超时是"我们不等了"，不代表平台坏了
+                        try:
+                            msgs = await asyncio.wait_for(
+                                asyncio.to_thread(get_messages, cid, 20),
+                                timeout=PLATFORM_READ_TIMEOUT)
+                        except asyncio.TimeoutError:
+                            log("⏱️ [{}] 读消息超过 {:.0f}s，本轮不等了（下轮再试）".format(
+                                cid[:8], PLATFORM_READ_TIMEOUT))
+                            msgs = []
+                        except Exception as _re:
+                            log("⚠️ [{}] 平台读消息失败：{}".format(cid[:8], str(_re)[:70]))
+                            msgs = []
                     # HTTP 兜底成功 = 风控解除：清撞验证码状态 + 所有群提醒 + 补筛查延迟的新成员
-                    if _captcha_active:
+                    if msgs and _captcha_active:
                         _captcha_active = False
                         _captcha_notified.clear()
                         for _cid in GROUPS:
