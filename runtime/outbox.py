@@ -18,6 +18,7 @@ P3 阶段的目标与边界：
 """
 import asyncio
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -86,7 +87,13 @@ class OutboxStore:
         parent = Path(self.path).parent
         if str(parent) and not parent.exists():
             parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self.path, timeout=10)
+        # P12-AA（2026-09-27 体检）：连接必须能跨线程用，访问用一把可重入锁串行化
+        # —— 与 `runtime/store.py` 对齐。默认 `check_same_thread=True` 会让工作线程
+        # 一碰就抛 `ProgrammingError`，被 except 吞掉后表现成"偶发丢队列"；
+        # 今天没炸只因调用点恰好都在事件循环线程，是 P12-U 事故的同款隐患。
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(self.path, timeout=10,
+                                     check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
@@ -98,50 +105,55 @@ class OutboxStore:
                 delivery_kind: str = "group",
                 recall_after_seconds: int | None = None) -> str:
         oid = str(uuid.uuid4())
-        self._conn.execute(
-            "INSERT INTO outbound (id, created_at, chatroom_id, text, content_type,"
-            " delivery_kind, recall_after_seconds, status) VALUES (?,?,?,?,?,?,?,?)",
-            (oid, time.time(), chatroom_id, text, content_type,
-             delivery_kind, recall_after_seconds, PENDING))
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO outbound (id, created_at, chatroom_id, text, content_type,"
+                " delivery_kind, recall_after_seconds, status) VALUES (?,?,?,?,?,?,?,?)",
+                (oid, time.time(), chatroom_id, text, content_type,
+                 delivery_kind, recall_after_seconds, PENDING))
+            self._conn.commit()
         return oid
 
     def lease(self, oid: str, worker_id: str, ttl: float = DEFAULT_LEASE_TTL) -> bool:
         """领取租约。仅当 pending、或租约已过期时可领。返回是否领到。"""
         now = time.time()
-        cur = self._conn.execute(
-            "UPDATE outbound SET status=?, lease_worker_id=?, lease_token=?,"
-            " lease_expires_at=?, attempt_count=attempt_count+1"
-            " WHERE id=? AND (status=? OR (status=? AND lease_expires_at < ?))",
-            (LEASED, worker_id, str(uuid.uuid4()), now + ttl,
-             oid, PENDING, LEASED, now))
-        self._conn.commit()
-        return cur.rowcount == 1
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE outbound SET status=?, lease_worker_id=?, lease_token=?,"
+                " lease_expires_at=?, attempt_count=attempt_count+1"
+                " WHERE id=? AND (status=? OR (status=? AND lease_expires_at < ?))",
+                (LEASED, worker_id, str(uuid.uuid4()), now + ttl,
+                 oid, PENDING, LEASED, now))
+            self._conn.commit()
+            return cur.rowcount == 1
 
     def mark_sent(self, oid: str, platform_sent_id: str | None = None) -> None:
-        self._conn.execute(
-            "UPDATE outbound SET status=?, platform_sent_id=?, sent_at=?,"
-            " lease_worker_id=NULL, lease_token=NULL, lease_expires_at=NULL, last_error=NULL"
-            " WHERE id=?",
-            (SENT, platform_sent_id, time.time(), oid))
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE outbound SET status=?, platform_sent_id=?, sent_at=?,"
+                " lease_worker_id=NULL, lease_token=NULL, lease_expires_at=NULL, last_error=NULL"
+                " WHERE id=?",
+                (SENT, platform_sent_id, time.time(), oid))
+            self._conn.commit()
 
     def mark_failed(self, oid: str, error: str) -> None:
-        self._conn.execute(
-            "UPDATE outbound SET status=?, last_error=?,"
-            " lease_worker_id=NULL, lease_token=NULL, lease_expires_at=NULL"
-            " WHERE id=?",
-            (FAILED, str(error)[:500], oid))
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE outbound SET status=?, last_error=?,"
+                " lease_worker_id=NULL, lease_token=NULL, lease_expires_at=NULL"
+                " WHERE id=?",
+                (FAILED, str(error)[:500], oid))
+            self._conn.commit()
 
     def reclaim_expired(self) -> int:
         """把租约过期的任务退回 pending，供重新领取。返回退回条数。"""
-        cur = self._conn.execute(
-            "UPDATE outbound SET status=?, lease_worker_id=NULL, lease_token=NULL,"
-            " lease_expires_at=NULL WHERE status=? AND lease_expires_at < ?",
-            (PENDING, LEASED, time.time()))
-        self._conn.commit()
-        return cur.rowcount
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE outbound SET status=?, lease_worker_id=NULL, lease_token=NULL,"
+                " lease_expires_at=NULL WHERE status=? AND lease_expires_at < ?",
+                (PENDING, LEASED, time.time()))
+            self._conn.commit()
+            return cur.rowcount
 
     def revive(self, oid: str) -> bool:
         """把一条 **failed** 记录放回 pending，供安全重试重新领取（P12-J）。
@@ -150,12 +162,13 @@ class OutboxStore:
         `failed` 的记录它不认。所以"失败记录永远没人再碰"有**两层**原因：
         既没有轮询的任务，也没法重新领租约。重试前先 revive，再 lease。
         """
-        cur = self._conn.execute(
-            "UPDATE outbound SET status=?, lease_worker_id=NULL, lease_token=NULL,"
-            " lease_expires_at=NULL WHERE id=? AND status=?",
-            (PENDING, oid, FAILED))
-        self._conn.commit()
-        return cur.rowcount == 1
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE outbound SET status=?, lease_worker_id=NULL, lease_token=NULL,"
+                " lease_expires_at=NULL WHERE id=? AND status=?",
+                (PENDING, oid, FAILED))
+            self._conn.commit()
+            return cur.rowcount == 1
 
     def abandon_interrupted(self, reason: str) -> int:
         """把**上次进程留下的**未终态记录标成 failed。返回条数。
@@ -180,43 +193,50 @@ class OutboxStore:
 
         启动时调用（那时不可能有在飞的发送，所有非终态都是上次遗留的）。
         """
-        cur = self._conn.execute(
-            "UPDATE outbound SET status=?, last_error=?, lease_worker_id=NULL,"
-            " lease_token=NULL, lease_expires_at=NULL"
-            " WHERE status IN (?, ?)",
-            (FAILED, str(reason)[:500], PENDING, LEASED))
-        self._conn.commit()
-        return cur.rowcount
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE outbound SET status=?, last_error=?, lease_worker_id=NULL,"
+                " lease_token=NULL, lease_expires_at=NULL"
+                " WHERE status IN (?, ?)",
+                (FAILED, str(reason)[:500], PENDING, LEASED))
+            self._conn.commit()
+            return cur.rowcount
 
     # ------------------------------------------------------------ 读取
 
     def get(self, oid: str) -> dict | None:
-        row = self._conn.execute("SELECT * FROM outbound WHERE id=?", (oid,)).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM outbound WHERE id=?", (oid,)).fetchone()
         return dict(row) if row else None
 
     def pending_count(self) -> int:
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM outbound WHERE status IN (?,?)",
-            (PENDING, LEASED)).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM outbound WHERE status IN (?,?)",
+                (PENDING, LEASED)).fetchone()
         return int(row["n"])
 
     def recent(self, n: int = 20) -> list[dict]:
-        rows = self._conn.execute(
-            "SELECT * FROM outbound ORDER BY created_at DESC, rowid DESC LIMIT ?",
-            (n,)).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM outbound ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (n,)).fetchall()
         return [dict(r) for r in rows]
 
     def by_status(self, status: str, n: int = 50) -> list[dict]:
-        rows = self._conn.execute(
-            "SELECT * FROM outbound WHERE status=? ORDER BY created_at LIMIT ?",
-            (status, n)).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM outbound WHERE status=? ORDER BY created_at LIMIT ?",
+                (status, n)).fetchall()
         return [dict(r) for r in rows]
 
     def close(self) -> None:
-        try:
-            self._conn.close()
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
 
 
 class OutboxSender:

@@ -51,6 +51,17 @@ SCOPE_META = "meta"
 
 IMPORT_MARKER = "json_imported"
 
+
+def _import_warn(problems) -> None:
+    """一次性 JSON 导入没成功 ⇒ 吼一声（静默失败正是 P12-U 藏了两小时的原因）。"""
+    msg = ("⚠️ runtime.store: 旧的 JSON 状态没导入成功，本次**不标记已导入**，"
+           "下次启动会重试：{}").format("；".join(problems)[:200])
+    try:
+        from runtime.obs import log as _log
+        _log(msg)
+    except Exception:                                          # noqa: BLE001
+        print(msg)
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS kv (
   scope      TEXT NOT NULL,
@@ -224,25 +235,43 @@ class Store:
         if self.meta_get(IMPORT_MARKER):
             return {"skipped": True}
 
-        stats = {"group": 0, "profiles": 0}
+        stats = {"group": 0, "profiles": 0, "failed": []}
 
+        # ⚠️ P12-AA（2026-09-27 体检）：读失败**不能**照样写"已导入"标记。
+        # 旧写法两个 try 都是 `except: pass`，然后无条件 `meta_set(IMPORT_MARKER)` ——
+        # 于是"JSON 还在写、读到半个文件"这种瞬时错误会被永久标记成"迁移完成"，
+        # 之后再也不重试，旧数据静默留在 JSON 里（与 P12-U 的分叉事故同族）。
+        # 现在：只有**两份都读过（或文件不存在）**才落标记；失败就下次启动再试。
+        ok_group = False
         try:
             raw = json.loads(Path(state_json).read_text(encoding="utf-8"))
             if isinstance(raw, dict) and raw:
                 self.save_scope(SCOPE_GROUP, raw)
                 stats["group"] = len(raw)
-        except Exception:
-            pass
+            ok_group = True
+        except FileNotFoundError:
+            ok_group = True                    # 没有可导入的文件 = 正常
+        except Exception as e:                                 # noqa: BLE001
+            stats["failed"].append("state.json: " + str(e)[:80])
 
+        ok_profiles = False
         try:
             profs = json.loads(Path(profiles_json).read_text(encoding="utf-8"))
             if isinstance(profs, dict):
                 self.save_scope(SCOPE_PROFILE, profs)
                 stats["profiles"] = len(profs)
-        except Exception:
-            pass
+            ok_profiles = True
+        except FileNotFoundError:
+            ok_profiles = True
+        except Exception as e:                                 # noqa: BLE001
+            stats["failed"].append("profiles.json: " + str(e)[:80])
 
-        self.meta_set(IMPORT_MARKER, {"at": time.time(), **stats})
+        if not (ok_group and ok_profiles):
+            _import_warn(stats["failed"])
+            return stats                        # 不写标记 ⇒ 下次启动重试
+        self.meta_set(IMPORT_MARKER, {"at": time.time(),
+                                      "group": stats["group"],
+                                      "profiles": stats["profiles"]})
         return stats
 
 

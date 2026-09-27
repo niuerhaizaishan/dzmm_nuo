@@ -149,14 +149,18 @@ def _live_structural() -> dict:
     }
 
 
-def hot_reload_check() -> None:
+async def hot_reload_check() -> None:
     """主循环每轮调一次（P12-F）：配置/提示词改了就地生效，不用重启。
 
     出错不抛（热加载的问题绝不能让机器人停摆），只在日志里说清楚。
+
+    P12-AA：整体丢进工作线程 —— `maybe_reload()` 在配置/提示词真的变过时要
+    读 config.json + 最多 39 个 prompt 文件（几十毫秒），以前直接跑在事件循环上。
+    便宜的那一段（一次 `stat`）也跟着挪走，代价可忽略（线程池 16 个工作线程）。
     """
     try:
         from runtime import hotload as _hotload
-        rep = _hotload.maybe_reload()
+        rep = await asyncio.to_thread(_hotload.maybe_reload)
     except Exception as e:                                     # noqa: BLE001
         log("P12: 热加载检查异常（不影响运行）：" + str(e)[:100])
         return
@@ -326,6 +330,38 @@ def load_state() -> dict:
 
 def save_state(s: dict) -> None:
     state_store.save_state(s)
+
+
+def _write_text_file(path: str, text: str) -> None:
+    """写文本文件（P12-AA：给 `asyncio.to_thread` 用的同步小工具）。"""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def _read_text_file(path: str) -> str:
+    """读文本文件，读不到返回空串（P12-AA：同上，别在事件循环里读盘）。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    except Exception:                                          # noqa: BLE001
+        return ""
+
+
+def _save_group(cid: str, group_state: dict) -> None:
+    """只落**本群**那一行（P12-AA，2026-09-27 体检）。
+
+    ⚠️ 为什么不能再用 `save_state(state)`：`state_store.save_state()` 走的是
+    `save_scope("group", 整份映射)` —— **整 scope 重写**。按群并行（P12-I）下
+    三个任务共用同一份 `state` 字典，任务 A 手里那份还带着群 B/C 的旧快照，
+    写下去就把 B/C 这一轮的新数据盖回旧值（丢更新）。
+
+    `save_scope` 本身只 upsert 传进去的键、不删别的键，所以传 `{cid: 本群}` 就
+    恰好等于"只写本群"。语义与原实现一致，只是不再碰其它群。
+    """
+    try:
+        state_store.save_state({cid: group_state or {}})
+    except Exception:                                          # noqa: BLE001
+        pass
 
 
 def get_cached_cookie() -> str:
@@ -1105,7 +1141,7 @@ def _rollback_last_id(cid: str, old_last_id: str) -> None:
     group_state = state.get(cid) or {}
     group_state["last_id"] = old_last_id
     state[cid] = group_state
-    save_state(state)
+    _save_group(cid, group_state)
 
 
 def _climax_hits(group_state: dict, cid: str = None):
@@ -1198,7 +1234,7 @@ def _judge_pending(cid: str) -> str:
     group_state["heat_pending"] = {}
     group_state["heat_last_judge"] = time.time()
     state[cid] = group_state
-    save_state(state)
+    _save_group(cid, group_state)
     return result
 
 
@@ -1222,12 +1258,17 @@ def _build_climax_context(cid: str, max_count: int = 60) -> str:
     return "\n".join(lines)
 
 
-async def _handle_climax(sender, cid: str, dry: bool, hits: list):
-    """处理高潮事件：为每个发情值≥100的成员生成专属色色文字并 @当事人（标注今日/总高潮次数）."""
-    gs = (load_state() or {}).get(cid) or {}
+def _build_climax_texts(cid: str, hits: list, gs: dict) -> list:
+    """同步部分：拉上下文 + 给每个命中的成员生成一段色色文字（P12-AA）。
+
+    抽出来是因为它**会调模型和平台接口**：必须整体丢进 `asyncio.to_thread`，
+    否则发情值一爆表就把这个群的事件循环堵住十几秒（发送本身还是留在循环里）。
+    返回 `[(uid, name, msg), ...]`。
+    """
     total_map = gs.get("heat_climax") or {}
     today_map = gs.get("heat_climax_today") or {}
     context = _build_climax_context(cid)  # 拉一次上下文，循环复用
+    out = []
     for uid, _h in hits:
         name = get_full_name(uid)
         total = total_map.get(uid, 0)
@@ -1242,10 +1283,17 @@ async def _handle_climax(sender, cid: str, dry: bool, hits: list):
             text = ""
         text = (text or "").strip().replace("🤖", "")
         tag = "🔥 发情值爆表！今天第" + str(today) + "次高潮，总共第" + str(total) + "次～"
-        if text:
-            msg = "@" + name + " " + tag + "\n\n" + text
-        else:
-            msg = "@" + name + " " + tag
+        out.append((uid, name, ("@" + name + " " + tag + "\n\n" + text) if text
+                    else ("@" + name + " " + tag)))
+    return out
+
+
+async def _handle_climax(sender, cid: str, dry: bool, hits: list):
+    """处理高潮事件：为每个发情值≥100的成员生成专属色色文字并 @当事人（标注今日/总高潮次数）."""
+    gs = (load_state() or {}).get(cid) or {}
+    # ⚠️ P12-AA：生成（平台读 + 模型）整段放工作线程；发送留在循环里。
+    items = await asyncio.to_thread(_build_climax_texts, cid, hits, gs)
+    for _uid, _name, msg in items:
         if dry:
             log("[dry] " + msg[:60])
         else:
@@ -1701,7 +1749,7 @@ def _maybe_devil_cold_roast(cid: str) -> str:
     if random.random() >= _tune("devil.cold_prob", cid):
         group["devil_cold_last"] = now
         state[cid] = group
-        save_state(state)
+        _save_group(cid, group)
         log("🎲 [冷场] [" + cid[:8] + "] roll 不中（" + str(int(_tune("devil.cold_prob", cid) * 100)) + "%），30 分钟后再试")
         return ""
     # 命中：生成（吐槽冷清）
@@ -1716,13 +1764,13 @@ def _maybe_devil_cold_roast(cid: str) -> str:
         # 生成失败也更新周期标记（30 分钟后再试，避免反复重试刷屏）
         group["devil_cold_last"] = now
         state[cid] = group
-        save_state(state)
+        _save_group(cid, group)
         return ""
     # 更新 + save
     group["devil_cold_last"] = now
     group["devil_daily_count"] = group.get("devil_daily_count", 0) + 1
     state[cid] = group
-    save_state(state)
+    _save_group(cid, group)
     return roast
 
 
@@ -2041,7 +2089,6 @@ async def _scheduled_pushes(sender, dry: bool) -> None:
     today = now.strftime("%Y-%m-%d")
     cur = now.hour * 60 + now.minute
     st = load_state()
-    changed = False
     for period, hour in (("morning", 8), ("noon", 12), ("evening", 22)):
         # 窗口：[整点, 整点+90 分钟]；超出窗口就不补了（避免半夜恢复时补发早安）
         if not (hour * 60 <= cur <= hour * 60 + int(_tune("schedule.greet_window_min"))):
@@ -2067,10 +2114,11 @@ async def _scheduled_pushes(sender, dry: bool) -> None:
                 gs = st.get(c) or {}
                 gs[key] = today
                 st[c] = gs
-                changed = True
+                # P12-AA：这一支会**同时**给多个群打点，而它跑在主循环任务里 ——
+                # 整 scope 落盘会用这份旧快照盖掉别的群这一轮的新数据，
+                # 所以逐个群只写自己那一行。
+                _save_group(c, gs)
             log("greet[" + period + "] " + c[:8] + ": " + ("✅" if ok else "❌"))
-        if changed:
-            save_state(st)
         if period == "noon":
             # 午间顺带发每日记忆汇报
             for c in PUSH_CIDS:
@@ -2085,9 +2133,7 @@ async def _scheduled_pushes(sender, dry: bool) -> None:
                 gs = st.get(c) or {}
                 gs["last_memreport"] = today
                 st[c] = gs
-                changed = True
-            if changed:
-                save_state(st)
+                _save_group(c, gs)
 
 
 async def _handle_review(sender, cid: str, action: str, dry: bool):
@@ -2110,21 +2156,21 @@ async def _handle_review(sender, cid: str, action: str, dry: bool):
             await _perf_send(sender, "重写失败了，再试一次 /退回 吧～", cid, dry)
             return
         path = _novel_save_path(cid, novel)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(novel)
+        # P12-AA：写文件与告警 webhook 都是**阻塞**的（send_weixin 最长 ~45 秒：
+        # requests timeout=15 × retries=2），原先直接跑在事件循环上，会把整个群卡住。
+        await asyncio.to_thread(_write_text_file, path, novel)
         perf.update({"novel_path": path, "novel_title": _extract_novel_title(novel),
                      "review_status": "pending", "review_notified_ts": time.time()})
         _set_perf_state(cid, perf)
         await _perf_send(sender, "已重新生成《" + perf["novel_title"] + "》，请糯糯姐再审核～", cid, dry)
-        send_weixin("📝【小小糯】公演小说《" + perf["novel_title"] + "》已重新生成，待审核～\n文件：" + path +
-                    "\n请在群里回复：/同意 发送｜/退回 重写｜/忽略 不再提醒")
+        await asyncio.to_thread(
+            send_weixin,
+            "📝【小小糯】公演小说《" + perf["novel_title"] + "》已重新生成，待审核～\n文件：" + path +
+            "\n请在群里回复：/同意 发送｜/退回 重写｜/忽略 不再提醒")
         return
     if action == "approve":
         path = perf.get("novel_path", "")
-        try:
-            novel = open(path, encoding="utf-8").read()
-        except Exception:
-            novel = ""
+        novel = await asyncio.to_thread(_read_text_file, path)
         if not novel:
             await _perf_send(sender, "没找到小说文件，重新 /公演结束 试试吧～", cid, dry)
             return
@@ -2594,6 +2640,8 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
     last_http_fallback = {cid: 0.0 for cid in groups}
     last_read_attempt = {cid: 0.0 for cid in groups}
     last_read_skip_log = {cid: 0.0 for cid in groups}
+    # P12-AA：每个群上次"批量刷新成员昵称缓存"的时间（在工作线程里做，防事件循环发 HTTP）
+    _names_loaded_at = {cid: 0.0 for cid in groups}
     _was_sio_connected = False  # 上一次 Socket.IO 连接状态（恢复检测用边沿：断→连）
     _last_scan_day = str(_scan_load().get("day") or "")  # 上次档案扫描日期（每天 06:00 一次）
 
@@ -2608,7 +2656,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
         # P12-I：**只有主实例**做 —— 它是全局的（改人设/参数/开关），
         # 两个实例同时应用会互相踩。
         if is_primary:
-            hot_reload_check()
+            await hot_reload_check()
         # 检测 renew_token 连续失败信号，主动退出交给 entrypoint 重启
         if (ROOT / "token.emergency").exists():
             try:
@@ -2797,11 +2845,21 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                     if not pending:
                         continue
 
+                    # P12-AA：每 10 分钟在**工作线程**里批量刷新本群成员昵称缓存。
+                    # 这样 `get_full_name` 在事件循环上永远不需要发 HTTP
+                    # （缓存未命中时它只退化取档案名/uid 前缀并把 uid 记进待补集合）。
+                    if now_ts - _names_loaded_at.get(cid, 0.0) >= 600:
+                        _names_loaded_at[cid] = now_ts
+                        try:
+                            await asyncio.to_thread(_load_member_names, cid)
+                        except Exception:                          # noqa: BLE001
+                            pass
+
                     # 静默监控群：只推进游标、不做任何处理（读得到但一声不吭）
                     if cid in MUTE_CIDS:
                         group_state["last_id"] = pending[-1]["message_id"]
                         state[cid] = group_state
-                        save_state(state)
+                        _save_group(cid, group_state)
                         continue
 
                     # P12-H：新 Bot 的 uid 可能还不知道（配置里没写 / 平台没给）。
@@ -2846,7 +2904,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         # 记录最后一条用户消息时间，立即落盘避免末尾 load_state 覆盖
                         group_state["last_msg_time"] = time.time()
                         state[cid] = group_state
-                        save_state(state)
+                        _save_group(cid, group_state)
 
                     # 检测新成员加入：认证群做筛查（踢游客/踢男/提醒未填性别），
                     # 其他群只发中性欢迎语，不踢人、不发认证群文案
@@ -2960,7 +3018,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         # 先推进 last_id，避免处理中异常导致同一条指令被重复处理
                         group_state["last_id"] = msgs[-1]["message_id"]
                         state[cid] = group_state
-                        save_state(state)
+                        _save_group(cid, group_state)
 
                         perf = _get_perf_state(cid)
                         perf_active = perf.get("active")
@@ -3164,7 +3222,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             # （否则会出现"页面上关着、群里却是开的"这种自相矛盾）
                             group_state["devil_enabled"] = (devil_sw == "on")
                             state[cid] = group_state
-                            save_state(state)
+                            _save_group(cid, group_state)
                             reply = ("💬 主动吐槽已开启～我会偶尔冒个泡哦～"
                                      if devil_sw == "on" else "💬 主动吐槽已关闭～我先安静啦")
                         elif is_intro_cmd(cmd) and _feat_on(cid, "intro"):
@@ -3325,7 +3383,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             old_last_id = group_state.get("last_id", "")  # 记录旧值，生成失败时回滚
                             group_state["last_id"] = msgs[-1]["message_id"]
                             state[cid] = group_state
-                            save_state(state)
+                            _save_group(cid, group_state)
                             q = _strip_at(at_msg, cid)  # 去 @前缀，得到纯提问
                             mem_content = _extract_remember(q) \
                                 if _feat_on(cid, "memory_remember") else None
@@ -3358,7 +3416,12 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                             ctx.append({"sender": get_name(muid), "text": mtxt})
                                     glabel = _gender_label(at_sender)  # 女生/男生/未知
                                     ctx.append({"sender": get_name(at_sender) + ("（" + glabel + "）" if glabel != "未知" else ""), "text": q})
-                                    mem = _retrieve_memory(cid, q, _tune("memory.inject", cid))
+                                    # P12-AA：记忆检索内部会调模型（两级精筛），
+                                    # 必须放工作线程 —— 紧邻的 generate_reply 本来就包了，
+                                    # 这一处漏了，等于每条带记忆注入的 @ 消息都堵一下。
+                                    mem = await asyncio.to_thread(
+                                        _retrieve_memory, cid, q,
+                                        _tune("memory.inject", cid))
                                     if mem:
                                         mem_lines = "\n".join("- " + m["text"] for m in mem)
                                         ctx.insert(0, {"sender": "记忆", "text": "你之前记住的相关的事：\n" + mem_lines})
@@ -3390,7 +3453,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         old_last_id = group_state.get("last_id", "")
                         group_state["last_id"] = msgs[-1]["message_id"]
                         state[cid] = group_state
-                        save_state(state)
+                        _save_group(cid, group_state)
                         # ---- 女鬼状态：屋子里没人了（门和窗被带走），直到屋主回来 ----
                         ghost = group_state.get("rose_ghost") or {}
                         ghost_on = bool(ghost.get("active"))
@@ -3399,13 +3462,13 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             ghost_on = False  # 安全兜底：屋主太久没回来，自动收拾好（防房间永久哑掉）
                             group_state["rose_ghost"] = {"active": False, "ts": time.time()}
                             state[cid] = group_state
-                            save_state(state)
+                            _save_group(cid, group_state)
                             log("👻 [" + cid[:8] + "] 女鬼状态超时，自动恢复")
                         if ghost_on and _room_owner(cid, r_uid) and _feat_on(cid, "room_ghost"):
                             # 屋主回来了 → 屋子复原
                             group_state["rose_ghost"] = {"active": False, "ts": time.time()}
                             state[cid] = group_state
-                            save_state(state)
+                            _save_group(cid, group_state)
                             log("🌹 [" + cid[:8] + "] " + get_name(r_uid)[:12] + " 回来，女鬼退场")
                             reply = _personas.fill(ROOM_GHOST_BACK, cid, who=get_name(r_uid))
                             _layout_after = _room_layout.DEFAULT_LAYOUT   # 屋子复原 = 玫瑰房
@@ -3416,7 +3479,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                     >= ROOM_GHOST_WARN_COOLDOWN:
                                 group_state["rose_ghost_warn_ts"] = time.time()
                                 state[cid] = group_state
-                                save_state(state)
+                                _save_group(cid, group_state)
                                 log("👻 [" + cid[:8] + "] 女鬼期间又摘花，警告+恐吓")
                                 reply = _personas.fill(ROOM_GHOST_WARN, cid)
                             else:
@@ -3435,7 +3498,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             group_state["rose_ghost_ts"] = time.time()
                             group_state["rose_ghost"] = {"active": True, "ts": time.time()}
                             state[cid] = group_state
-                            save_state(state)
+                            _save_group(cid, group_state)
                             log("👻 [" + cid[:8] + "] " + get_name(r_uid)[:12] + " 摘花，放出红衣女鬼")
                             reply = _personas.fill(ROOM_GHOST_TEXT, cid)
                             _ghost_after = "摘花放鬼"     # P12-O：放出女鬼 → 补那张图
@@ -3448,7 +3511,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             group_state["rose_ghost_ts"] = time.time()
                             group_state["rose_ghost"] = {"active": True, "ts": time.time()}
                             state[cid] = group_state
-                            save_state(state)
+                            _save_group(cid, group_state)
                             log("👻 [" + cid[:8] + "] " + get_name(r_uid)[:12] + " 命令女鬼上场")
                             reply = _personas.fill(ROOM_GHOST_TEXT, cid)
                             _ghost_after = "命令"
@@ -3509,7 +3572,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                         + " 第三次调戏，送出去（纯台词）")
                                 _strike_set(group_state, r_uid, nn)
                                 state[cid] = group_state
-                                save_state(state)
+                                _save_group(cid, group_state)
                         if reply is None:
                             pass  # 静默（女鬼期间管家不在，不接话）
                         else:
@@ -3558,7 +3621,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                 log("✅" if ok else "❌")
                             # 立即落盘（devil 字段 + 本轮统计，避免末尾 load_state 覆盖）
                             state[cid] = group_state
-                            save_state(state)
+                            _save_group(cid, group_state)
 
                     # 调教状态流转（目标回应 / 冷场接管 / 超时结束）
                     # ⚠️ 必须 to_thread：里面会调模型（冷场自编命令 / 超时收尾小结），
@@ -3607,7 +3670,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                     # 推进 last_id 到最新（"只处理之后"的逻辑保证不会重复）
                     group_state["last_id"] = msgs[-1]["message_id"]
                     state[cid] = group_state
-                    save_state(state)
+                    _save_group(cid, group_state)
 
                     # 批量评定发情值：30分钟周期；有发情值≥80的成员刚发言则立即评定（高潮卡在发言时刻）
                     hot_speaker = any(
@@ -3637,7 +3700,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         hits, climax_changed = _climax_hits(group_state)
                     if climax_changed:
                         state[cid] = group_state
-                        save_state(state)
+                        _save_group(cid, group_state)
                     if hits:
                         await _handle_climax(sender, cid, dry, hits)
                         await _publish_rank(sender, cid, dry)
@@ -3651,7 +3714,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                 and _feat_on(cid, "rank_push") and has_data):
                             group_state["last_daily_rank_date"] = today
                             state[cid] = group_state
-                            save_state(state)
+                            _save_group(cid, group_state)
                             await _publish_rank(sender, cid, dry)
 
                 # 冷场吐槽（群里冷清，时间驱动，无新消息也执行）——房间群不毒舌
@@ -4072,7 +4135,7 @@ def _add_pending_screen(cid: str, uid: str) -> None:
             pending.append(uid)
             gs["pending_screen"] = pending
             state[cid] = gs
-            save_state(state)
+            _save_group(cid, gs)
     except Exception:
         pass
 
@@ -4097,7 +4160,7 @@ async def _rescreen_pending(sender, cid: str, dry: bool) -> None:
         return
     gs["pending_screen"] = []
     state[cid] = gs
-    save_state(state)
+    _save_group(cid, gs)
     log("🔄 [" + cid[:8] + "] 风控解除，补筛查 " + str(len(pending)) + " 名新成员")
     passed = await _handle_joins(sender, cid, pending, dry)
     for jid in passed:
@@ -4278,7 +4341,7 @@ def sync_profiles() -> str:
     # 5. 推进游标
     group_state["last_sync_at"] = msgs[-1]["sent_at"]
     state[cid] = group_state
-    save_state(state)
+    _save_group(cid, group_state)
 
     return "同步完成～更新了 " + str(updated) + " 人的发言档案～"
 

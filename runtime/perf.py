@@ -314,10 +314,10 @@ async def _handle_perf_end(sender, cid: str, dry: bool):
         await _perf_send(sender, "小说生成失败了，可以重新 /公演结束 再试哦～", cid, dry)
         return
 
-    # 4. 保存
+    # 4. 保存（P12-AA：写盘与告警 webhook 都是阻塞的，挪到工作线程 ——
+    #    `_handle_perf_end` 是 async，直接 open()/requests 会把事件循环堵住）
     path = _novel_save_path(cid, novel)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(novel)
+    await asyncio.to_thread(_write_novel, path, novel)
 
     perf.update({
         "active": False,
@@ -330,8 +330,16 @@ async def _handle_perf_end(sender, cid: str, dry: bool):
     _set_perf_state(cid, perf)
     await _perf_send(sender, "小说《" + perf["novel_title"] + "》已生成～请糯糯姐审核：/同意 发送｜/退回 重写｜/忽略 不再提醒", cid, dry)
     # 事件驱动：直连微信提醒糯糯审核（不等定时任务）
-    send_weixin("📝【小小糯】公演小说《" + perf["novel_title"] + "》已生成，待审核～\n文件：" + path +
-                "\n请在群里回复：/同意 发送｜/退回 重写｜/忽略 不再提醒")
+    await asyncio.to_thread(
+        send_weixin,
+        "📝【小小糯】公演小说《" + perf["novel_title"] + "》已生成，待审核～\n文件：" + path +
+        "\n请在群里回复：/同意 发送｜/退回 重写｜/忽略 不再提醒")
+
+
+def _write_novel(path: str, text: str) -> None:
+    """写小说文件（P12-AA：给 `asyncio.to_thread` 用的同步工具）。"""
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
 
 
 def _check_perf_interact(cid: str, msgs: list) -> str:

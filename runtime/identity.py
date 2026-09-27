@@ -39,6 +39,15 @@ _BOT_SUFFIXES = ("-bot", "-机器人", "bot", "机器人", " bot", "机器人～
 # 昵称缓存（uid -> 昵称），跨轮次复用
 _name_cache: dict = {}
 
+# P12-AA：在事件循环上遇到"缓存里没有"的 uid 时记在这里（**不发 HTTP**），
+# 等主循环的批量预载在工作线程里把真名补上。诊断用 `pending_name_count()`。
+_pending_names: set = set()
+
+
+def pending_name_count() -> int:
+    """还等着补真名的 uid 个数（体检/自证用）。"""
+    return len(_pending_names)
+
 # P12-H：配置里的所有 Bot（key -> {key,uid,name,short,cid}）。
 # 由 `register_bots()` 注入；`_BOT_UIDS`/`_BOT_NAMES` 是它的两个派生集合。
 _BOTS: dict = {}
@@ -50,6 +59,7 @@ __all__ = [
     "self_uids", "is_self", "self_names", "self_names_longest_first",
     "self_names_for", "mentions_self",
     "_name_cache", "_load_member_names", "get_full_name", "get_name", "is_at_me",
+    "_pending_names", "pending_name_count", "_on_event_loop",
     "register_bots", "bots", "bot_uids", "bot_names", "learn_bot_uid",
     "resolve_bot_uids",
 ]
@@ -295,25 +305,56 @@ def self_names_longest_first(cid: str = None) -> list:
 
 
 def _load_member_names(cid: str = None):
-    """批量加载成员昵称到缓存（一次 API，替代逐个 get_user）."""
+    """批量加载成员昵称到缓存（一次 API，替代逐个 get_user）.
+
+    ⚠️ 这是**阻塞**调用（平台 HTTP），必须在工作线程里跑
+    （主循环每 10 分钟 `await asyncio.to_thread(_load_member_names, cid)`）。
+    """
     try:
         members = get_members(cid or ctx.get_active_cid())
         for uid, name in members.items():
             if name:
                 _name_cache[uid] = name
+                _pending_names.discard(uid)
     except Exception:
         pass
 
 
+def _on_event_loop() -> bool:
+    """当前代码是不是跑在事件循环线程上（P12-AA 的守卫依据）。"""
+    try:
+        import asyncio
+        asyncio.get_running_loop()
+        return True
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
 def get_full_name(uid: str) -> str:
-    """uid -> 完整昵称（缓存）."""
-    if uid not in _name_cache:
-        u = get_user(ctx.get_active_cid(), uid)
-        nm = (u.get("fullName", "") if u else "") or ""
-        if not nm:
-            # 跨群/接口失败时兜底用档案里的昵称，别把 uid 前缀当名字叫出去
-            nm = str((get_profile(uid) or {}).get("name") or "")
-        _name_cache[uid] = nm or uid[:8]
+    """uid -> 完整昵称（缓存）.
+
+    ⚠️ P12-AA（2026-09-27 体检）：缓存未命中时原来是**直接发 HTTP**（`get_user`），
+    而它被一堆 async 函数直接调用（`trend` / `recap` / `sign` / `dice` …）——
+    于是"每见一个新成员"就把事件循环堵几秒。
+
+    现在：在事件循环上**不发 HTTP**，退化成"档案里的昵称 → uid 前缀"，
+    并把 uid 记进 `_pending_names`，等主循环每 10 分钟的批量预载
+    （`_load_member_names`，跑在工作线程）把真名补上。
+    工作线程里调用时行为完全不变（该发就发、该缓存就缓存）。
+    """
+    if uid in _name_cache:
+        return _name_cache[uid]
+    if _on_event_loop():
+        _pending_names.add(uid)
+        # 刻意**不写缓存**：写进去会把"还没拿到真名"固化，预载也就懒得覆盖了
+        return str((get_profile(uid) or {}).get("name") or "") or uid[:8]
+    u = get_user(ctx.get_active_cid(), uid)
+    nm = (u.get("fullName", "") if u else "") or ""
+    if not nm:
+        # 跨群/接口失败时兜底用档案里的昵称，别把 uid 前缀当名字叫出去
+        nm = str((get_profile(uid) or {}).get("name") or "")
+    _name_cache[uid] = nm or uid[:8]
+    _pending_names.discard(uid)
     return _name_cache[uid]
 
 
