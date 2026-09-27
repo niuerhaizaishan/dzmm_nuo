@@ -300,6 +300,77 @@ def test_cooldown_wait_is_short():
     assert "COOLDOWN_WAIT_TIMEOUT" in src
 
 
+def test_webhook_maps_join_event_to_screening_shape():
+    """P12-J：**入群事件**也要能从 Webhook 走。
+
+    筛查靠 `bot._is_join_msg()`：`content.text` 含「加入了群聊」且 `sent_by` 是新成员。
+    Telegram 风格里入群是 `message.new_chat_members` —— 这里把它合成成那个形状，
+    否则"收消息只走 Webhook"之后入群筛查会瞎掉（还得靠侧车账号的 Socket.IO）。
+    """
+    upd = {"message": {"message_id": "j-1", "chat": {"id": ROSE},
+                       "date": 1790476000,
+                       "new_chat_members": [{"id": "newbie-1", "first_name": "小明"}]}}
+    m = W.to_internal(upd)
+    assert m is not None
+    assert "加入了群聊" in m["content"]["text"], m
+    assert m["sent_by"] == "newbie-1"
+    assert m["content"]["type"] == "system"
+    assert m["chatroom_id"] == ROSE
+
+    # 单个成员 + 退群也要认
+    one = W.to_internal({"message": {"message_id": "j-2", "chat": {"id": ROSE},
+                                     "date": 1790476000,
+                                     "new_chat_member": {"id": "newbie-2",
+                                                         "first_name": "小红"}}})
+    assert one["sent_by"] == "newbie-2" and "加入了群聊" in one["content"]["text"]
+    left = W.to_internal({"message": {"message_id": "j-3", "chat": {"id": ROSE},
+                                      "date": 1790476000,
+                                      "left_chat_member": {"id": "gone-1",
+                                                           "first_name": "小刚"}}})
+    assert left["sent_by"] == "gone-1" and "退出了群聊" in left["content"]["text"]
+
+
+def test_received_messages_carry_source_marker():
+    """来源可证：webhook 与 socket 都要打 `_source` 标记。"""
+    m = W.to_internal(_payload())
+    assert m["_source"] == "webhook"
+
+    import sio_subscribe
+    sub = sio_subscribe.SioSubscriber([ROSE])
+    sub.push(ROSE, {"message_id": "s-1", "chatroom_id": ROSE})
+    got = sub.drain(ROSE)[0]
+    assert got["_source"] == "sio", "socket 来的消息也要能认出来源"
+
+
+def test_official_only_mode_does_not_fall_back_to_account():
+    """`DZMM_OFFICIAL_ONLY=on`：Bot 明确拒绝时**不回退账号**（宁可丢，也不悄悄换账号发）。"""
+    import asyncio
+    from runtime.routing import RoutingSender, BotApiRejected
+
+    class _Bot:
+        def send_text(self, cid, text):
+            raise BotApiRejected("Bot is not a member")
+
+    class _Acct:
+        def __init__(self):
+            self.sent = 0
+
+        async def send(self, text, cid, allow_fallback=True):
+            self.sent += 1
+            return True
+
+    for official_only, expect_acct in ((False, 1), (True, 0)):
+        acct = _Acct()
+        r = RoutingSender(acct, {ROSE: _Bot()}, official_only=official_only)
+        ok = asyncio.run(r.send("hi", ROSE))
+        assert acct.sent == expect_acct, (official_only, acct.sent)
+        if official_only:
+            assert ok is False
+            assert r.counts["dropped_official_only"] == 1
+        else:
+            assert ok is True and r.counts["account"] == 1
+
+
 def test_run_all_passes_bot_specs_not_identity_dicts():
     """源码级钉住：`_run_all` 必须传 `_CFG.bots`（带 token_env）。"""
     import bot as B

@@ -29,12 +29,18 @@ class RoutingSender:
     因此调用点与 `main_loop` 的其余代码都无需改动。
     """
 
-    def __init__(self, account, bot_senders: dict | None = None, on_route=None):
+    def __init__(self, account, bot_senders: dict | None = None, on_route=None,
+                 official_only: bool = False):
         self._account = account
         self._bots = dict(bot_senders or {})     # {chatroom_id: DzmmBotSender}
         self._on_route = on_route                # 可选的审计回调 (event, cid, detail)
+        # P12-J：只走官方通道。开着时，Bot 明确拒绝（BotApiRejected）也**不回退账号** ——
+        # 代价是那条消息会丢；好处是"群里每一条都是 Bot 发的"这件事不再有例外。
+        # 默认关：回退是为了撞验证码时别丢消息（丢消息比晚一点更糟）。
+        self._official_only = bool(official_only)
         self.counts = {"bot_ok": 0, "bot_rejected": 0,
-                       "bot_ambiguous": 0, "account": 0}
+                       "bot_ambiguous": 0, "account": 0,
+                       "dropped_official_only": 0}
 
     def __getattr__(self, name):
         return getattr(self._account, name)
@@ -63,8 +69,12 @@ class RoutingSender:
                 self._note("bot_ok", cid, mid)
                 return True
             except BotApiRejected as e:
-                # 明确拒绝、确定未投递 → 允许回退账号
+                # 明确拒绝、确定未投递 → 默认允许回退账号（撞验证码时别丢消息）
                 self._note("bot_rejected", cid, str(e))
+                if self._official_only:
+                    # 只走官方通道：宁可这条失败并留下显式记录，也不悄悄换成账号发
+                    self._note("dropped_official_only", cid, str(e))
+                    return False
             except BotApiAmbiguous as e:
                 # 可能已投递 → 绝不重发，直接判失败
                 self._note("bot_ambiguous", cid, str(e))

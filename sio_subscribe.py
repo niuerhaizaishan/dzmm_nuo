@@ -75,6 +75,9 @@ class SioSubscriber:
         """
         if self._dup(msg):
             return len(self._buffer.get(cid) or [])
+        # P12-J：打来源标记，便于"收消息到底走哪条路"可证（webhook vs socket）
+        if isinstance(msg, dict) and not msg.get("_source"):
+            msg["_source"] = "sio"
         buf = self._buffer.setdefault(cid, [])
         buf.append(msg)
         return len(buf)

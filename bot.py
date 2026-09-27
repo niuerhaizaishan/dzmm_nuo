@@ -2271,10 +2271,14 @@ def _wrap_with_bot_routing(account):
             else:
                 log("bot路由: 没有任何可用 Bot（配置与 env 都没有），退回账号")
                 return account
-        log("bot路由: 已启用 origin={} 覆盖群={}".format(
+        log("bot路由: 已启用 origin={} 覆盖群={} 只走官方={}".format(
             (os.environ.get("DZMM_BOT_ORIGIN") or ORIGIN).rstrip("/"),
-            ",".join(c[:8] for c in senders)))
-        return RoutingSender(account, senders, on_route=_log_route)
+            ",".join(c[:8] for c in senders),
+            "on" if _truthy_env("DZMM_OFFICIAL_ONLY", "off") else "off"))
+        # P12-J：`DZMM_OFFICIAL_ONLY=on` 时，Bot 明确拒绝也**不回退账号**
+        # （代价：那条消息会丢；好处：群里每条都是官方 Bot 发的，没有例外）
+        return RoutingSender(account, senders, on_route=_log_route,
+                             official_only=_truthy_env("DZMM_OFFICIAL_ONLY", "off"))
     except Exception as e:                                     # noqa: BLE001
         log("bot路由: 初始化失败，退回账号：" + str(e)[:100])
         return account
@@ -3403,8 +3407,14 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                 if _t_round is not None:
                     _cost = time.time() - _t_round
                     if _lag >= 1.5 or _cost >= 3.0:
-                        log("⏱️ [{}] 投递 {:.1f}s + 本轮处理 {:.1f}s".format(
-                            cid[:8], _lag, _cost))
+                        # 来源可证：webhook（平台直推）还是 sio（侧车账号的 Socket.IO）
+                        _src = ""
+                        for _m in reversed(msgs or ()):
+                            if not is_self(_m.get("sent_by")):
+                                _src = str(_m.get("_source") or "sio")
+                                break
+                        log("⏱️ [{}] 投递 {:.1f}s + 本轮处理 {:.1f}s（来源 {}）".format(
+                            cid[:8], _lag, _cost, _src or "?"))
             except Exception as e:
                 msg = str(e)
                 if "captcha" in msg.lower():

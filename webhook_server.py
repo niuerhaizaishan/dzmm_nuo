@@ -78,6 +78,12 @@ def to_internal(update: dict) -> dict | None:
     `sent_at` 用 **UTC** 的 "%Y-%m-%d %H:%M:%S"（与 tRPC `getMessages` 一致）——
     `bot.message_lag()` 就是拿它算"投递延迟"的。
     解析不出来就返回 None（调用方会 200 丢掉并记日志，**不**让平台重推）。
+
+    **入群/退群事件**：Telegram 风格是 `message.new_chat_member(s)` /
+    `left_chat_member`。本项目筛查靠 `_is_join_msg()` —— 它只认
+    `content.text` 里含「加入了群聊」且 `sent_by` 是新成员 uid。
+    所以这里把入群事件**合成成那个形状**，于是"收消息全走 Webhook"之后
+    入群筛查照样能用（不必再依赖侧车账号的 Socket.IO）。
     """
     if not isinstance(update, dict):
         return None
@@ -92,13 +98,38 @@ def to_internal(update: dict) -> dict | None:
         or _first(update, "chatroomId", "chatroom_id")
     if not cid:
         return None
-    sender = _first(msg, "sent_by", "sender_id") or _first(frm, "id") \
+
+    # ---- 入群 / 退群：合成成 _is_join_msg() 认得的系统消息 ----
+    join = _first(msg, "new_chat_member", "new_chat_participant")
+    join_list = _first(msg, "new_chat_members", "new_chat_participants")
+    left = _first(msg, "left_chat_member", "left_chat_participant")
+    sys_text = ""
+    sys_uid = ""
+    if join_list and isinstance(join_list, (list, tuple)):
+        parts, uids = [], []
+        for j in join_list:
+            if isinstance(j, dict):
+                parts.append(str(_first(j, "first_name", "username", "name") or "新成员"))
+                uids.append(str(_first(j, "id") or ""))
+        sys_text = "、".join(parts) + " 加入了群聊"
+        sys_uid = uids[0] if uids else ""
+    elif isinstance(join, dict):
+        sys_text = str(_first(join, "first_name", "username", "name") or "新成员") \
+            + " 加入了群聊"
+        sys_uid = str(_first(join, "id") or "")
+    elif isinstance(left, dict):
+        sys_text = str(_first(left, "first_name", "username", "name") or "成员") \
+            + " 退出了群聊"
+        sys_uid = str(_first(left, "id") or "")
+
+    sender = sys_uid or _first(msg, "sent_by", "sender_id") or _first(frm, "id") \
         or _first(update, "sent_by")
     if not sender:
         return None
 
-    text = _first(msg, "text") or _first(content, "text") or ""
-    ctype = _first(msg, "type") or _first(content, "type") or "text"
+    text = sys_text or _first(msg, "text") or _first(content, "text") or ""
+    ctype = "system" if sys_text else (_first(msg, "type")
+                                       or _first(content, "type") or "text")
 
     sent_at = ""
     raw_date = _first(msg, "date", "sent_at")
