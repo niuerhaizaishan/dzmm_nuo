@@ -201,3 +201,40 @@ def test_collect_secrets_reads_env(monkeypatch):
     got = W.collect_secrets([B("weisi_rose", ROSE, "DZMM_BOT_TOKEN_ROSE"),
                              B("nuo_main", BD, "DZMM_BOT_TOKEN")])
     assert got == {SECRET_ROSE: ("weisi_rose", ROSE)}, "没配 Secret 的 Bot 不该进白名单"
+
+
+# ---------------------------------------------------------------- 加载方式（踩过的坑）
+
+def test_root_module_loader_survives_gutted_sys_path():
+    """P12-J 真事故：`sio_subscribe` 被 import 时会把项目根目录从 sys.path 摘掉，
+    于是那之后的 `import webhook_server` 必然 ModuleNotFoundError
+    （日志里只有一句 No module named 'webhook_server'，手工 import 又是好的）。
+
+    `bot._load_root_module()` 按**文件路径**加载，不受 sys.path 影响 —— 这条测试
+    就是把 sys.path 弄干净后仍然能加载，钉住这个坑不再回来。
+    """
+    import bot as B
+
+    saved_path = list(sys.path)
+    saved_mod = sys.modules.pop("webhook_server", None)   # 它在文件顶部已被导入过
+    try:
+        sys.path = [p for p in sys.path if p not in ("", str(B.ROOT))]
+        with pytest.raises(ImportError):
+            __import__("webhook_server")           # 说明 sys.path 确实被掏空了
+        mod = B._load_root_module("webhook_server")
+        assert mod.SECRET_HEADER == W.SECRET_HEADER
+    finally:
+        sys.path = saved_path
+        if saved_mod is not None:
+            sys.modules["webhook_server"] = saved_mod
+
+
+def test_sio_subscribe_still_guts_sys_path():
+    """那个副作用本身是有意的（避免项目自己的 socketio.py 顶掉 python-socketio 包）。
+
+    所以不能"顺手删掉它"—— 只能按路径加载绕开。谁要是把这段删了，这条会红，
+    提醒他去看 `_load_root_module` 的说明。
+    """
+    src = (Path(__file__).resolve().parent.parent / "sio_subscribe.py") \
+        .read_text(encoding="utf-8")
+    assert "sys.path = [p for p in sys.path if p not in (\"\", _ROOT)]" in src

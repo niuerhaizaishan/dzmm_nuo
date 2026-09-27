@@ -367,6 +367,28 @@ def _active_cid() -> str:
 PLATFORM_READ_TIMEOUT = 8.0
 
 
+def _load_root_module(name: str):
+    """按**文件路径**加载项目根目录下的模块（P12-J）。
+
+    为什么不直接 `import`：`sio_subscribe` 被 import 时会把项目根目录从
+    `sys.path` 里摘掉（`sys.path = [p for p in sys.path if p not in ("", _ROOT)]`
+    —— 为了不让项目自己的 `socketio.py` 顶掉 `python-socketio` 包）。
+    于是"在它之后 import 根目录下的模块"必然 `ModuleNotFoundError`：
+    P12-J 的 Webhook 接收端就是这么挂的（日志里只有一句
+    `No module named 'webhook_server'`，手工 `import` 又是好的）。
+    按路径加载不受 `sys.path` 影响，也不再受这类副作用牵连。
+    """
+    import importlib.util
+    path = ROOT / (name + ".py")
+    spec = importlib.util.spec_from_file_location(name, str(path))
+    if spec is None or spec.loader is None:
+        raise ImportError("加载不到 {}（{}）".format(name, path))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def message_lag(msgs) -> float:
     """最新一条**群友**消息从平台发出到现在隔了多少秒（拿不到就 -1）。
 
@@ -3485,7 +3507,9 @@ async def _run_all(interval: float, dry: bool, once: bool) -> None:
     _wh_port = int(os.environ.get("DZMM_WEBHOOK_PORT") or 0)
     if _wh_port:
         try:
-            import webhook_server as _wh
+            # ⚠️ 必须按路径加载：上面刚 import 过 sio_subscribe，它会把项目根目录
+            # 从 sys.path 里摘掉（见 _load_root_module 的说明）。
+            _wh = _load_root_module("webhook_server")
             _secrets = _wh.collect_secrets(_CFG.bots_for_identity())
             if not _secrets:
                 log("P12-J: 开了 Webhook 端口但没有配置 Secret"
