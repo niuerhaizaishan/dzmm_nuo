@@ -28,6 +28,7 @@ __all__ = [
     "_room_owner", "_is_room_trigger", "_is_flower_grab", "_sign_from_md",
     "_sign_intent", "_sign_find", "_sign_parse_birth", "_sign_stored",
     "_sign_remember", "_sign_calc", "_sign_recent", "_split_sections",
+    "_at_others", "_CARD_ECHO_RE",
     "_sign_card", "_sign_reply",
 ]
 
@@ -58,6 +59,43 @@ _SIGN_ME_RE = re.compile(r"^\s*我\s*(" + "|".join(_SIGN_SHORT.keys()) + ")")
 _SIGN_NAMES = [s[0] for s in ROSE_SIGNS]
 
 
+# 客人把我们**发出去的运势卡**某一行原样贴回来 —— 那不是来问运势。
+# 实测（2026-09-27 11:35:53）：有人贴了「速配星座：天蝎座」，被当成新的星座查询，
+# 管家又发了一张卡。只认"标签+冒号"这种卡片格式，正常提问（"我的速配星座是啥"）不受影响。
+_CARD_ECHO_RE = re.compile(
+    r"(综合运势|爱情运势|事业学业|财富运势|健康运势|速配星座|幸运颜色|幸运数字|今日星象)"
+    r"\s*[:：·|｜]")
+
+# `@昵称` 到空白/标点为止（平台昵称里可能有括号、波浪号，都算名字的一部分）
+_AT_TOKEN_RE = re.compile(r"@\s*([^\s@，,。！!？?：:；;、]+)")
+
+
+def _at_others(text: str, cid: str = None) -> bool:
+    """这条消息是不是 @ 了**别人**（不是管家）.
+
+    P12-R（屋主 2026-09-27 确认的收紧口径）：在跟别人说话时，句子里夹着的
+    "摘花 / 运势 / 想喝"这些关键词**不该算到管家头上**。实测案例：
+    「@橘先生（贱畜桃灼的主人） 小橘！摘个花试试！」被当成摘花，
+    管家差点跑出来演女鬼剧本。
+    """
+    t = str(text or "")
+    if "@" not in t:
+        return False
+    try:
+        from runtime.identity import self_names_for
+        mine = self_names_for(cid)
+    except Exception:                                        # noqa: BLE001
+        mine = set()
+    for m in _AT_TOKEN_RE.finditer(t):
+        tok = m.group(1).strip()
+        if not tok:
+            continue
+        if any(nm and (nm in tok or tok in nm) for nm in mine):
+            continue                    # @ 的是我自己
+        return True
+    return False
+
+
 def _room_owner(cid: str, uid: str) -> bool:
     """是不是这间屋子的主人（屋主 + 操作者）——只有他们能下命令."""
     cfg = ROOMS.get(cid) or {}
@@ -70,6 +108,14 @@ def _is_room_trigger(cid: str, uid: str, text: str) -> bool:
     P12-A：房间玩法拆成四个可关的功能（`room_*`），**闸门就在这里** ——
     因为"要不要回应"的判定全集中在这个函数里；关掉某项，那么这类消息
     就不会进房间分支（表现 = 管家不接这一类话）。
+
+    P12-R（2026-09-27 屋主确认的收紧口径，目标是"别误触发"）：
+
+    ① **被点名**（@薇丝 / 说出"薇丝"）→ 一定接；
+    ② **主人的指令**（改布局 / 女鬼上场）→ 照旧不要求名字（信号很强）；
+    ③ **@ 了别人**的消息 → 后面的关键词规则一律不认（在议论别人，不是在吩咐管家）；
+    ④ **星座运势**保留自动（这是房间的招牌服务），但**卡片复读不算**；
+    ⑤ **客人点单必须点名**（原来"想喝 / 给我来…"就能触发，是误触发大户）。
     """
     cfg = ROOMS.get(cid)
     if not cfg or not text or is_self(uid):
@@ -78,34 +124,44 @@ def _is_room_trigger(cid: str, uid: str, text: str) -> bool:
     if not t or t.startswith("/"):
         return False  # / 指令走权限分支
     if mentions_self(t, cid):
+        # 被点名：管家一定接。唯一例外——这是在点单、而点单功能关着（关掉就是不接点单）
+        if (any(v in t for v in ROOM_ORDER_VERBS)
+                and any(w in t for w in ROOM_MENU_WORDS)
+                and not _feat_on(cid, "room_order")):
+            return False
         return True
+    if _room_owner(cid, uid):
+        # 主人没点名也可能在下命令（改布局 / 女鬼）。这类信号很强，不看 @ 了谁。
+        if _feat_on(cid, "room_owner_cmd"):
+            if any(w in t for w in _ROOM_LAYOUT_WORDS) \
+                    or any(w in t for w in _ROOM_CONJURE_WORDS):
+                return True
+            # P12-N/R：屋主的"改成泳池"这类自然说法（不带名字、也不在固定词表里）
+            try:
+                from runtime import room_layout as _rl
+                if _rl.is_layout_cmd(t, cid, uid):
+                    return True
+            except Exception:                                # noqa: BLE001
+                pass
+            # P12-O：屋主命令女鬼上场也算下命令
+            try:
+                from runtime import ghost_photo as _gp
+                if _gp.wants_photo(t, cid, uid):
+                    return True
+            except Exception:                                # noqa: BLE001
+                pass
+    if _at_others(t, cid):
+        return False  # ③ 在跟别人说话：关键词一律不算
     if _is_flower_grab(t) and _feat_on(cid, "room_flower"):
         return True  # 摘花 → 进房间分支（男生放任女鬼，其他人由 AI 婉拒）
-    if (any(w in t for w in ROSE_SIGN_WORDS) or _sign_find(t)) \
-            and _feat_on(cid, "horoscope"):
-        return True  # 星座运势（待客服务，客人也能用）
+    if not _CARD_ECHO_RE.search(t) and _feat_on(cid, "horoscope") \
+            and (any(w in t for w in ROSE_SIGN_WORDS) or _sign_find(t)):
+        return True  # 星座运势（待客服务，客人也能用；④ 卡片复读除外）
     if _sign_parse_birth(t) and any(k in t for k in ("我是", "生", "生日", "出生", "座")) \
             and _feat_on(cid, "horoscope"):
         return True  # 报生日
-    if _room_owner(cid, uid):
-        # 主人没点名也可能在下命令
-        if not _feat_on(cid, "room_owner_cmd"):
-            return False
-        if any(w in t for w in _ROOM_LAYOUT_WORDS) \
-                or any(w in t for w in _ROOM_CONJURE_WORDS):
-            return True
-        # P12-O：屋主命令女鬼上场（"变成女鬼"/"演一下女鬼场景"）也算下命令 ——
-        # 否则光说"变成女鬼"（没带管家名字）根本进不了房间分支，命令就石沉大海。
-        try:
-            from runtime import ghost_photo as _gp
-            return bool(_gp.wants_photo(t, cid, uid))
-        except Exception:                                    # noqa: BLE001
-            return False
-    # 客人：只有明确的点单才回应（被点名 / 进群问好另外处理）
-    if not _feat_on(cid, "room_order"):
-        return False
-    return (any(v in t for v in ROOM_ORDER_VERBS)
-            and any(w in t for w in ROOM_MENU_WORDS))
+    # ⑤ 客人点单必须点名（那条在 ① 就返回了）—— 这里不再有"未点名的关键词点单"
+    return False
 
 
 def _is_flower_grab(t: str) -> bool:

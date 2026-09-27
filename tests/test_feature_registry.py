@@ -475,14 +475,21 @@ def test_devil_switch_cannot_be_turned_on_when_feature_is_off(monkeypatch):
 # ------------------------------------- 7. 第三批：房间 / 发情值 / 入群筛查
 
 def test_room_order_gate_decides_whether_butler_answers(state):
-    """客人点单要不要管家回应，由 `room_order` 决定（闸门在 `_is_room_trigger` 里）。"""
+    """客人点单要不要管家回应，由 `room_order` 决定（闸门在 `_is_room_trigger` 里）。
+
+    ⚠️ P12-R（2026-09-27 屋主确认"别误触发"）改了口径：**未点名的关键词点单不再触发**
+    （"想喝一杯酒"这种闲聊里随时会出现），改成"点名的点单才算"。本用例因此跟着改成
+    "点名的点单"来验证同一个开关 —— 它守的是"开关管用"，不是"关键词算不算"。
+    """
     from personas import ROSE_CID
     from runtime import sign
     F.set_overrides({})
-    assert sign._is_room_trigger(ROSE_CID, "guest-uid-1", "想喝一杯酒") is True
-    F.set_overrides({"{}|room_order".format(ROSE_CID): False})
+    assert sign._is_room_trigger(ROSE_CID, "guest-uid-1", "薇丝 想喝一杯酒") is True
     assert sign._is_room_trigger(ROSE_CID, "guest-uid-1", "想喝一杯酒") is False, \
-        "关掉点单后，客人的点单不再触发管家"
+        "P12-R：没点名就不接（关键词自动触发是误触发大户）"
+    F.set_overrides({"{}|room_order".format(ROSE_CID): False})
+    assert sign._is_room_trigger(ROSE_CID, "guest-uid-1", "薇丝 想喝一杯酒") is False, \
+        "关掉点单后，客人点单不再触发管家"
 
 
 def test_heat_gate_blocks_further_scoring(state):
