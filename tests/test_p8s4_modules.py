@@ -108,11 +108,16 @@ def test_squash_flattens_and_marks_truncation():
     assert textmod._squash(None, 3) == ""
 
 
-def test_norm_poem_caps_at_nine_lines():
-    """标题占 1 行 → 合计 10 行，正好卡在发送上限内。"""
-    nine = "\n".join("第{}句".format(i) for i in range(12))
-    out = textmod._norm_poem(nine)
-    assert len(out.split("\n")) == 9
+def test_norm_poem_caps_at_twenty_lines():
+    """P12-W：上限 9 → 20。
+
+    原来的 9 行是"标题占 1 行正好 10 行，别撞普通账号的 10 换行上限"；
+    现在超限消息会自动改走官方 Bot API（实测 66 行照发），所以放宽，
+    免得长调宋词/律诗被**悄悄砍掉尾巴**。
+    """
+    long_poem = "\n".join("第{}句".format(i) for i in range(30))
+    out = textmod._norm_poem(long_poem)
+    assert len(out.split("\n")) == 20
     assert textmod._norm_poem("").split("\n") == [""]
 
 

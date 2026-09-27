@@ -143,6 +143,12 @@ def _clean_name(name: str) -> str:
 
 
 def _norm_poem(text: str) -> str:
-    """规范化诗：去空行 + 限 9 行（标题占 1 行，合计 ≤10 行，避免 send 的 10 行截断砍掉诗句）。"""
+    """规范化诗：去空行 + 限 20 行。
+
+    ⚠️ 原注释写的是"限 9 行（标题占 1 行，合计 ≤10 行，避免 send 的 10 行截断）"——
+    那条限制来自**普通账号通道**（1000 字 / 10 换行）。现在超限消息会**自动改走官方
+    Bot API**（`runtime/outbound.requires_bot_group_sender`），2026-09-27 实测 66 行的
+    消息照发，所以这里放宽到 20 行：够长的宋词/律诗不会再被悄悄砍掉尾巴。
+    """
     lines = [ln for ln in (text or "").split("\n") if ln.strip()]
-    return "\n".join(lines[:9])
+    return "\n".join(lines[:20])

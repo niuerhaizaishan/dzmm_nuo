@@ -263,7 +263,8 @@ def test_butler_extra_asks_for_richer_replies():
     """屋主要求：玫瑰房的回复要**丰富、长一些**（人设里必须真写着这件事）。"""
     extra = P.persona_for(ROSE)["extra"]
     assert "篇幅" in extra and "丰盛" in extra
-    assert "4～8 句" in extra
+    assert "4～10 句" in extra, "P12-W 起放宽到 4～10 句 / 20 行（老的 10 行上限已失效）"
+    assert "20 行" in extra
     assert "说话短，一两句就够" not in extra, "旧的『短句』要求必须删掉，否则模型还回一两句"
     assert "不要撒娇卖萌" in extra, "优雅的底线不能一起删掉"
 
