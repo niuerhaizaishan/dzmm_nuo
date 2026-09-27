@@ -3019,7 +3019,8 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             # 调教结束
                             dj = _get_dj_state(cid)
                             if dj.get("active"):
-                                end_text = _dj_end_text(dj.get("target_uid"), dj)
+                                end_text = await asyncio.to_thread(
+                                    _dj_end_text, dj.get("target_uid"), dj)
                                 reply = "🔗 调教结束啦～"
                                 if end_text:
                                     reply += "\n" + end_text
@@ -3513,8 +3514,10 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             save_state(state)
 
                     # 调教状态流转（目标回应 / 冷场接管 / 超时结束）
+                    # ⚠️ 必须 to_thread：里面会调模型（冷场自编命令 / 超时收尾小结），
+                    # 直接在这儿跑会把**本群**这一轮堵住十几秒（同款事故 2026-09-14 堵过 37 分钟）。
                     if _get_dj_state(cid).get("active"):
-                        dj_reply = _check_diaojiao(cid, pending)
+                        dj_reply = await asyncio.to_thread(_check_diaojiao, cid, pending)
                         dj_reply = (dj_reply or "").strip()
                         if dj_reply:
                             log("🔗 [" + cid[:8] + "] 调教")
@@ -3525,8 +3528,9 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                 log("✅" if ok else "❌")
 
                     # 公演进行中的互动（丰富/羞辱/点评）
+                    # ⚠️ to_thread：这一支会调模型；同步跑会堵住本群这一轮（同下）
                     if _get_perf_state(cid).get("active") and _feat_on(cid, "perf_enrich"):
-                        interact_reply = _check_perf_interact(cid, msgs)
+                        interact_reply = await asyncio.to_thread(_check_perf_interact, cid, msgs)
                         interact_reply = (interact_reply or "").strip()
                         if interact_reply:
                             log("🎭 [" + cid[:8] + "] 互动")
@@ -3537,8 +3541,9 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                 log("✅" if ok else "❌")
 
                     # 剧情游戏状态流转（提醒投票 / 推进剧情 / 结局）
+                    # ⚠️ to_thread：推进剧情要调模型（`generate_story_step`）
                     if _get_story_state(cid).get("active"):
-                        story_reply = _check_story(cid)
+                        story_reply = await asyncio.to_thread(_check_story, cid)
                         story_reply = (story_reply or "").strip()
                         if story_reply:
                             log("🎬 [" + cid[:8] + "] 剧情")
@@ -3615,8 +3620,9 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         log("✅" if ok else "❌")
 
                 # 发骚超时自动结束（防卡死：发骚 15 分钟无互动自动解锁）
+                # ⚠️ to_thread：`end_fasao` 内部会调模型写收尾（15:54:49 实测跑过一次）
                 if _get_fasao_state(cid).get("active"):
-                    fasao_timeout = _check_fasao_timeout(cid)
+                    fasao_timeout = await asyncio.to_thread(_check_fasao_timeout, cid)
                     fasao_timeout = (fasao_timeout or "").strip()
                     if fasao_timeout:
                         log("⏱️ [" + cid[:8] + "] 发骚超时自动结束")
@@ -3634,7 +3640,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
 
                 # 投票定时检查（截止到→自动结束；时间驱动，无新消息也执行）
                 if _get_vote_state(cid).get("active"):
-                    vote_reply = _check_vote(cid)
+                    vote_reply = await asyncio.to_thread(_check_vote, cid)
                     vote_reply = (vote_reply or "").strip()
                     if vote_reply:
                         log("📊 [" + cid[:8] + "] 投票")

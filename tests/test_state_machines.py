@@ -15,6 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import bot  # noqa: E402
 
+ROOT = Path(__file__).resolve().parent.parent
+
 MACHINES = [
     ("fasao", "_get_fasao_state", "_set_fasao_state"),
     ("diaojiao", "_get_dj_state", "_set_dj_state"),
@@ -61,3 +63,18 @@ def test_clearing_one_machine_keeps_others(state):
     bot._set_fasao_state("c1", {})
     assert bot._get_fasao_state("c1") == {}
     assert bot._get_vote_state("c1") == {"active": True}
+
+
+def test_state_machine_checks_run_off_the_loop_thread():
+    """状态机的"时间驱动检查"必须走 `to_thread` —— 它们内部会调模型。
+
+    2026-09-14 的事故是同款：主循环里同步等模型 → 把群堵到失联（实堵 37 分钟）。
+    按群并行之后堵的只是那个群，但一样是"发一条消息等十几秒"。
+    这条用**源码断言**钉住：这些函数不许再被同步调用。
+    """
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    for fn in ("_check_diaojiao", "_check_perf_interact", "_check_story",
+               "_check_fasao_timeout", "_check_vote", "_dj_end_text"):
+        assert "= " + fn + "(" not in src, \
+            "{} 在主循环里被同步调用了（要 `await asyncio.to_thread(...)`）".format(fn)
+        assert fn in src, "{} 不见了？".format(fn)
