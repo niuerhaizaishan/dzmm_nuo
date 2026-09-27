@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 
 from brains import (generate_heat_fasao, generate_scene, generate_scene_continue,
                     generate_scene_end, generate_scene_rewrite)
+import brains as _brains      # P12-T：读 INSULT_PLAIN_FOR_FEMALE（按调用时读，测试可改）
 from dzmm import get_messages_all
 # P12-T：发骚文案走话术表（本群人设可换）。别名刻意叫 `_phrase` —— `fasao()` 里有一行
 # `uid, _p = _find_in_profiles(...)`，别名若叫 `_p` 会被**影子覆盖**成 dict（实测报 TypeError）。
@@ -92,9 +93,11 @@ def fasao(cmd: str) -> str:
         full = get_full_name(uid) if uid else ""
         if not uid:
             return _phrase("fasao_empty", cid) or "群里还没有可以点名的人。"
-    # P12-T：异性恋人设（若瑾）不跟女性目标玩情欲玩法 —— 代码级过滤。
-    # **先识别性别**：档案没写就查一次平台（`_gender_of`），别再靠"未知"蒙。
-    if _personas.is_straight(cid) and _gender_of(uid, cid) == "女生":
+    # P12-T：异性恋人设**原本**不跟女性目标玩情欲玩法；屋主 2026-09-27 改口
+    # 「对女生也调整为露骨、淫贱」→ 默认不再回绝（`INSULT_PLAIN_FOR_FEMALE=False`）。
+    # 机制留着：那个常量改回 True 就又只对男性放开。
+    if _personas.is_straight(cid) and _brains.INSULT_PLAIN_FOR_FEMALE \
+            and _gender_of(uid, cid) == "女生":
         return _phrase("wrong_gender", cid) or "这个我不玩。"
     try:
         text = generate_heat_fasao(full)
@@ -151,9 +154,9 @@ def scene(cmd: str) -> str:
     if selected_uid:
         _cid = ctx.get_active_cid()
         glabel = _gender_of(selected_uid, _cid)      # 先识别性别（档案优先，缺了查平台）
-        # P12-T：异性恋人设（若瑾）不跟女性目标玩情欲玩法 —— 放在**加发情值之前**：
-        # 被回绝的目标不该涨分。
-        if _personas.is_straight(_cid) and glabel == "女生":
+        # P12-T：同上 —— 默认不再按性别回绝（常量改回 True 才恢复）
+        if _personas.is_straight(_cid) and _brains.INSULT_PLAIN_FOR_FEMALE \
+                and glabel == "女生":
             return _phrase("wrong_gender", _cid) or "这个我不玩。"
         _add_heat(_cid, selected_uid, _tune("heat.scene_pick", _cid))
     glabel = _gender_of(selected_uid, ctx.get_active_cid()) if selected_uid else "未知"

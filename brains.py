@@ -215,6 +215,11 @@ HARD_INSULT_RULE = ("【本群口径 · 优先级最高】目标是男性、而�
 # 男性目标（S 人设）时掺随机词库的概率比默认更高（默认 0.35 是给小糯那套的）
 HARD_INSULT_PROB = 0.75
 
+# 异性恋人设**要不要对女性目标收敛**（只毒舌、不涉情欲）。
+# 屋主 2026-09-27：「对女生也调整为露骨、淫贱」→ **False**：男女一视同仁，都走"拉满"那条。
+# （机制留着：哪天想重新只对男性放开，把这个常量改回 True 就行，测试也跟着有覆盖。）
+INSULT_PLAIN_FOR_FEMALE = False
+
 # 随机羞辱词库：脱离档案/发言的直白露骨下贱羞辱素材（概率混合用，增加多样性）
 RANDOM_INSULT_PROB = 0.35  # 每次羞辱约 35% 概率掺入随机羞辱词库
 RANDOM_INSULT_WORDS = {
@@ -749,10 +754,12 @@ def generate_insult(target_text: str, custom: str = "", history: list = None, ap
     # 性别标签是「女生/男生/未知」（见 runtime.members._gender_label），
     # 所以用前缀判断，别写死等于"女"。
     gl = str(gender or "").strip()
-    # 未知性别 + 异性恋人设 → 走**保守**那条（只毒舌）：宁可骂轻，也不要押错取向。
+    # 未知性别 + 异性恋人设 + 开着"对女性收敛"时 → 走**保守**那条（只毒舌）：
+    # 宁可骂轻，也不要押错取向。
     female_side = gl.startswith("女") or (straight and not gl.startswith("男"))
-    plain = bool(straight and female_side)
-    hard = bool(straight and gl.startswith("男"))     # S 人设 + 男性目标 → 拉满
+    plain = bool(straight and INSULT_PLAIN_FOR_FEMALE and female_side)
+    # S 人设 → 男女都"拉满"（屋主 2026-09-27：对女生也调整成露骨、淫贱）
+    hard = bool(straight and not plain)
     pool = INSULT_STYLES_PLAIN if plain else INSULT_STYLES
     # 选风格：随机，但角度避让——排除上次风格（避免连续同风格）
     style = random.choice(pool)

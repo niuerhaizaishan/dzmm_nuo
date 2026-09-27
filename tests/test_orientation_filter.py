@@ -64,16 +64,28 @@ def test_orientation_flag_only_on_ruojin():
 
 # ---------------------------------------------------------------- 羞辱过滤
 
-def test_female_target_gets_plain_insult(monkeypatch):
-    monkeypatch.setattr(brains, "RANDOM_INSULT_PROB", 1.0)     # 逼它一定掺词库
+def test_female_target_also_gets_the_hard_rule(monkeypatch):
+    """屋主 2026-09-27："对女生也调整为露骨、淫贱" → 默认男女一视同仁（都拉满）."""
+    monkeypatch.setattr(brains, "RANDOM_INSULT_PROB", 1.0)
     seen = _capture(monkeypatch)
     brains.generate_insult("昵称：阿雅\n性别：女", gender="女生", straight=True)
     got = seen["content"]
-    assert "只毒舌，不涉情欲" in got, "必须注入硬约束"
-    assert any(s in got for s in brains.INSULT_STYLES_PLAIN), "要用'只毒舌'那套风格库"
-    assert not any(s in got for s in brains.INSULT_STYLES), "不能用露骨那套风格库"
-    # 露骨随机词库必须被跳过（「肉便器」只在词库里、不在我注入的约束文字里）
-    assert "肉便器" not in got
+    assert "拉到最满" in got, "女性目标也要注入'拉满'约束"
+    assert "只毒舌" not in got
+    assert "随机羞辱词库" in got, "女性目标同样掺露骨词库"
+
+
+def test_plain_for_female_switch_still_works(monkeypatch):
+    """反悔开关：把 INSULT_PLAIN_FOR_FEMALE 改回 True，女性目标就只会被毒舌."""
+    monkeypatch.setattr(brains, "INSULT_PLAIN_FOR_FEMALE", True)
+    monkeypatch.setattr(brains, "RANDOM_INSULT_PROB", 1.0)
+    seen = _capture(monkeypatch)
+    brains.generate_insult("昵称：阿雅\n性别：女", gender="女生", straight=True)
+    got = seen["content"]
+    assert "只毒舌，不涉情欲" in got
+    assert any(s in got for s in brains.INSULT_STYLES_PLAIN)
+    assert not any(s in got for s in brains.INSULT_STYLES)
+    assert "肉便器" not in got, "露骨随机词库要被跳过"
 
 
 def test_male_target_keeps_the_old_flavour(monkeypatch):
@@ -97,8 +109,16 @@ def test_default_persona_is_untouched(monkeypatch):
     assert any(s in got for s in brains.INSULT_STYLES), "用的是原来那套风格库"
 
 
-def test_unknown_gender_takes_the_safe_side(monkeypatch):
-    """性别识别不出来时走**保守**那条（只毒舌）——宁可骂轻，也不要押错取向。"""
+def test_unknown_gender_does_not_downgrade_by_default(monkeypatch):
+    """默认政策下性别未知也走"拉满"（不再降级成只毒舌）—— 与男女一视同仁一致."""
+    seen = _capture(monkeypatch)
+    brains.generate_insult("昵称：某人\n性别：未知", gender="未知", straight=True)
+    assert "拉到最满" in seen["content"]
+
+
+def test_unknown_gender_takes_the_safe_side_when_switch_on(monkeypatch):
+    """开着"对女性收敛"时，未知性别走**保守**那条（宁可骂轻，不押错取向）."""
+    monkeypatch.setattr(brains, "INSULT_PLAIN_FOR_FEMALE", True)
     seen = _capture(monkeypatch)
     brains.generate_insult("昵称：某人\n性别：未知", gender="未知", straight=True)
     assert "只毒舌" in seen["content"]
@@ -114,8 +134,25 @@ def test_male_gender_gets_the_hard_rule(monkeypatch):
 
 # ---------------------------------------------------------------- 发骚/场景过滤
 
-def test_scene_refuses_female_target_for_straight_persona(monkeypatch, ruojin_ctx):
+def test_scene_allows_female_target_by_default(monkeypatch, ruojin_ctx):
+    """默认（INSULT_PLAIN_FOR_FEMALE=False）：女性目标照样开局（男女一视同仁）."""
     from runtime import fasao
+    monkeypatch.setattr(fasao, "_parse_scene_target", lambda t: ("u-f", "阿雅", []))
+    monkeypatch.setattr(fasao, "_gender_of", lambda uid, cid=None, **kw: "女生")
+    monkeypatch.setattr(fasao, "_pick_combo_by_xp", lambda xp: ("场景", "体位", "附加"))
+    monkeypatch.setattr(fasao, "generate_scene", lambda s: "（桩场景）")
+    monkeypatch.setattr(fasao, "_set_last_action", lambda *a, **kw: None)
+    monkeypatch.setattr(fasao, "_set_fasao_state", lambda *a, **kw: None)
+    monkeypatch.setattr(fasao, "_add_heat", lambda *a, **kw: None)
+    monkeypatch.setattr(fasao, "get_profile", lambda uid: {})
+    assert "桩场景" in fasao.scene("/发骚 阿雅")
+
+
+def test_scene_refuses_female_target_when_switch_on(monkeypatch, ruojin_ctx):
+    """反悔开关：开着"对女性收敛"时，女性目标直接回绝且**不涨发情值**."""
+    import brains
+    from runtime import fasao
+    monkeypatch.setattr(brains, "INSULT_PLAIN_FOR_FEMALE", True)
     monkeypatch.setattr(fasao, "_parse_scene_target", lambda t: ("u-f", "阿雅", []))
     monkeypatch.setattr(fasao, "_gender_of", lambda uid, cid=None, **kw: "女生")
     monkeypatch.setattr(fasao, "_phrase", lambda key, cid=None, **kw: "我只跟男的玩。")
@@ -139,8 +176,20 @@ def test_scene_allows_male_target(monkeypatch, ruojin_ctx):
     assert "桩场景" in out and "小张" in out
 
 
-def test_fasao_refuses_female_target(monkeypatch, ruojin_ctx):
+def test_fasao_allows_female_target_by_default(monkeypatch, ruojin_ctx):
     from runtime import fasao
+    monkeypatch.setattr(fasao, "_find_in_profiles", lambda t: ("u-f", {}))
+    monkeypatch.setattr(fasao, "get_full_name", lambda uid: "阿雅")
+    monkeypatch.setattr(fasao, "_gender_of", lambda uid, cid=None, **kw: "女生")
+    monkeypatch.setattr(fasao, "generate_heat_fasao", lambda full: "（桩发骚）")
+    monkeypatch.setattr(fasao, "_add_heat", lambda *a, **kw: None)
+    assert "桩发骚" in fasao.fasao("/发骚 阿雅")
+
+
+def test_fasao_refuses_female_target_when_switch_on(monkeypatch, ruojin_ctx):
+    import brains
+    from runtime import fasao
+    monkeypatch.setattr(brains, "INSULT_PLAIN_FOR_FEMALE", True)
     monkeypatch.setattr(fasao, "_find_in_profiles", lambda t: ("u-f", {}))
     monkeypatch.setattr(fasao, "get_full_name", lambda uid: "阿雅")
     monkeypatch.setattr(fasao, "_gender_of", lambda uid, cid=None, **kw: "女生")
