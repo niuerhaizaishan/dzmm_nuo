@@ -33,6 +33,29 @@ PROFILES_FILE = ROOT / "profiles.json"
 
 _store = None
 _sqlite_reason = ""
+_warned: set = set()
+
+
+def _warn_fallback(where: str, exc: Exception) -> None:
+    """sqlite 期望可用却失败 ⇒ **一定要吼出来**。
+
+    2026-09-27 事故：`Store` 的连接默认 `check_same_thread=True`，工作线程
+    （`asyncio.to_thread(...)`）一碰就抛 `ProgrammingError`；这里 `except: pass`
+    把它吞了并退回 JSON 文件 ⇒ 同一群的状态被劈成两半，读了半小时日志才发现
+    "`/结束` 永远静默"的真因。静默降级比报错危险得多，所以每个原因只吼一次。
+    """
+    key = where + "|" + type(exc).__name__
+    if key in _warned:
+        return
+    _warned.add(key)
+    msg = ("⚠️ state_store: sqlite 不可用，已退回 JSON 文件 —— {}（{}: {}）"
+           "；这会让 sqlite 与 state.json **分叉**，请立即排查").format(
+        where, type(exc).__name__, str(exc)[:100])
+    try:
+        from runtime.obs import log as _log
+        _log(msg)
+    except Exception:                                          # noqa: BLE001
+        print(msg, file=sys.stderr)
 
 
 # ---------------------------------------------------------------- 后端选择
@@ -118,8 +141,8 @@ def load_state() -> dict:
     if _sqlite_enabled():
         try:
             return _get_store().load_scope("group")
-        except Exception:
-            pass
+        except Exception as e:                                 # noqa: BLE001
+            _warn_fallback("load_state", e)
     return _load_state_json()
 
 
@@ -128,8 +151,8 @@ def save_state(s: dict) -> None:
         try:
             _get_store().save_scope("group", s or {})
             return
-        except Exception:
-            pass
+        except Exception as e:                                 # noqa: BLE001
+            _warn_fallback("save_state", e)
     _save_state_json(s or {})
 
 
@@ -141,8 +164,8 @@ def group_get(cid: str, key: str, default=None):
         try:
             g = _get_store().get("group", cid) or {}
             return g.get(key, default)
-        except Exception:
-            pass
+        except Exception as e:                                 # noqa: BLE001
+            _warn_fallback("group_get", e)
     return (_load_state_json().get(cid) or {}).get(key, default)
 
 
@@ -159,8 +182,8 @@ def group_set(cid: str, key: str, value) -> None:
             g[key] = value
             st.set("group", cid, g)
             return
-        except Exception:
-            pass
+        except Exception as e:                                 # noqa: BLE001
+            _warn_fallback("group_set", e)
     raw = _load_state_json()
     g = raw.get(cid) or {}
     g[key] = value
@@ -173,8 +196,8 @@ def top_get(key: str, default=None):
     if _sqlite_enabled():
         try:
             return _get_store().get("group", key)
-        except Exception:
-            pass
+        except Exception as e:                                 # noqa: BLE001
+            _warn_fallback("top_get", e)
     return _load_state_json().get(key, default)
 
 
@@ -183,8 +206,8 @@ def top_set(key: str, value) -> None:
         try:
             _get_store().set("group", key, value)
             return
-        except Exception:
-            pass
+        except Exception as e:                                 # noqa: BLE001
+            _warn_fallback("top_set", e)
     raw = _load_state_json()
     raw[key] = value
     _save_state_json(raw)
@@ -214,8 +237,8 @@ def load_profiles() -> dict:
     if _sqlite_enabled():
         try:
             return _get_store().load_scope("profile")
-        except Exception:
-            pass
+        except Exception as e:                                 # noqa: BLE001
+            _warn_fallback("load_profiles", e)
     return _load_profiles_json()
 
 
@@ -224,8 +247,8 @@ def save_profiles(data: dict) -> bool:
         try:
             _get_store().save_scope("profile", data or {})
             return True
-        except Exception:
-            pass
+        except Exception as e:                                 # noqa: BLE001
+            _warn_fallback("save_profiles", e)
     return _save_profiles_json(data or {})
 
 
@@ -233,8 +256,8 @@ def get_profile(uid: str):
     if _sqlite_enabled():
         try:
             return _get_store().get("profile", uid)
-        except Exception:
-            pass
+        except Exception as e:                                 # noqa: BLE001
+            _warn_fallback("get_profile", e)
     return _load_profiles_json().get(uid)
 
 
@@ -243,8 +266,8 @@ def upsert_profile(uid: str, profile: dict) -> bool:
         try:
             _get_store().set("profile", uid, profile)
             return True
-        except Exception:
-            pass
+        except Exception as e:                                 # noqa: BLE001
+            _warn_fallback("upsert_profile", e)
     data = _load_profiles_json()
     data[uid] = profile
     return _save_profiles_json(data)

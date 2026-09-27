@@ -93,6 +93,62 @@ def test_unicode_roundtrip(store):
 
 # ---------------------------------------------------------------- 多写者
 
+def test_store_is_usable_from_a_worker_thread(store):
+    """**必须在任意线程里能用**（2026-09-27 事故，`/结束` 永远静默的真因）。
+
+    bot 大量走 `asyncio.to_thread(...)`：发骚的 `scene()`、剧情/投票/公演的状态机、
+    `sync_profiles()` 都在工作线程里顺手写状态。而 `Store` 是模块级单例
+    （`state_store._store`）——它一旦在主线程建好，工作线程再碰它就会撞上
+    sqlite3 默认的 `check_same_thread=True`：
+
+        ProgrammingError: SQLite objects created in a thread can only be used in
+        that same thread.
+
+    `state_store` 会吞掉这个异常并退回 JSON 文件 ⇒ 同一群的状态被劈成两半
+    （主线程读 sqlite、工作线程写 state.json），谁也看不见谁。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(2) as ex:
+        # ① 工作线程写 → 主线程读（发骚会话就是这么丢的）
+        ex.submit(store.set, SCOPE_GROUP, CID_A, {"fasao": {"active": True}}).result()
+        assert store.get(SCOPE_GROUP, CID_A) == {"fasao": {"active": True}}
+        # ② 主线程写 → 工作线程读
+        store.set(SCOPE_GROUP, CID_B, {"heat": 5})
+        assert ex.submit(store.get, SCOPE_GROUP, CID_B).result() == {"heat": 5}
+        # ③ 两个工作线程并发读写（连接对象本身不是线程安全的，靠锁串行化）
+        futs = [ex.submit(store.set, SCOPE_GROUP, CID_A, {"n": i}) for i in range(20)]
+        for f in futs:
+            f.result()
+        assert store.get(SCOPE_GROUP, CID_A) in [{"n": i} for i in range(20)]
+
+
+def test_state_store_round_trips_across_threads(dbdir, monkeypatch):
+    """同一件事在 `state_store` 这一层也要成立（它才是 bot 调用的入口）。
+
+    这里**故意**让主线程先建好 Store，再让工作线程写 —— 复现事故顺序。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.delenv("DZMM_STORE", raising=False)
+    monkeypatch.setenv("DZMM_STORE_DB", str(dbdir / "cross.db"))
+    state_store.close()
+    try:
+        state_store.group_get(CID_A, "warmup")                 # 主线程先建 Store
+        with ThreadPoolExecutor(1) as ex:
+            ex.submit(state_store.group_set, CID_A, "fasao",
+                      {"active": True, "full": "糯糯"}).result()
+        assert state_store.group_get(CID_A, "fasao") == {"active": True, "full": "糯糯"}
+        # 档案同理（工作线程里的 upsert 曾在 sqlite 里消失）
+        with ThreadPoolExecutor(1) as ex:
+            ex.submit(state_store.upsert_profile, UID_1, {"gender": "女生"}).result()
+        assert state_store.get_profile(UID_1) == {"gender": "女生"}
+        assert state_store._warned == set(), \
+            "不该有任何静默降级：{}".format(state_store._warned)
+    finally:
+        state_store.close()
+
+
 def test_two_writers_do_not_lose_updates(dbdir):
     """模拟两个进程：各自只改自己的 key，**都保留**。
 
