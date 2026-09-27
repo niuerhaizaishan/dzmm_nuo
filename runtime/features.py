@@ -1,4 +1,4 @@
-"""功能注册表（P12-A）：**65 个功能的声明式清单** + 唯一的开关判定点 + 状态复位。
+"""功能注册表（P12-A）：**66 个功能的声明式清单** + 唯一的开关判定点 + 状态复位。
 
 ### 为什么要有这个模块
 
@@ -183,6 +183,15 @@ _FEATURES_RAW = (
         Param("reply.context_msgs", "带多少条上下文", 20, "条", 4, 60,
               note="含机器人自己说过的话，才有对话连续性；调大=更连贯但更慢/更贵"),
     )),
+    # P12-AE（2026-09-27 屋主）：别人**右键点击回复**我那条消息时，也自动接话。
+    # 平台把被引用的那条塞在入站消息的 `content.reference`
+    # （`{id, sentBy, content:{text,type}}`，2026-09-27 线上实测 40 条里有 3 条），
+    # 于是"他回复的是不是我"这件事**有确凿依据**，不用猜文本。
+    # ⚠️ 只管"要不要接话"：官方 Bot API **没有**"把回复挂到某条上"的出站字段
+    #    （`tools/probe_reply_capability.py` 探过 15 个候选字段，全无校验）。
+    # 默认**关**＝今天的行为（只有 @ 才答）；要在哪个群用，按群把开关打开。
+    Feature("quote_reply", "别人引用回复我也接话", "people", default=False,
+            note="关＝只有 @ 才答（今天的行为）；开＝别人右键回复我的消息也答"),
 
     # ---- B. 公演与内容生成（12）
     Feature("perf", "公演", "content", resets=("perf",),
@@ -310,6 +319,7 @@ _WIRED = (
     "scene_rewrite", "scene_end", "diaojiao", "help", "memory_remember",
     "memory_recall", "devil_roast", "intro", "sync", "register", "query",
     "trend", "rank_heat", "recap", "summary", "fortune", "poem", "insult", "chat",
+    "quote_reply",
     # --- 第三批（房间玩法 / 入群筛查 / @消息子功能 / 告警 / 自动触发）---
     "room_welcome", "room_refuse", "room_order", "room_flower", "room_ghost",
     "room_lewd", "room_owner_cmd", "horoscope",

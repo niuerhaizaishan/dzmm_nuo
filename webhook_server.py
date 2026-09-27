@@ -144,13 +144,22 @@ def to_internal(update: dict) -> dict | None:
     if not sent_at:
         sent_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
+    # P12-AE：别人"右键点击回复"时，平台把被引用的那条放在 `content.reference`
+    # （`{id, sentBy, content:{text,type}}`）。以前这里只取 type/text，**reference
+    # 被整个丢掉** ⇒ 走 webhook 那条路的消息永远看不出"他在回复我"。
+    # 原样透传（不做形状转换），下游 `bot._ref_of()` 两层形状都认。
+    ref = content.get("reference") or content.get("quote")
+    if not isinstance(ref, dict):
+        ref = None
+
     return {
         "message_id": str(_first(msg, "message_id", "id") or update.get("update_id") or ""),
         "chatroom_id": str(cid),
         "sent_by": str(sender),
         "sent_at": sent_at,
         "content": {"type": str(ctype), "text": str(text),
-                    "from_name": str(_first(frm, "first_name", "username", "name") or "")},
+                    "from_name": str(_first(frm, "first_name", "username", "name") or ""),
+                    "reference": ref},
         "_source": "webhook",
     }
 

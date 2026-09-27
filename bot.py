@@ -445,6 +445,37 @@ def _seed_turns(cid: str) -> None:
     log("🧠 [" + cid[:8] + "] 对话历史已补 " + str(len(_TURNS.get(cid) or [])) + " 条")
 
 
+def _ref_of(m: dict) -> dict:
+    """别人"右键点击回复"某条消息时，平台塞进来的**被引用消息**（P12-AE）。
+
+    2026-09-27 线上实测的原始形状（`chatroom.getMessages`，40 条里 3 条有）：
+        content.reference = {"id": "<uuid>", "sentBy": "<uid>",
+                             "content": {"text": "被引用的原文", "type": "text"}}
+    注意原文在 `reference.content.text`（**不是** `reference.text`），两层都认。
+
+    ⚠️ 只有**入站**有这个东西：官方 Bot API 的出站没有"回复某条"的字段
+    （`tools/probe_reply_capability.py` 探过 15 个候选，全无校验）。
+    """
+    c = m.get("content") if isinstance(m, dict) else None
+    if not isinstance(c, dict):
+        return {}
+    r = c.get("reference") or c.get("quote") or c.get("reply")
+    if not isinstance(r, dict):
+        return {}
+    inner = r.get("content") if isinstance(r.get("content"), dict) else {}
+    return {
+        "id": str(r.get("id") or r.get("message_id") or ""),
+        "sent_by": str(r.get("sentBy") or r.get("sent_by") or ""),
+        "text": str(inner.get("text") or r.get("text") or ""),
+    }
+
+
+def _quotes_self(m: dict) -> bool:
+    """这条消息是不是"右键回复了我说过的那条"。"""
+    ref = _ref_of(m)
+    return bool(ref.get("sent_by")) and is_self(ref["sent_by"])
+
+
 def _save_group(cid: str, group_state: dict) -> None:
     """只落**本群**那一行（P12-AA，2026-09-27 体检）。
 
@@ -3075,6 +3106,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                     cmd_sender = ""
                     at_msg = ""
                     at_sender = ""
+                    _via_quote = False   # P12-AE：这条是"右键回复我"而不是 @ 我
                     room_hit = None  # (uid, 原文) 需要管家回应的房间消息
                     _cmd_msg = None
                     _at_msg_obj = None
@@ -3092,11 +3124,16 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             else:
                                 _leftover.append(m)      # 同一批里的第二/三条命令
                             continue
-                        if is_at_me(t, cid):
+                        # P12-AE：@ 我，或者（开关打开时）右键回复了我的某条消息
+                        _by_at = is_at_me(t, cid)
+                        _by_quote = (not _by_at) and _feat_on(cid, "quote_reply") \
+                            and _quotes_self(m)
+                        if _by_at or _by_quote:
                             if not at_msg:
                                 at_msg = t
                                 at_sender = m.get("sent_by", "")
                                 _at_msg_obj = m
+                                _via_quote = bool(_by_quote)
                             else:
                                 _leftover.append(m)
                         if _is_room_trigger(cid, m.get("sent_by", ""), t):
@@ -3534,6 +3571,24 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                         _ask_mid = (_at_msg_obj or {}).get("message_id")
                                         await asyncio.to_thread(_seed_turns, cid)
                                         ctx = _recent_turns(cid, _ctxn, exclude_mid=_ask_mid)
+                                        # P12-AE：右键回复我的那条 —— 把**被引用的原文**
+                                        # 也摆进来（万一它已经滚出上下文窗口）。
+                                        # 已经在里面就不重复塞：这轮修的就是"同一句话
+                                        # 被喂两遍"的毛病，别在新功能上又犯一次。
+                                        if _via_quote:
+                                            _ref = _ref_of(_at_msg_obj or {})
+                                            _rtxt = (_ref.get("text") or "").strip()
+                                            if _rtxt and not any(c["text"] == _rtxt
+                                                                 for c in ctx):
+                                                _who = get_name(_ref.get("sent_by", ""))
+                                                ctx.append({"sender": "我（被引用的那条）"
+                                                            if is_self(_ref.get("sent_by", ""))
+                                                            else _who,
+                                                            "text": _rtxt})
+                                            log("🔗 [" + cid[:8] + "] 这是引用回复（引用了 "
+                                                + ("我自己" if _ref.get("sent_by")
+                                                   and is_self(_ref["sent_by"])
+                                                   else "别人的话") + "）")
                                         glabel = _gender_label(at_sender)  # 女生/男生/未知
                                         ctx.append({"sender": get_name(at_sender) + ("（" + glabel + "）" if glabel != "未知" else ""), "text": q})
                                         # P12-AA：记忆检索内部会调模型（两级精筛），

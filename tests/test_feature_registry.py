@@ -65,16 +65,20 @@ def _declared_tables():
 
 # ---------------------------------------------------------------- 1. 注册表自洽
 
-def test_registry_has_65_features():
+def test_registry_has_66_features():
     """65 → 64：`rewrite`（改写档案）经核实**没有真实触发**（`is_rewrite_cmd`
     只服务场景重写，已被 `scene_rewrite` 覆盖），按注册表自己的规矩删掉了。
 
     64 → 65（P12-AC，2026-09-27）：新增 `chat`（`@` 时的问答回复）——
     它原先是一条**没有开关的隐式行为**，上下文/长度也都写死；现在有闸门、
     长度与上下文条数都按群可调（`reply.max_tokens` / `reply.context_msgs`）。
+
+    65 → 66（P12-AE，2026-09-27）：新增 `quote_reply`（别人右键回复我也接话）——
+    与 `chat` 不同，它是**新增的触入口**，加进来就会改变今天的行为，
+    所以 default=False（见 `test_only_the_deliberate_exception_may_default_off`）。
     """
-    assert len(F.FEATURES) == 65
-    assert len(set(F.keys())) == 65, "key 必须唯一"
+    assert len(F.FEATURES) == 66
+    assert len(set(F.keys())) == 66, "key 必须唯一"
 
 
 def test_every_feature_is_well_formed():
@@ -90,14 +94,24 @@ def test_every_feature_is_well_formed():
 def test_category_counts_match_the_plan():
     """与 docs/功能与人设配置方案.md §9.1 的分组数量对齐。
 
-    people 少 1 = 删掉 `rewrite`；people 多 1 = P12-AC 新增 `chat`（@ 问答回复）。
+    people 少 1 = 删掉 `rewrite`；people 多 1 = P12-AC 新增 `chat`（@ 问答回复）；
+    people 再多 1 = P12-AE 新增 `quote_reply`（引用回复也接话）。
     """
     got = {c: len(v) for c, v in F.by_category().items()}
-    assert got == {"game": 15, "content": 12, "people": 11, "screen": 7,
+    assert got == {"game": 15, "content": 12, "people": 12, "screen": 7,
                    "schedule": 9, "room": 7, "alert": 4}
 
 
-def test_all_features_default_on_so_behaviour_is_unchanged():
+# 唯一允许 default=False 的功能，且必须写明理由（别让它悄悄变长）。
+_DELIBERATE_OFF = {
+    # P12-AE：这是一条**新增的触入口**（别人右键回复我也接话）。今天的行为是
+    # "只有 @ 才答"，所以它默认必须是关的 —— 默认打开等于在所有群悄悄改了行为，
+    # 玫瑰房那套"谁能触发管家"的房间策略也会被绕过。要用就在对应群按群打开。
+    "quote_reply",
+}
+
+
+def test_only_the_deliberate_exception_may_default_off():
     """默认值必须等于"今天的行为"。
 
     ⚠️ 这里的"默认"是**允不允许这个能力**，不是"今天它是不是开着"。
@@ -105,9 +119,14 @@ def test_all_features_default_on_so_behaviour_is_unchanged():
     结果 `/吐槽开` 这条**群内控制命令**被自己功能关掉而静默 —— 直接改掉了
     今天的行为。正确的模型是：配置层默认"允许"，实际是否吐槽由群状态
     `devil_enabled`（`/吐槽开|关`）决定，两层各管各的。
+    所以“默认关”只在一种情况下是对的：**这个功能本身是一条新增的触发入口**
+    （不做就等于今天），而不是给“今天已经在跑的行为”加闸门。
     """
     off = sorted(f.key for f in F.FEATURES if not f.default)
-    assert off == [], "任何功能都不该默认关闭（否则等于悄悄改了今天的行为）"
+    assert off == sorted(_DELIBERATE_OFF), \
+        "默认关闭的功能只能是写明了理由的那几个；要加新的先来说清为什么"
+    for k in _DELIBERATE_OFF:      # 关/开分别是什么行为，必须写进 note
+        assert "关" in F.get(k).note and "开" in F.get(k).note, k
     # 那两层门的关系要写在注册表里，别只留在脑子里
     assert "devil_enabled" in F.get("devil_roast").note
     assert "devil_roast" in F.get("devil_cold").note, \
@@ -596,8 +615,12 @@ def test_defaults_are_logically_equivalent_to_before(state):
     这不是"跑几个用例看着一样"，而是条件化简 —— 也是这一期敢上线的底气。
     """
     import bot
-    assert all(F.on("any-cid", k) is True for k in F.keys()), \
+    # 唯一例外见 _DELIBERATE_OFF：它默认关 = 今天的行为（只有 @ 才答）
+    assert all(F.on("any-cid", k) is True for k in F.keys()
+               if k not in _DELIBERATE_OFF), \
         "默认必须有闸门全开（否则等于改了今天的行为）"
+    assert F.on("any-cid", "quote_reply") is False, \
+        "引用触发默认关，否则所有群都会多出一种回答时机"
     for cmd in ("/吹牛骰子", "/投票 x|a|b", "/选 1", "/发骚结束", "/吐槽开", "/结束",
                 "/剧情开始", "/公演开始", "/同意", "/命令 过来", "/调教 x",
                 "/写诗", "/算命", "/周运", "/我不在", "/总结", "/帮助", "/介绍",
