@@ -101,6 +101,16 @@ def test_card_body_is_five_labeled_sections_in_order(monkeypatch):
     assert len(lines) >= 15, lines          # 旧卡片 ≤10 行，五段式必然更长
 
 
+def test_card_hides_unknown_birthday(monkeypatch):
+    """只报座名（月日都是 0）时不能印出「00-00生」—— 看着像坏了。"""
+    _fix(monkeypatch, FIVE)
+    named = asyncio.run(S._sign_card("cid-1", "uid-1", "天蝎", 0, 0, "客人"))
+    assert "00-00" not in named
+    assert "月相：" in named and "生" not in named.split("月相：")[1].split("\n")[0]
+    dated = asyncio.run(S._sign_card("cid-1", "uid-1", "天蝎", 11, 5, "客人"))
+    assert "11-05生" in dated
+
+
 def test_card_lucky_triplet_matches_calc(monkeypatch):
     card = _card(monkeypatch, FIVE)
     r = S._sign_calc("uid-1", "金牛", __import__("datetime").datetime.now().strftime("%Y-%m-%d"))

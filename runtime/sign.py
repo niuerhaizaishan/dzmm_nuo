@@ -342,10 +342,13 @@ async def _sign_card(cid: str, uid: str, sign: str, month: int, day: int,
     secs = _split_sections(para)
     one = " ".join(str(para or "").split())          # 退回单段时用（把换行/空白压平）
     md_txt = str(month).zfill(2) + "-" + str(day).zfill(2)
+    # 只报了座名、没报生日的人（月日都是 0）：这一行不印「00-00生」——
+    # 卡片上出现 00-00 很像坏了（P12-K 冒烟时屋主看到的正是这个）。
+    birth_txt = (" · " + md_txt + "生") if (month and day) else ""
     lines = [
         "🌹 今日星象 · " + emo + " " + sign + "座",
         "————————————",
-        "🪐 " + el + "象 · 守护星" + ruler + " · 月相：" + lk["moon"] + " · " + md_txt + "生",
+        "🪐 " + el + "象 · 守护星" + ruler + " · 月相：" + lk["moon"] + birth_txt,
         "💗爱情" + str(d["爱情"]) + " · 💼事业" + str(d["事业"])
         + " · 💰财运" + str(d["财运"]) + " · 🌙心情" + str(d["心情"]),
         "🍀 幸运：" + lk["item"] + " · " + lk["dir"],

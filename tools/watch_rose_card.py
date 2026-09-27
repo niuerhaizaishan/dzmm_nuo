@@ -19,6 +19,7 @@ from runtime.identity import get_name, is_self         # noqa: E402
 CID = "4a56be71-9ca6-4785-b45f-18725d187f1a"
 TZ = timedelta(hours=8)
 WAIT = int(sys.argv[1]) if len(sys.argv) > 1 else 240
+SHOW = int(sys.argv[2]) if len(sys.argv) > 2 else 6
 LOG = next((p for p in ("/app/bot.log", "/opt/dzmm/bot.log", "bot.log")
             if os.path.exists(p)), "/app/bot.log")
 
@@ -50,7 +51,7 @@ if not hit:
 since = (datetime.utcnow() - timedelta(minutes=25)).strftime("%Y-%m-%d %H:%M:%S")
 msgs = get_messages_since(CID, since, max_count=150) or []
 print("=== 玫瑰房最近消息（平台回读，共 {} 条）===".format(len(msgs)))
-for m in msgs[-6:]:
+for m in msgs[-SHOW:]:
     c = m.get("content") or {}
     txt = str(c.get("text") or "")
     uid = m.get("sent_by") or ""
