@@ -64,9 +64,30 @@ def _examples():
 # ---------------------------------------------------------------- 口径
 def test_length_target_is_still_there_and_says_examples_are_not_the_target():
     t = _text()
-    assert "2-6 句" in t and "100-300 字" in t
+    assert "2-6 句" in t and "100-300 字" in t, "日常口径还是它（屋主原话）"
     assert "不代表回答长度" in t, "要点明示例的短句只是寒暄示范，否则长度口径会被示例压过去"
-    assert "别超过 300 字" in t, "上限也要钉住：只往长里推会变成群里刷屏小作文"
+    # 展开那一档要**给足**：屋主 2026-09-27 反馈"妹子群还是有点短"
+    assert "三四百字很正常" in t and "写到五百字也不算长" in t
+    # 反向钉住：不许再给它加上限（P12-AF 加过"别超过 300 字"，实测把 342 压到 252）
+    assert "别超过 300 字" not in t, "上限会直接抵消『值得展开就展开写清楚』"
+
+
+def test_no_paragraph_cap_at_all():
+    """屋主 2026-09-27 定：段落限制**不需要** —— 既不要「不要分段」，也别卡段数。
+
+    历程：原口径是"不要分段落" → P12-AC 放宽到"最多 2-3 段" → 本次（P12-AG）
+    屋主看到为段数纠结（她写了 4 段）直接说"这个不需要"，于是**取消约束**：
+    话多就自然分段，只保留"不要加引号包裹、不要写括号动作"。
+    """
+    t = _text()
+    assert "分段随意" in t
+    for bad in ("不要分段", "别分段", "不分段", "不要分段落", "最多分", "2-3 段"):
+        assert bad not in t, "段落限制要彻底去掉：{}".format(bad)
+    # 别的提示词里也不许留老口径
+    for f in sorted((ROOT / "prompts").glob("*.md")):
+        assert "不要分段" not in f.read_text(encoding="utf-8"), f.name
+    # 该留的还留着
+    assert "不要加引号包裹" in t and "不要写括号动作" in t
 
 
 def test_knowledge_stance_is_unchanged_and_even_stronger():
@@ -90,8 +111,8 @@ def test_there_is_at_least_one_long_example_answer():
     pairs = _examples()
     assert len(pairs) >= 4, "few-shot 不许删（prompt_tiers 的 min_counts 钉着 ≥4）"
     lens = [len(a) for _q, a in pairs]
-    assert max(lens) >= 120, \
-        "必须有一组**长回答**示范（原先 4 组全是 1-2 句，模型就照着学短了）：{}".format(lens)
+    assert max(lens) >= 250, \
+        "长回答示例要够长（现在 340+ 字），否则模型照着示例学还是短：{}".format(lens)
 
 
 def test_the_long_example_keeps_her_voice():

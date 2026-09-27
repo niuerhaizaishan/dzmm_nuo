@@ -53,7 +53,9 @@ def ask(cid, q, label):
                                  max_tokens=int(T.get("reply.max_tokens", cid)),
                                  context_msgs=int(T.get("reply.context_msgs", cid)))
            or "").strip()
-    print("  【{}】{} 字 / {} 秒".format(label, len(out), round(time.time() - t0, 1)))
+    print("  【{}】{} 字 / {} 段 / {} 秒".format(
+        label, len(out), len([p for p in out.split("\n") if p.strip()]),
+        round(time.time() - t0, 1)))
     print("    问：", q)
     print("    答：", out.replace("\n", "⏎")[:400])
     print("    打太极：", deflects(out) or "无")
@@ -125,11 +127,11 @@ def main():
     print("=" * 70)
     print("结论")
     print("=" * 70)
-    nuo_long = all(100 <= len(o) <= 400 for _l, o in outs)
+    nuo_long = all(100 <= len(o) <= 700 for _l, o in outs)
     nuo_no_deflect = all(not deflects(o) for _l, o in outs)
     nuo_voice = all(("～" in o or "姐姐" in o or "小小糯" in o) for _l, o in outs)
     ruojin_clean = ("小小糯" not in r) and ("～" not in r)
-    print("  认证群两问都在 100-400 字     ：", nuo_long, [len(o) for _l, o in outs])
+    print("  认证群两问都在 100-700 字     ：", nuo_long, [len(o) for _l, o in outs])
     print("  认证群没有打太极              ：", nuo_no_deflect)
     print("  认证群人设没被动（软糯口吻）  ：", nuo_voice)
     print("  认证群第二轮接得上上一轮      ：", knows)
