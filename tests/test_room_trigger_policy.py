@@ -115,21 +115,36 @@ def test_plain_chat_does_not_trigger():
         assert trig(text) is False, text
 
 
-def test_owner_commands_do_not_need_the_name():
-    assert trig("改成泳池", VV) is True
+def test_ghost_command_needs_no_name_but_layout_does():
+    """女鬼命令是强信号，照旧不要求名字；**改布局必须点名**（屋主 2026-09-27 定）.
+
+    注意区分两道门：
+      - `_is_room_trigger` = 管家要不要**应声**（点名就一定应声，客人也照旧应声后婉拒）；
+      - `room_layout.is_layout_cmd` = 要不要**真的换布局并配图**（只有主人 + 点了名才算）。
+    """
+    from runtime import room_layout as RL
     assert trig("变成女鬼", NUONUO) is True
-    assert trig("改成泳池", GUEST) is False
-    # 屋主 @ 别人时，改布局这种强信号仍然算
-    assert trig("@橘先生 顺便把屋子改成泳池", VV) is True
+    assert trig("改成泳池", VV) is False, "不点名 → 管家不应声，房间也不会变"
+    assert RL.is_layout_cmd("改成泳池", ROSE, VV) is False
+    assert trig("薇丝 改成泳池", VV) is True
+    assert RL.is_layout_cmd("薇丝 改成泳池", ROSE, VV) is True
+    # 客人点名说这句话：管家会应声（然后是婉拒），但**不会**换布局
+    assert trig("薇丝 改成泳池", GUEST) is True
+    assert RL.is_layout_cmd("薇丝 改成泳池", ROSE, GUEST) is False
+    # 没点名、还 @ 了别人 → 连应声都不应
+    assert trig("@橘先生 顺便把屋子改成泳池", VV) is False
 
 
 def test_bare_layout_name_enters_the_room_branch():
-    """屋主 2026-09-27："必须得说房间改成泳池吗" → 不必，光报布局名也算。"""
-    assert trig("泳池", VV) is True
+    """光报布局名也行，但同样要先点名（"必须加薇丝"）."""
+    from runtime import room_layout as RL
+    assert trig("薇丝 泳池", VV) is True
     assert trig("薇丝 审问室", NUONUO) is True
     assert trig("@薇丝 烧烤", VV) is True
-    assert trig("泳池", GUEST) is False        # 客人还是不能换布局
-    assert trig("我想去泳池", VV) is False      # 闲聊不算
+    assert trig("泳池", VV) is False, "没点名：管家不应声"
+    assert RL.is_layout_cmd("泳池", ROSE, VV) is False
+    assert trig("薇丝 我想去泳池", VV) is True, "点名了就会应声"
+    assert RL.is_layout_cmd("薇丝 我想去泳池", ROSE, VV) is False, "但那不是在下命令"
 
 
 def test_other_groups_are_untouched():

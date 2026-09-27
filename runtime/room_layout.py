@@ -100,23 +100,31 @@ def _bare_layout(text: str, cid: str = None) -> str:
 
 
 def is_layout_cmd(text: str, cid: str = None, uid: str = None) -> bool:
-    """是不是**屋主**在下"改布局"的命令（能认出布局名，且有改的意图 **或** 整句就是布局名）."""
+    """是不是**屋主在点名**让管家换布局（认得出布局名 + 有改的意图，或整句就是布局名）.
+
+    屋主 2026-09-27："我觉得还是前面必须加薇丝才好吧" —— 所以**必须点名**
+    （`@薇丝` / 说出"薇丝"）。光说「泳池」，或者说"改成泳池"但没叫她，都**不算**命令：
+    闲聊里蹦出一个布局名就把房间换了，代价比少认几次大得多。
+    """
     t = str(text or "")
     if not t or not uid:
         return False
     try:
+        from runtime.identity import mentions_self
         from runtime.sign import _ROOM_LAYOUT_WORDS, _room_owner
     except Exception:                                        # noqa: BLE001
         return False
     if not _room_owner(cid, uid):
         return False                    # 只有屋主下命令才换布局（其他人由 AI 婉拒）
+    if not mentions_self(t, cid):
+        return False                    # 必须点名（见 docstring）
     if not layout_of(t):
         return False                    # 认不出的风格不发图
     if any(w in t for w in _ROOM_LAYOUT_WORDS):
         return True
     if any(w in t for w in _CHANGE_WORDS):
         return True
-    return bool(_bare_layout(t, cid))   # 光报布局名也算（"泳池"/"薇丝 审问室"）
+    return bool(_bare_layout(t, cid))   # 光报布局名也算，但同样要先点名
 
 
 def wants_photo(text: str, cid: str = None, uid: str = None) -> bool:

@@ -131,18 +131,12 @@ def _is_room_trigger(cid: str, uid: str, text: str) -> bool:
             return False
         return True
     if _room_owner(cid, uid):
-        # 主人没点名也可能在下命令（改布局 / 女鬼）。这类信号很强，不看 @ 了谁。
+        # 主人没点名也可能在下命令（变东西 / 女鬼）。这类信号很强，不看 @ 了谁。
+        # ⚠️ **改布局不在这里**：屋主 2026-09-27 定「必须点名才认布局」
+        # （`room_layout.is_layout_cmd` 自己要求 mentions_self），点名的那些在 ① 就返回了。
         if _feat_on(cid, "room_owner_cmd"):
-            if any(w in t for w in _ROOM_LAYOUT_WORDS) \
-                    or any(w in t for w in _ROOM_CONJURE_WORDS):
+            if any(w in t for w in _ROOM_CONJURE_WORDS):
                 return True
-            # P12-N/R：屋主的"改成泳池"这类自然说法（不带名字、也不在固定词表里）
-            try:
-                from runtime import room_layout as _rl
-                if _rl.is_layout_cmd(t, cid, uid):
-                    return True
-            except Exception:                                # noqa: BLE001
-                pass
             # P12-O：屋主命令女鬼上场也算下命令
             try:
                 from runtime import ghost_photo as _gp

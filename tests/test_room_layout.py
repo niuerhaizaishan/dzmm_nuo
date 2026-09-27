@@ -84,13 +84,13 @@ def test_every_layout_has_a_hosted_url():
 # ---------------------------------------------------------------- 谁能触发
 
 @pytest.mark.parametrize("text", [
-    "薇丝改变房间布局（审问室风格）", "换成泳池", "布置成烧烤", "恢复原样",
+    "薇丝改变房间布局（审问室风格）", "薇丝 换成泳池", "薇丝 布置成烧烤", "薇丝 恢复原样",
 ])
 def test_owner_can_trigger(text):
     assert RL.wants_photo(text, ROSE, VV) is True, text
 
 
-@pytest.mark.parametrize("text", ["改成泳池", "换成审问室", "换个风格"])
+@pytest.mark.parametrize("text", ["薇丝 改成泳池", "薇丝 换成审问室", "薇丝 换个风格"])
 def test_guest_cannot_trigger(text):
     assert RL.wants_photo(text, ROSE, GUEST) is False, text
 
@@ -104,29 +104,39 @@ def test_bare_room_name_is_not_a_command():
     assert RL.wants_photo("玫瑰房真好看", ROSE, VV) is False
 
 
-# ------------------------------------------------- 光报布局名也算（屋主 2026-09-27）
+# ------------------------------------------------- 必须点名（屋主 2026-09-27）
+
+@pytest.mark.parametrize("text", [
+    "薇丝 改成泳池", "薇丝，换成泳池", "@薇丝 布置成烧烤", "薇丝 恢复原样",
+    "薇丝改变房间布局（审问室风格）",
+])
+def test_layout_needs_the_name(text):
+    """屋主定：「前面必须加薇丝」—— 不带名字的布局指令一律不认（闲聊里蹦个名字不该换房间）."""
+    assert RL.is_layout_cmd(text, ROSE, VV) is True, text
+    bare = text.replace("薇丝", "").replace("@", "")
+    assert RL.is_layout_cmd(bare, ROSE, VV) is False, bare
+
 
 @pytest.mark.parametrize("text,expect", [
-    ("泳池", "玫瑰泳池"), ("薇丝 泳池", "玫瑰泳池"), ("@薇丝 泳池", "玫瑰泳池"),
-    ("泳池风格", "玫瑰泳池"), ("审问室", "审问室"), ("薇丝 审问室", "审问室"),
-    ("烧烤", "户外烧烤"), ("户外烧烤", "户外烧烤"), ("玫瑰房", "玫瑰房"),
-    ("恢复", "玫瑰房"), ("泳池吧", "玫瑰泳池"),
+    ("薇丝 泳池", "玫瑰泳池"), ("@薇丝 泳池", "玫瑰泳池"), ("薇丝 泳池风格", "玫瑰泳池"),
+    ("薇丝 审问室", "审问室"), ("薇丝 烧烤", "户外烧烤"), ("薇丝 户外烧烤", "户外烧烤"),
+    ("薇丝 玫瑰房", "玫瑰房"), ("薇丝 恢复", "玫瑰房"), ("薇丝 泳池吧", "玫瑰泳池"),
 ])
-def test_bare_layout_name_works_for_owner(text, expect):
+def test_bare_layout_name_works_when_addressed(text, expect):
     assert RL._bare_layout(text, ROSE) == expect, text
     assert RL.is_layout_cmd(text, ROSE, VV) is True, text
 
 
 @pytest.mark.parametrize("text", [
     "我想去泳池", "泳池真好看", "泳池照片", "今天聊点别的", "玫瑰房不错",
+    "薇丝 我想去泳池", "薇丝 泳池真好看",
 ])
 def test_bare_name_does_not_fire_on_chatter(text):
-    assert RL._bare_layout(text, ROSE) == "", text
     assert RL.is_layout_cmd(text, ROSE, VV) is False, text
 
 
 def test_bare_name_still_owner_only():
-    assert RL.is_layout_cmd("泳池", ROSE, GUEST) is False
+    assert RL.is_layout_cmd("薇丝 泳池", ROSE, GUEST) is False
 
 
 # ---------------------------------------------------------------- 发送
@@ -137,10 +147,10 @@ def test_maybe_send_posts_the_matching_url_once():
     assert asyncio.run(RL.maybe_send(s, ROSE, "薇丝改变房间布局（审问室风格）", VV)) is True
     assert bot.calls == [(ROSE, RL.photo_url("审问室"))]
     # 同一种布局短时间内不重复发
-    assert asyncio.run(RL.maybe_send(s, ROSE, "还是审问室", VV)) is False
+    assert asyncio.run(RL.maybe_send(s, ROSE, "薇丝 换成审问室", VV)) is False
     assert len(bot.calls) == 1
     # 换一种布局照发
-    assert asyncio.run(RL.maybe_send(s, ROSE, "换成泳池", VV)) is True
+    assert asyncio.run(RL.maybe_send(s, ROSE, "薇丝 换成泳池", VV)) is True
     assert len(bot.calls) == 2
 
 
