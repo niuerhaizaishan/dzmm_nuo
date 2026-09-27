@@ -1,0 +1,20 @@
+{
+	admin off
+}
+
+# 只暴露 Webhook 一条路径；其余一律 404。
+# 证书由 Caddy 自动申请/续期（Let's Encrypt），80 用于 HTTP-01、443 用于 TLS-ALPN。
+www.nuonuo.pw {
+	handle /bot/webhook {
+		reverse_proxy 127.0.0.1:8091
+	}
+	handle {
+		respond "not found" 404
+	}
+	log {
+		output file /data/access.log {
+			roll_size 5MiB
+			roll_keep 3
+		}
+	}
+}
