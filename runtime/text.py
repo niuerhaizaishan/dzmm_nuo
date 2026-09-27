@@ -32,7 +32,9 @@ def _spice_emoji(text: str, emojis, every: int = 2, max_n: int = 6) -> str:
 
     规则（刻意保守，免得变成表情雨）：
       - 只在**句末标点之后**插，绝不插在句子中间；
-      - 数量 = min(max_n, 句末标点数 // every)，且在全文里**均匀取点**，
+      - 优先插在**行尾**（段末）—— 段中插一个"？💗下一句"看着很怪；
+        行尾不够用时才退回普通句末标点；
+      - 数量 = min(max_n, 句末标点数 // every)，且在候选点里**均匀取点**，
         所以长文的表情是散开的，不会全挤在开头；
       - 依次循环使用清单里的表情。
     """
@@ -43,7 +45,9 @@ def _spice_emoji(text: str, emojis, every: int = 2, max_n: int = 6) -> str:
     if not marks:
         return text
     n = max(1, min(int(max_n), len(marks) // max(1, int(every))))
-    picks = {marks[min(len(marks) - 1, (k * len(marks)) // n)] for k in range(n)}
+    line_ends = [i for i in marks if i + 1 >= len(text) or text[i + 1] == "\n"]
+    pool = line_ends if len(line_ends) >= n else marks
+    picks = {pool[min(len(pool) - 1, (k * len(pool)) // n)] for k in range(n)}
     out, j = [], 0
     for i, ch in enumerate(text):
         out.append(ch)

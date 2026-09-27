@@ -54,6 +54,22 @@ def test_spice_is_spread_out_and_capped():
     assert first < len(out) * 0.25 and last > len(out) * 0.6, (first, last, len(out))
 
 
+def test_spice_prefers_line_ends():
+    """优先插在行尾（段末）—— 段中「？💗下一句」很怪。"""
+    t = "第一句。第二句。\n第三句。第四句。\n第五句。第六句。\n第七句。第八句。"
+    out = _spice_emoji(t, "💗", every=2, max_n=3)
+    for i, ch in enumerate(out):
+        if ch == "💗":
+            assert i + 1 >= len(out) or out[i + 1] == "\n", "表情必须在行尾"
+    assert out.count("💗") == 3
+
+
+def test_spice_falls_back_to_mid_line_when_no_breaks():
+    """没有换行时退回普通句末标点（不能因为"没有行尾"就一个都不撒）。"""
+    out = _spice_emoji("甲。乙。丙。丁。", "💗", every=1, max_n=2)
+    assert out.count("💗") == 2
+
+
 def test_spice_is_off_by_default_and_without_punctuation():
     assert _spice_emoji("第一句。第二句。", "") == "第一句。第二句。"
     assert _spice_emoji("没有句末标点的长句", "💗") == "没有句末标点的长句"
