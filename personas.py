@@ -189,6 +189,12 @@ RUOJIN_PHRASES = {
     # `insult_prefix_who` = 目标昵称关键词（逗号分隔，命中即加）；空 = 不启用。
     "insult_prefix_who": "工具熊",
     "insult_prefix_text": "/talk",
+    # P12-X：工作群里"没在局里就不认识的斜杠指令"（/talk、/ask 这类别的 bot 的语法）
+    # —— 留空 = **不理**（屋主 2026-09-27 要求）。认证群没写过这个 key ⇒ 仍旧回
+    # unknown_cmd，一个字不变（见 bot.py 那段分支）。
+    "dj_idle_unknown": "",
+    # P12-X：发骚/羞辱正文里撒的表情（空格分隔；空 = 不撒）
+    "spice_emoji": "💗 💦 🥵",
     # P12-V：调教那一族文案（原来写死在 runtime/diaojiao.py 里的软糯口吻）——
     # 若瑾是纯 S，不能出现「哦～」「呀」「姐妹」，改成命令句。
     "dj_format": "格式：/调教 点名 命令。例如 /调教 糯糯 学狗叫。",
@@ -449,6 +455,8 @@ PHRASE_LABELS = {
     "dj_replied": "调教 · 目标回应后催下一条命令",
     "dj_idle": "调教 · 冷场自续开场白",
     "dj_hint": "调教 · 参与方式提醒",
+    "dj_idle_unknown": "调教 · 没在局里时不认识的斜杠指令（留空=不理）",
+    "spice_emoji": "正文表情（空格分隔，如 💗 💦 🥵；留空=不撒）",
 }
 
 
@@ -839,6 +847,9 @@ PHRASES = {
         # 羞辱前缀：默认人设不启用（只有配了 who 的群才会加）
         "insult_prefix_who": None,
         "insult_prefix_text": None,
+        # P12-X：认证群的发骚/羞辱正文撒点表情（屋主 2026-09-27 要求；
+        # 玫瑰房那份写成空串 = 不撒，保持管家口吻）
+        "spice_emoji": "💗 💦 🥵",
         # P12-V：调教那一族的文案（原来是 runtime/diaojiao.py 里写死的字面量）。
         # 这里的默认值 = 原字面量**逐字**，所以不配覆盖的群行为一个字不变。
         "dj_format": "格式：/调教 目标 命令（例如 /调教 糯糯 学狗叫）",
@@ -916,6 +927,8 @@ PHRASES = {
         "dj_replied": "对方应了。下一条命令谁来下——/命令 xxx，或直接 /xxx。三十秒无人，{me}自行接续。",
         "dj_idle": "三十秒无人下令。{me}自行接续。",
         "dj_hint": "愿意接话的照此发：/命令 xxx，或直接 /xxx。三十秒无人，{me}继续。",
+        # 玫瑰房不撒表情（优雅口径；空串 = 明确关掉，覆盖默认人设那份）
+        "spice_emoji": "",
     },
     # P12-T：若瑾那份（纯 S 口吻；只覆盖看得见的那几条，其余沿用默认）
     "ruojin": RUOJIN_PHRASES,
@@ -935,3 +948,24 @@ def p(key: str, cid: str = None, **kw) -> str:
     if s is None:
         s = PHRASES["nuo"].get(key) or ""
     return fill(s, cid, **kw)
+
+
+def phrase_is_blank(key: str, cid: str = None) -> bool:
+    """这条话术是不是被**明确写成空**（= 要求"什么都不说"）。
+
+    空串与"没写过"是两回事：没写过 → 回落默认话术；写成空串 → 明确静默。
+    用途（2026-09-27 屋主："工作群里 /talk、/ask 这类**没在局里就不理**"）：
+    若瑾那份把 `dj_idle_unknown` 写成 ""，调用方据此静默；
+    认证群没写过这个 key ⇒ 仍旧回 `unknown_cmd`，行为一个字不变。
+    """
+    k = persona_key_for(cid)
+    layers = [PHRASES.get(k) or {}]
+    try:
+        _cont, phr = _active()
+        layers.append(phr.get(k) or {})
+    except Exception:                                          # noqa: BLE001
+        pass
+    for layer in layers:
+        if key in layer:
+            return not str(layer[key] or "").strip()
+    return False

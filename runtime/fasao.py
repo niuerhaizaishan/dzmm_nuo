@@ -30,7 +30,7 @@ from runtime.members import (_find_in_profiles, _find_user_in_msgs,
                              _gender_of, _random_member_uid)
 from runtime.memory import _retrieve_memory
 from runtime.obs import log
-from runtime.text import _is_stop_word, _strip_parenthesis
+from runtime.text import _is_stop_word, _strip_parenthesis, _spice_emoji
 
 
 __all__ = [
@@ -197,6 +197,9 @@ def scene(cmd: str) -> str:
     except Exception:
         text = ""
     text = (text or "").strip()
+    # P12-X：正文撒点表情（💗💦🥵…）—— 只在句末标点后、均匀取点；
+    # 开关是话术 `spice_emoji`（空 = 不撒，玫瑰房就是空的）。标题行不含正文，不受影响。
+    text = _spice_emoji(text, _phrase("spice_emoji", ctx.get_active_cid()))
     # 记录上一段上下文（供 /继续 续写）
     _set_last_action(ctx.get_active_cid(), {
         "type": "scene",

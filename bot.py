@@ -232,7 +232,7 @@ from runtime.ctx import PRIMARY_CID                   # 常驻群 cid 的唯一�
 from runtime.obs import log  # P8 第 4 步：搬到 runtime/obs.py
 from runtime.identity import self_uids, is_self, self_names, self_names_longest_first, _load_member_names, get_full_name, get_name, is_at_me, mentions_self, NUO_UID, BOT_UID, BOT_NAME, BOT_NAME_SHORT, _name_cache, register_bots, resolve_bot_uids as _resolve_bot_uids, learn_bot_uid, bot_uids  # P8 第 4 步：搬到 runtime/identity.py（P12-H 加多 Bot 身份）
 from runtime.dice import _dice_state, _dice_save, _dice_current_player, _dice_send_private, _dice_board_text, _dice_deal_round, _dice_start_cmd, _dice_join_cmd, _dice_exit_cmd, _dice_begin_cmd, _dice_next_round_cmd, _dice_call_cmd, _dice_open_cmd, _dice_quit_cmd, _dice_skip_cmd, _dice_status_text  # P8 第 4 步：搬到 runtime/dice.py
-from runtime.text import _get_opencc, _normalize_cn, _simplify, _strip_parenthesis, _is_stop_word, _dedupe_options, _normalize_choice, _extract_deadline_seconds, _squash, _clean_name, _norm_poem, _CJK_VARIANT, STOP_WORDS, _OPENCC_T2S  # P8 第 4 步：搬到 runtime/text.py
+from runtime.text import _get_opencc, _normalize_cn, _simplify, _strip_parenthesis, _is_stop_word, _dedupe_options, _normalize_choice, _extract_deadline_seconds, _squash, _clean_name, _norm_poem, _spice_emoji, _CJK_VARIANT, STOP_WORDS, _OPENCC_T2S  # P8 第 4 步：搬到 runtime/text.py
 from runtime.members import _extract_msgs, _get_msgs_by_uid, _member_profile_text, _find_in_profiles, _find_user_in_msgs, find_user_by_name, _find_uid_by_name, _gender_label, _gender_of, _random_member_uid, _archive_text_from_profile, _history_lines, _profile_history, HISTORY_MAX  # P8 第 4 步：搬到 runtime/members.py
 from runtime.fortune import is_fortune_cmd, fortune, _fortune_calc, _fortune_score, _fortune_level, _record_fortune, _get_fortune_history, _char_wx, _name_wx, _ganzhi, _relation, FORTUNE_APOLOGY, _GAN, _ZHI, _WX_GAN, _WX_ZHI, _GZ_BASE, _WX_ORDER, _WX_BASE, _WX_LUCK, _WX_YI, _WX_JI, _SHENG, _KE, _CHONG, _SHENGXIAO, _CHAR_WX, _REL_SCORE, _REL_TEXT, _LIUCHONG, _LIUHE, _ZHI_SCORE, _ZHI_PENALTY  # P8 第 4 步：搬到 runtime/fortune.py
 from runtime.trend import is_trend_cmd, is_trend_board_cmd, _trend_days, _trend_spark, _trend_chong, _trend_stats, _wd_cn, _md_cn, week_trend, week_trend_board, TREND_CIDS, TREND_DEFAULT_DAYS, TREND_MAX_DAYS  # P8 第 4 步：搬到 runtime/trend.py
@@ -1756,6 +1756,7 @@ def continue_last(cid: str, cmd: str = "", sender_uid: str = "") -> str:
         text = (text or "").strip()
         if not text:
             return "续写失败啦，换个指令试试～"
+        text = _spice_emoji(text, p("spice_emoji", cid))      # P12-X：续写也撒表情
         target_uid = fs.get("uid")
         if target_uid:
             _add_heat(cid, target_uid, _tune("heat.scene_continue_target", cid))
@@ -1783,6 +1784,7 @@ def continue_last(cid: str, cmd: str = "", sender_uid: str = "") -> str:
     text = (text or "").strip()
     if not text:
         return "续写失败啦，换个指令试试～"
+    text = _spice_emoji(text, p("spice_emoji", cid))          # P12-X：羞辱续写也撒表情
     # 续写加分（和目标原指令一致：羞辱 +15）
     target_uid = action.get("uid")
     if target_uid:
@@ -1828,6 +1830,7 @@ def rewrite_last(cid: str, cmd: str = "") -> str:
     text = (text or "").strip()
     if not text:
         return "重写失败啦，再试一次～"
+    text = _spice_emoji(text, p("spice_emoji", cid))          # P12-X：重写也撒表情
     history[-1] = text
     fs["history"] = history
     _set_fasao_state(cid, fs)
@@ -3061,7 +3064,18 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                     if reply:
                                         reply += "\n\n" + DJ_PARTICIPATE_HINT
                             else:
-                                reply = p("unknown_cmd", cid)
+                                # 没在局里：
+                                #   · `/命令 xxx` 是我们的参与语法 → 明确提示"没有进行中的调教"
+                                #   · 其它不认识的斜杠指令（/talk、/ask 这类别的 bot 的语法）
+                                #     → **不理**（屋主 2026-09-27 要求）。话术
+                                #     `dj_idle_unknown` 留空 = 静默；没写过这个 key 的
+                                #     人设（认证群）仍旧回 unknown_cmd，行为不变。
+                                if cmd.startswith("/命令"):
+                                    reply = p("no_dial", cid)
+                                elif _personas.phrase_is_blank("dj_idle_unknown", cid):
+                                    reply = None
+                                else:
+                                    reply = p("dj_idle_unknown", cid) or p("unknown_cmd", cid)
                         elif is_diaojiao_cmd(cmd) is not None and _feat_on(cid, "diaojiao"):
                             # 发起调教
                             if _get_dj_state(cid).get("active"):
@@ -3237,6 +3251,9 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                     if _pre:
                                         reply = _pre + " " + reply
                                         _no_prefix = True
+                                    # P12-X：羞辱正文撒点表情（💗💦🥵…），开关是话术
+                                    # `spice_emoji`（空 = 不撒）。前缀加在最前面，不受影响。
+                                    reply = _spice_emoji(reply, p("spice_emoji", cid))
                                     # 记录上一段（供 /继续 续写）
                                     _set_last_action(cid, {
                                         "type": "insult",

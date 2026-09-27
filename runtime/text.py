@@ -16,7 +16,41 @@ __all__ = [
     "_get_opencc", "_normalize_cn", "_simplify", "_strip_parenthesis",
     "_is_stop_word", "_dedupe_options", "_normalize_choice",
     "_extract_deadline_seconds", "_squash", "_clean_name", "_norm_poem",
+    "_spice_emoji",
 ]
+
+# 句末标点：撒表情只在它们**后面**动手
+_SPICE_END = "。！？～…"
+_SPICE_SPLIT = re.compile(r"[\s,，、|/]+")
+
+
+def _spice_emoji(text: str, emojis, every: int = 2, max_n: int = 6) -> str:
+    """给正文撒点表情（💗💦🥵…），屋主 2026-09-27 要求。
+
+    `emojis`：**空格（或逗号）分隔**的表情清单，例如 `"💗 💦 🥵"`；
+    空 = 不撒（这是开关：哪个群/人设想要就在话术 `spice_emoji` 里写）。
+
+    规则（刻意保守，免得变成表情雨）：
+      - 只在**句末标点之后**插，绝不插在句子中间；
+      - 数量 = min(max_n, 句末标点数 // every)，且在全文里**均匀取点**，
+        所以长文的表情是散开的，不会全挤在开头；
+      - 依次循环使用清单里的表情。
+    """
+    toks = [t for t in _SPICE_SPLIT.split(str(emojis or "")) if t]
+    if not text or not toks:
+        return text
+    marks = [i for i, ch in enumerate(text) if ch in _SPICE_END]
+    if not marks:
+        return text
+    n = max(1, min(int(max_n), len(marks) // max(1, int(every))))
+    picks = {marks[min(len(marks) - 1, (k * len(marks)) // n)] for k in range(n)}
+    out, j = [], 0
+    for i, ch in enumerate(text):
+        out.append(ch)
+        if i in picks:
+            out.append(toks[j % len(toks)])
+            j += 1
+    return "".join(out)
 
 
 _CJK_VARIANT = {
