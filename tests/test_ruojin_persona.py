@@ -106,12 +106,13 @@ def test_ah_sprinkles_bangs_and_hearts_not_a_fixed_string():
     assert "{marks}" not in e and "{tone}" not in e, "占位符必须都已替换"
     # 要有的规则
     assert "标点与表情" in e
-    assert "上感叹号" in e
+    assert "感叹号要真的用出来" in e, "实测只写'该有情绪就上'时 6 条里只有 1 个'！'"
+    assert "每两三条回复里至少有一条" in e, "感叹号要有频率下限，不能当可选项"
     assert "❤️ 多撒" in e and "一到四个都行" in e
     assert "大部分回复都该至少带上一个" in e, "屋主要的是'多加一些'，不是偶尔一处"
     assert "玩法正文里也撒" in e
     # 但要有上限，别变成符号雨
-    assert "不超过 4 个" in e and "别变成符号雨" in e
+    assert "不超过 4 个" in e and "不超过 5 个" in e and "别变成符号雨" in e
     assert "不算" in e and "卖萌" in e, "要说明它跟'别堆♡'那条不冲突"
 
 
