@@ -16,12 +16,43 @@ __all__ = [
     "_get_opencc", "_normalize_cn", "_simplify", "_strip_parenthesis",
     "_is_stop_word", "_dedupe_options", "_normalize_choice",
     "_extract_deadline_seconds", "_squash", "_clean_name", "_norm_poem",
-    "_spice_emoji",
+    "_spice_emoji", "_ensure_decor",
 ]
 
 # 句末标点：撒表情只在它们**后面**动手
 _SPICE_END = "。！？～…"
 _SPICE_SPLIT = re.compile(r"[\s,，、|/]+")
+
+
+def _ensure_decor(text: str, heart: str = "", bang: bool = True) -> str:
+    """给一条回复**补足**装饰符号（P12-AH）。
+
+    屋主 2026-09-27："主要是 @ 若瑾 说话的时候，多加一些 ❤️ 和'！！！'。"
+    实测：光在提示词里写"每条都要带"，❤️ 能到 6/6 条，但 **"！"只到 3/6** ——
+    她的属性本来就叫"低、稳、慢半拍"，模型收尾爱用句号。所以这条做成**确定性补足**，
+    与 `_spice_emoji` 同一套路（同一个文件、同一个理由：提示词管不住的那部分用代码兜）。
+
+    只补足、不叠加、不改写内容：
+      · `heart` 非空且正文里**没有**它 → 在结尾补一个（末尾是换行就先收干净）；
+      · 正文里**没有**"！" → 把**最后那个"。"换成"！！"**（问号结尾不动：那是真在问，
+        硬加感叹号会变成阴阳怪气）；
+      · 已经有 ❤️ / 已经有 ！ → **一个字都不动**（免得每条都堆成一模一样）。
+
+    `heart` 为空 = 关闭（默认人设与其他群不受影响）。
+    """
+    if not text:
+        return text
+    out = text
+    if bang and "！" not in out:
+        i = out.rfind("。")
+        if i >= 0:
+            out = out[:i] + "！！" + out[i + 1:]
+    if heart and heart not in out:
+        out = out.rstrip()
+        if out and out[-1] not in "！？。…":
+            out += "。"
+        out += heart
+    return out
 
 
 def _spice_emoji(text: str, emojis, every: int = 2, max_n: int = 6) -> str:

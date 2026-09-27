@@ -125,6 +125,25 @@ def test_ah_phrases_carry_bangs_and_hearts():
     assert "❤️" in P.p("reg_ok", cid, who="糯糯")
 
 
+def test_ah_scopes_the_density_to_the_at_conversation():
+    """屋主 2026-09-27 追加："**主要是 @ 若瑾 说话的时候**，多加一些 ❤️ 和'！！！'"。
+
+    实测证据（v4）：闲聊 0 个 ❤️ / 0 个 ！、观点题 313 字也是 0 个 ——
+    而羞辱/调教正文反而一堆（因为规则只写了"正文也撒"）。所以必须有**专门管
+    @ 对话**的密度要求，否则模型把"高冷"理解成"不用这些符号"。
+    """
+    e = P.RUOJIN_EXTRA
+    assert "@ 你 / 跟你聊天的时候" in e
+    assert "这条路要更多" in e
+    assert "每条都带 ❤️" in e, "@ 对话要有下限：每条都带"
+    assert "每条至少有一处用" in e, "感叹号也要有下限"
+    assert "高冷照旧高冷" in e, "别为了加符号把人设弄软"
+    assert "一次都不许出现" in e
+    # 例子要真的带符号（few-shot 比规则管用）
+    seg = e[e.index("有人 @ 你"):]
+    assert seg.count("❤️") >= 5 and "！！" in seg
+
+
 def test_ah_colloquial_does_not_mean_shorter():
     """第一版写"能两个字说完就别写四个字"，实测把均句长从 24 压到 19、总字数 150→97。"""
     e = P.RUOJIN_EXTRA
