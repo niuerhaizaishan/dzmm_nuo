@@ -411,6 +411,8 @@ def describe_persona(key: str, cid: str = None) -> dict:
 
 ROOM_GREET_TEMPLATE = """🌹 欢迎 {name} 来串门～
 
+{intro}
+
 此间玫瑰，遵循屋主的规则，未经主人同意不得摘取玫瑰花。
 
 （摘下花瓣轻轻一吹，{item}）

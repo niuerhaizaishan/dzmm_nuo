@@ -3324,6 +3324,13 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             log("👻 [" + cid[:8] + "] " + get_name(r_uid)[:12] + " 命令女鬼上场")
                             reply = _personas.fill(ROOM_GHOST_TEXT, cid)
                             _ghost_after = "命令"
+                        elif (_intro_photo.photo_url(cid)
+                              and _feat_on(cid, "intro")
+                              and _intro_photo.wants_photo(r_text, cid)):
+                            # P12-Q：问"你是谁"用**固定的自我介绍**（不再让 AI 现编），
+                            # 发完文案后由发送点的钩子补上那张立绘。
+                            # 只在本群配了立绘时生效（玫瑰房），认证群照旧走 AI。
+                            reply = p("intro_text", cid) or _personas.fill(INTRO_TEXT, cid)
                         elif (_feat_on(cid, "horoscope")
                               and (_sr := await _sign_reply(
                                   cid, r_uid, r_text,
@@ -3837,13 +3844,17 @@ def _room_greet_text(name: str, cid: str = None) -> str:
 
     模板和候选句里都可能有 `{me}`（本群管家的名字，见 personas.fill）——
     房间管家改过名，欢迎语里必须跟着改，不能写死。
+
+    P12-Q（屋主 2026-09-27）：欢迎语里带上**本群的自我介绍**（"新人进群的欢迎语
+    也用新的自我介绍"）。自我介绍没配时（认证群等）`{intro}` 整行收掉，不留空行。
     """
-    return _personas.fill(
-        ROOM_GREET_TEMPLATE
-        .replace("{name}", name)
-        .replace("{item}", random.choice(ROOM_GREET_ITEMS))
-        .replace("{line}", random.choice(ROOM_GREET_LINES)),
-        cid)
+    tpl = (ROOM_GREET_TEMPLATE
+           .replace("{name}", name)
+           .replace("{item}", random.choice(ROOM_GREET_ITEMS))
+           .replace("{line}", random.choice(ROOM_GREET_LINES)))
+    intro = (_personas.p("intro_text", cid) or "").strip()
+    tpl = tpl.replace("{intro}", intro) if intro else tpl.replace("\n{intro}\n", "")
+    return _personas.fill(tpl, cid)
 
 
 def _strike_get(group_state: dict, uid: str, reset_h: int) -> int:

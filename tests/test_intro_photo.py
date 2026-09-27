@@ -211,3 +211,34 @@ def test_bot_wires_all_three_paths():
     assert src.count("_intro_photo.maybe_send(") >= 2, "房间消息 + @提问 两处要发"
     assert 'reason="进房问好"' in src
     assert 'reason="指令"' in src
+
+
+# ---------------------------------------------------------------- 欢迎语/问答都用新自我介绍
+
+def test_welcome_carries_the_new_intro():
+    """P12-Q：新人进群的欢迎语也要用新的自我介绍（屋主 2026-09-27）."""
+    import bot
+    greet = bot._room_greet_text("阿May", ROSE)
+    assert "阿May" in greet
+    assert "我是veil" in greet and "Roseveil" in greet
+    assert "Vv姐姐是屋主" in greet
+    assert "未经主人同意不得摘取玫瑰花" in greet, "屋主的规矩一句不能少"
+    assert "{intro}" not in greet and "\n\n\n" not in greet
+
+
+def test_welcome_without_intro_has_no_leftover_placeholder():
+    """认证群那份没有自我介绍 → 整行收掉，不留空行、不留占位符."""
+    import bot
+    greet = bot._room_greet_text("阿May", AUTH)
+    assert "{intro}" not in greet
+    assert "\n\n\n" not in greet
+    assert "阿May" in greet
+
+
+def test_who_are_you_uses_the_fixed_intro():
+    """问"你是谁"走固定自我介绍（本群配了立绘时），认证群不受影响."""
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    i = src.index("_intro_photo.photo_url(cid)")
+    window = src[i:i + 600]
+    assert 'reply = p("intro_text", cid)' in window
+    assert IP.photo_url(ROSE) and IP.photo_url(AUTH) == "", "只有玫瑰房配了立绘"
