@@ -183,6 +183,10 @@ RUOJIN_PHRASES = {
     "scene_default_who": "他",
     # 异性恋人设遇到女性目标时的回绝（默认人设留空 = 不启用这条路径）
     "wrong_gender": "我只跟男的玩。",
+    # 羞辱某些目标时要在消息**最最前面**加的前缀（屋主 2026-09-27 指定：羞辱"工具熊"时加 /talk）。
+    # `insult_prefix_who` = 目标昵称关键词（逗号分隔，命中即加）；空 = 不启用。
+    "insult_prefix_who": "工具熊",
+    "insult_prefix_text": "/talk",
 }
 
 
@@ -425,6 +429,8 @@ PHRASE_LABELS = {
     "fasao_end": "发骚 · 结束语",
     "scene_default_who": "场景 · 没指定人时的默认称呼",
     "wrong_gender": "异性恋人设 · 目标性别不符时的回绝",
+    "insult_prefix_who": "羞辱前缀 · 目标昵称关键词（逗号分隔）",
+    "insult_prefix_text": "羞辱前缀 · 要加在最前面的内容",
 }
 
 
@@ -812,6 +818,9 @@ PHRASES = {
         "fasao_end": "🎲 发骚结束啦～",
         "scene_default_who": "姐姐",
         "wrong_gender": None,      # 默认人设不启用（异性恋那套才用）
+        # 羞辱前缀：默认人设不启用（只有配了 who 的群才会加）
+        "insult_prefix_who": None,
+        "insult_prefix_text": None,
     },
     "rose_butler": {
         # ⚠️ 自称一律写 `{me}`（= 本群人设名，见 fill()）：这套话术是**代码默认值**，

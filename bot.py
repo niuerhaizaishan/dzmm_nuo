@@ -985,6 +985,23 @@ def is_profile_cmd(cmd: str) -> str:
     return ""
 
 
+def _insult_prefix(cid: str, target_name: str) -> str:
+    """羞辱这个目标时，要在消息**最最前面**加的内容（没配就返回空串）.
+
+    屋主 2026-09-27 指定：羞辱「工具熊」时消息最前面要加 `/talk`。
+    做成**话术**（人设页可改、热加载生效），而不是写死在代码里：
+      - `insult_prefix_who`  ：目标昵称关键词，逗号/顿号分隔，命中即加；空 = 不启用
+      - `insult_prefix_text` ：要加的内容（如 `/talk`）
+    """
+    who = str(p("insult_prefix_who", cid) or "").strip()
+    txt = str(p("insult_prefix_text", cid) or "").strip()
+    if not who or not txt:
+        return ""
+    names = [x.strip() for x in who.replace("，", ",").replace("、", ",").split(",") if x.strip()]
+    name = str(target_name or "")
+    return txt if any(n in name for n in names) else ""
+
+
 def is_rank_cmd(cmd: str) -> bool:
     """识别骚度排行指令."""
     keywords = ["骚度", "排行", "骚榜", "骚排名", "骚气", "谁最骚", "骚王"]
@@ -2865,6 +2882,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
 
                     if cmd:
                         reply = ""
+                        _no_prefix = False   # P12-T：羞辱特定目标时要在最前面加前缀（见发送点）
                         log("⚡ [" + cid[:8] + "] " + cmd[:40])
                         old_last_id = group_state.get("last_id", "")  # 记录旧值，生成失败时回滚
                         # 先推进 last_id，避免处理中异常导致同一条指令被重复处理
@@ -3153,6 +3171,12 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                         gender=_g,
                                         straight=_personas.is_straight(cid))
                                     _record_insult(target_uid, style, reply)
+                                    # P12-T：某些目标要在消息**最最前面**加前缀
+                                    # （屋主指定：羞辱「工具熊」→ /talk；话术可配）
+                                    _pre = _insult_prefix(cid, get_full_name(target_uid))
+                                    if _pre:
+                                        reply = _pre + " " + reply
+                                        _no_prefix = True
                                     # 记录上一段（供 /继续 续写）
                                     _set_last_action(cid, {
                                         "type": "insult",
@@ -3171,7 +3195,9 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         if reply is not None:
                             reply = (reply or "").strip()
                             if reply:
-                                reply = "🤖 " + reply
+                                # P12-T：某些羞辱目标要求在**最最前面**加前缀（如 /talk）——
+                                # 那种消息不能再加"🤖 "，否则前缀就不在最前面了。
+                                reply = reply if _no_prefix else ("🤖 " + reply)
                                 log("💬 " + reply[:200])
                                 if dry:
                                     log("[dry] skip")

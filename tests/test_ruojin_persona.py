@@ -66,3 +66,31 @@ def test_default_groups_are_untouched():
     auth = "bd7fe6a4-0065-4551-ad3d-94116dba8f9c"
     assert P.me(auth) == "小小糯"
     assert auth not in ROOMS, "认证群不由 ROOMS 派生（它走默认人设）"
+
+
+# ---------------------------------------------------------------- 羞辱前缀
+
+def test_insult_prefix_only_hits_the_configured_target():
+    """屋主指定：羞辱「工具熊」时消息最前面加 `/talk`（做成话术，可改可热加载）."""
+    import bot
+    assert bot._insult_prefix(RUOJIN_CID, "工具熊 Jr.") == "/talk"
+    assert bot._insult_prefix(RUOJIN_CID, "工具熊") == "/talk"
+    assert bot._insult_prefix(RUOJIN_CID, "小张") == ""
+    assert bot._insult_prefix(RUOJIN_CID, "") == ""
+    # 别的群没配 → 不加（认证群一个字不变）
+    assert bot._insult_prefix("bd7fe6a4-0065-4551-ad3d-94116dba8f9c", "工具熊 Jr.") == ""
+
+
+def test_insult_prefix_is_data_not_code():
+    """关键词与内容都从话术表来（页面能改；改完热加载 1 秒生效）."""
+    assert P.p("insult_prefix_who", RUOJIN_CID) == "工具熊"
+    assert P.p("insult_prefix_text", RUOJIN_CID) == "/talk"
+    assert not P.p("insult_prefix_who", "bd7fe6a4-0065-4551-ad3d-94116dba8f9c")
+
+
+def test_bot_wires_the_prefix_and_drops_the_robot_mark():
+    """加了前缀的消息不能再有"🤖 "在前面 —— 否则 /talk 就不在"最最前面"了."""
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    assert "_insult_prefix(cid, get_full_name(target_uid))" in src
+    assert 'reply if _no_prefix else ("🤖 " + reply)' in src
+    assert "_no_prefix = False" in src
