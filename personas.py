@@ -304,6 +304,7 @@ PHRASE_LABELS = {
     "no_dial": "没有进行中的调教",
     "help_text": "/说明 的正文",
     "intro_text": "新人进群欢迎语",
+    "intro_photo": "自我介绍配图（图片 URL，空=不发）",
     "query_working": "查档案 · 等待提示",
     "register_working": "注册 · 等待提示",
     "captcha_notice": "撞验证码的群内提示",
@@ -669,6 +670,8 @@ PHRASES = {
         "no_dial": "现在没有进行中的调教哦～",
         "help_text": None,   # None = 用 bot.py 里的 HELP_TEXT
         "intro_text": None,
+        # P12-L：自我介绍配图。认证群不配图（空 = 不发），玫瑰房那份见下。
+        "intro_photo": None,
         "query_working": "🤖 收到啦～正在翻档案查{who}的资料，要拉发言+生成画像，"
                          "预计十几秒，稍等一下下哦～",
         "register_working": "🤖 收到注册请求啦～正在拉取{who}的资料并生成画像，"
@@ -702,6 +705,10 @@ PHRASES = {
 （其余玩法暂未开放）""",
         "intro_text": "玫瑰房的管家，{me}。屋主是 Vv姐姐。\n"
                       "摘一片花瓣吹口气，酒、雪茄、点心都能变出来——花不行，那是屋主的规矩。",
+        # P12-L：自我介绍之后补一张{me}的立绘（只发图、不带字）。
+        # 官方 Bot API 只能发 URL 图片，所以这张图托管在自家域名上
+        # （Caddy `/img/*`）。**换图 = 换同名文件**；清空这行 = 不再发图。
+        "intro_photo": "https://www.nuonuo.pw/img/weisi.png",
         "query_working": "🤖 稍等，{me}去翻名册……",
         "register_working": "🤖 稍等，{me}去写名册……",
 

@@ -285,6 +285,7 @@ from runtime.perf import _detect_perf_query, summarize_person_perf, is_perf_star
 from runtime.fasao import is_fasao_cmd, fasao, is_scene_cmd, _parse_scene_target, scene, is_fasao_end_cmd, _check_fasao_timeout, end_fasao, _pick_combo_by_xp, FASAO_TIMEOUT, SCENES, POSITIONS, EXTRAS, XP_BIAS  # P8 第 4 步：搬到 runtime/fasao.py
 from runtime.perf import _check_perf_timeout  # P12-A：公演超时解锁（原先没有超时）
 from runtime.diaojiao import is_dj_end_cmd, _dj_target_text, _dj_end_text, is_diaojiao_cmd, start_diaojiao, _check_diaojiao, DJ_PARTICIPATE_HINT  # P8 第 4 步：搬到 runtime/diaojiao.py
+from runtime import intro_photo as _intro_photo  # P12-L：自我介绍配图（只发图，不带字）
 
 # DZMM 主站 origin（多线路切换：env_config 从 DZMM_HOST 环境变量读）
 ORIGIN = env_config.get_dzmm_origin()
@@ -2725,6 +2726,9 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                     for jid in joins:
                                         await _send(sender, cid,
                                                     "🤖 " + _room_greet_text(get_full_name(jid), cid), dry)
+                                    # P12-L：问好之后补一张立绘（一次进房只发一张，多人同时进也不刷屏）
+                                    if not dry:
+                                        await _intro_photo.send(sender, cid, reason="进房问好")
                                     passed, wtxt = [], ""
                             else:
                                 log("🎉 [" + cid[:8] + "] 新成员加入 " + str(len(joins)) + " 人，只发欢迎语")
@@ -3102,6 +3106,10 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                 else:
                                     ok = await sender.send(reply, cid)
                                     log("✅" if ok else "❌")
+                                    # P12-L：/自我介绍 之后补一张立绘（只发图）
+                                    if ok and is_intro_cmd(cmd or "") \
+                                            and _feat_on(cid, "intro"):
+                                        await _intro_photo.send(sender, cid, reason="指令")
                             else:
                                 # 生成失败（空回复），抛异常让 except 统一回滚 last_id
                                 raise RuntimeError("生成失败(空回复): " + cmd[:20])
@@ -3170,6 +3178,10 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                 else:
                                     ok = await sender.send(reply, cid)
                                     log("✅" if ok else "❌")
+                                    # P12-L：@ 提问里问"你是谁"，同样补一张立绘
+                                    if ok and q:
+                                        await _intro_photo.maybe_send(
+                                            sender, cid, q, reason="@提问")
                             else:
                                 # 生成失败（空回复），抛异常让 except 统一回滚 last_id
                                 raise RuntimeError("生成失败(空回复): @消息")
@@ -3291,6 +3303,10 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                 else:
                                     ok = await sender.send(reply, cid)
                                     log("✅" if ok else "❌")
+                                    # P12-L：问到"你是谁"这类，补一张立绘（同一条去重）
+                                    if ok and r_text:
+                                        await _intro_photo.maybe_send(
+                                            sender, cid, r_text, reason="自然语言")
                             else:
                                 raise RuntimeError("生成失败(空回复): 房间消息")
 

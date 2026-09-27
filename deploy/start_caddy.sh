@@ -7,8 +7,11 @@ docker pull caddy:2-alpine 2>&1 | tail -2
 echo
 echo "=== 起 Caddy（--network host，才能反代 127.0.0.1:8091）==="
 docker rm -f caddy-nuonuo 2>/dev/null || true
+# /opt/dzmm/deploy/img -> /srv/img：给 `sendPhoto` 用的公网图片（P12-L）。
+mkdir -p /opt/dzmm/deploy/img
 docker run -d --name caddy-nuonuo --restart unless-stopped --network host \
   -v /opt/dzmm/Caddyfile:/etc/caddy/Caddyfile:ro \
+  -v /opt/dzmm/deploy/img:/srv/img:ro \
   -v caddy_data:/data -v caddy_config:/config \
   caddy:2-alpine 2>&1 | tail -1
 echo

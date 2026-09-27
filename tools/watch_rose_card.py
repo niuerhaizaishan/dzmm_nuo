@@ -61,5 +61,6 @@ for m in msgs[-SHOW:]:
         ts = (datetime.strptime(ts, "%Y-%m-%d %H:%M:%S") + TZ).strftime("%H:%M:%S")
     except Exception:                                       # noqa: BLE001
         pass
-    print("--- [{}] {} | {} 行 {} 字".format(ts, who, len(txt.split("\n")), len(txt)))
+    print("--- [{}] {} | 类型={} | {} 行 {} 字".format(
+        ts, who, c.get("type") or "text", len(txt.split("\n")), len(txt)))
     print(txt)

@@ -20,10 +20,12 @@ import requests
 
 __all__ = [
     "BotApiError", "BotApiRejected", "BotApiAmbiguous", "DzmmBotSender",
-    "BOT_SEND_PATH",
+    "BOT_SEND_PATH", "BOT_PHOTO_PATH",
 ]
 
 BOT_SEND_PATH = "/api/bot/send-message"
+# Telegram 兼容形态，**只吃 URL 图片**（没有 multipart），见 docs/BotAPI能力矩阵.md。
+BOT_PHOTO_PATH = "/api/bot/bot{token}/sendPhoto"
 
 
 class BotApiError(Exception):
@@ -72,7 +74,39 @@ class DzmmBotSender:
             )
         except requests.RequestException as e:
             raise BotApiAmbiguous("网络错误：{}".format(type(e).__name__)) from e
+        return self._finish(resp)
 
+    def send_photo_url(self, chatroom_id: str, photo_url: str,
+                       caption: str = "") -> str:
+        """按 **URL** 发一张图（P12-L：官方只吃 URL，没有 multipart）。
+
+        走 Telegram 兼容形态 `POST /api/bot/bot<token>/sendPhoto`，
+        形态差异（B 形式**一律 200** + `message` 字段）由 `_finish` 统一消化 ——
+        失败判定必须与 `send_text` **完全一致**，否则"图片失败"就绕过了那条铁律。
+        """
+        if not photo_url:
+            raise BotApiRejected("图片 URL 为空")
+        url = self.origin + BOT_PHOTO_PATH.format(token=self.token)
+        payload = {"chat_id": chatroom_id, "photo": photo_url}
+        if caption:
+            payload["caption"] = caption
+        try:
+            resp = self._session.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=self.timeout,
+                proxies=self._proxies(),
+            )
+        except requests.RequestException as e:
+            raise BotApiAmbiguous("网络错误：{}".format(type(e).__name__)) from e
+        return self._finish(resp)
+
+    # ------------------------------------------------------------ 内部
+
+    @staticmethod
+    def _finish(resp) -> str:
+        """把响应变成 message_id；两种错误形状都认（见模块顶部那条铁律）."""
         # 5xx：服务端故障，不明确
         if resp.status_code >= 500:
             raise BotApiAmbiguous("HTTP {}".format(resp.status_code))
@@ -97,8 +131,6 @@ class DzmmBotSender:
             # ok=true 却没给 message_id：极可能**已经投递**了 → 当作不明确，禁止重发
             raise BotApiAmbiguous("ok=true 但缺少 message_id")
         return mid
-
-    # ------------------------------------------------------------ 内部
 
     def _proxies(self):
         if not self.proxy:

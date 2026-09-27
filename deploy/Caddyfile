@@ -2,11 +2,19 @@
 	admin off
 }
 
-# 只暴露 Webhook 一条路径；其余一律 404。
+# 只暴露两条路径：Webhook 与**薇丝的立绘**（P12-L）；其余一律 404。
 # 证书由 Caddy 自动申请/续期（Let's Encrypt），80 用于 HTTP-01、443 用于 TLS-ALPN。
+#
+# `/img/*` 为什么存在：官方 Bot API 只能发 **URL 图片**（`sendPhoto`，没有 multipart），
+# 所以自我介绍那张图必须有公网地址。目录挂在容器里的 /srv/img（见 start_caddy.sh），
+# 换图 = 换同名文件，不用改配置。
 www.nuonuo.pw {
 	handle /bot/webhook {
 		reverse_proxy 127.0.0.1:8091
+	}
+	handle_path /img/* {
+		root * /srv/img
+		file_server
 	}
 	handle {
 		respond "not found" 404
