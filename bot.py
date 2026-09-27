@@ -3546,6 +3546,17 @@ async def _run_all(interval: float, dry: bool, once: bool) -> None:
             log("P11: Bot 身份识别失败（不影响运行）：" + str(e)[:80])
 
     state = load_state()
+    # P12-J：出站队列的**安全重试**后台任务 —— 只重试"平台明确拒绝（确定未投递）"
+    # 的那一类；模糊失败绝不重发（防重复打扰群友）。
+    try:
+        _rw = getattr(sender, "start_retry_worker", None)
+        if callable(_rw):
+            _rw()
+            log("P12-J: 出站重试任务已启动（只重试明确被拒的，间隔 {}s，最多 {} 次）".format(
+                getattr(sender, "retry_interval", "?"),
+                getattr(sender, "retry_max", "?")))
+    except Exception as _e:                                    # noqa: BLE001
+        log("P12-J: 出站重试任务启动失败（不影响发送）：" + str(_e)[:70])
     # Socket.IO 订阅器（读消息主通道）：后台长连接监听 message:new，实时推送。
     # 按群分队列，所以多个主循环实例各自 drain 自己的群是安全的。
     from sio_subscribe import SioSubscriber

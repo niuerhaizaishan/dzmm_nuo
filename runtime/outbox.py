@@ -32,6 +32,19 @@ LEASED = "leased"
 SENT = "sent"
 FAILED = "failed"
 
+# P12-J：安全重试的两个参数（只对"明确被拒"的失败生效）
+RETRY_MAX_ATTEMPTS = 3      # 连同首次发送，最多试 4 次
+RETRY_INTERVAL = 20.0       # 秒；一轮扫描的间隔
+
+
+def log_line(msg: str) -> None:
+    """写一行日志（与 runtime/obs 同源；导入失败也不影响出站）。"""
+    try:
+        from runtime.obs import log as _log
+        _log(msg)
+    except Exception:                                          # noqa: BLE001
+        print(msg, flush=True)
+
 # 进程重启打断发送后，留在记录里的原因（运维看到就知道"不是平台拒了"，
 # 而是"不知道有没有发出去"）
 INTERRUPTED_NOTE = "进程重启打断：未确认是否已投递，不自动重发（避免重复打扰）"
@@ -130,6 +143,20 @@ class OutboxStore:
         self._conn.commit()
         return cur.rowcount
 
+    def revive(self, oid: str) -> bool:
+        """把一条 **failed** 记录放回 pending，供安全重试重新领取（P12-J）。
+
+        为什么需要它：`lease()` 只接受 `pending` 或"租约已过期的 leased" ——
+        `failed` 的记录它不认。所以"失败记录永远没人再碰"有**两层**原因：
+        既没有轮询的任务，也没法重新领租约。重试前先 revive，再 lease。
+        """
+        cur = self._conn.execute(
+            "UPDATE outbound SET status=?, lease_worker_id=NULL, lease_token=NULL,"
+            " lease_expires_at=NULL WHERE id=? AND status=?",
+            (PENDING, oid, FAILED))
+        self._conn.commit()
+        return cur.rowcount == 1
+
     def abandon_interrupted(self, reason: str) -> int:
         """把**上次进程留下的**未终态记录标成 failed。返回条数。
 
@@ -200,13 +227,23 @@ class OutboxSender:
     """
 
     def __init__(self, inner, store: OutboxStore, worker_id: str | None = None,
-                 dry: bool = False, lease_ttl: float = DEFAULT_LEASE_TTL):
+                 dry: bool = False, lease_ttl: float = DEFAULT_LEASE_TTL,
+                 retry_max: int = None, retry_interval: float = None):
         self._inner = inner
         self._store = store
         self._worker_id = worker_id or new_worker_id()
         self._dry = dry
         self._lease_ttl = lease_ttl
         self._locks: dict[str, asyncio.Lock] = {}
+        # P12-J：**只重试"明确被拒"的那一类**（确定未投递）。
+        # 模糊失败（网络错误/非 200/缺 message_id）绝不重发 —— 可能已经投递，
+        # 重发就是重复打扰群友（见本模块顶部那条铁律）。
+        self.retry_max = RETRY_MAX_ATTEMPTS if retry_max is None else int(retry_max)
+        self.retry_interval = (RETRY_INTERVAL if retry_interval is None
+                               else float(retry_interval))
+        self.retry_counts = {"scanned": 0, "resent_ok": 0, "resent_fail": 0,
+                             "skipped_unsafe": 0, "gave_up": 0}
+        self._retry_task = None
 
     # 透传未覆盖的属性/方法给真实 sender
     def __getattr__(self, name):
@@ -240,5 +277,94 @@ class OutboxSender:
             if ok:
                 self._store.mark_sent(oid)
             else:
-                self._store.mark_failed(oid, "sender 返回 False")
+                # 记下**原因**：`rejected` 可以安全重试，`ambiguous` 绝不能
+                self._store.mark_failed(oid, "sender 返回 False [{}]".format(
+                    getattr(self._inner, "last_failure", "") or "unknown"))
             return bool(ok)
+
+    # ------------------------------------------------------------ 安全重试（P12-J）
+    async def retry_worker(self) -> None:
+        """后台：把**明确被拒**的失败记录在官方通道上重试几次。
+
+        为什么需要：`send()` 是同步内联的，失败就 `mark_failed` —— 没有任何东西
+        会再看它一眼（模块注释里写着"没有轮询 pending 的后台 worker"），
+        于是"Bot 被拒"这类**确定没送到**的消息就永久丢了。
+        为什么只重试这一类：`rejected` = 平台明确拒绝、确定未投递 ⇒ 重发安全；
+        `ambiguous` 可能已经送到 ⇒ 重发会重复打扰群友（铁律：未 ACK 不重发）。
+        """
+        while True:
+            try:
+                await asyncio.sleep(self.retry_interval)
+                await self.retry_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:                             # noqa: BLE001
+                try:
+                    log_line("outbox: 重试任务异常 " + str(e)[:80])
+                except Exception:                              # noqa: BLE001
+                    pass
+
+    def start_retry_worker(self):
+        """由 `_run_all` 在启动后调用；dry 模式不起（不落库）。"""
+        if self._dry or self._retry_task is not None:
+            return self._retry_task
+        try:
+            self._retry_task = asyncio.get_running_loop().create_task(self.retry_worker())
+        except RuntimeError:
+            self._retry_task = None
+        return self._retry_task
+
+    async def retry_once(self) -> int:
+        """扫一轮失败记录并按安全规则重试。返回重试条数。"""
+        if self._dry:
+            return 0
+        try:
+            self._store.reclaim_expired()
+        except Exception:                                      # noqa: BLE001
+            pass
+        try:
+            rows = self._store.by_status("failed", n=50)
+        except Exception:                                      # noqa: BLE001
+            return 0
+        n = 0
+        for it in rows or ():
+            self.retry_counts["scanned"] += 1
+            oid = str(it.get("id") or "")
+            err = str(it.get("last_error") or "")
+            try:
+                attempts = int(it.get("attempt_count") or 0)
+            except Exception:                                  # noqa: BLE001
+                attempts = 0
+            if "[rejected]" not in err:
+                self.retry_counts["skipped_unsafe"] += 1
+                continue
+            if attempts > self.retry_max:
+                self.retry_counts["gave_up"] += 1
+                continue
+            cid = str(it.get("chatroom_id") or "")
+            text = str(it.get("text") or "")
+            if not cid or not text:
+                continue
+            async with self._lock(cid):
+                # failed 的记录领不到租约（lease 只认 pending / 过期 leased）
+                # ⇒ 先放回 pending 再领
+                if not self._store.revive(oid):
+                    continue
+                if not self._store.lease(oid, self._worker_id, self._lease_ttl):
+                    continue
+                try:
+                    ok = await self._inner.send(text, cid)
+                except Exception as e:                         # noqa: BLE001
+                    self._store.mark_failed(oid, "{}: {}".format(
+                        type(e).__name__, str(e)))
+                    self.retry_counts["resent_fail"] += 1
+                    continue
+                if ok:
+                    self._store.mark_sent(oid)
+                    self.retry_counts["resent_ok"] += 1
+                else:
+                    self._store.mark_failed(oid, "sender 返回 False [{}]".format(
+                        getattr(self._inner, "last_failure", "") or "unknown"))
+                    self.retry_counts["resent_fail"] += 1
+            n += 1
+        return n

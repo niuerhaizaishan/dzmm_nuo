@@ -38,6 +38,11 @@ class RoutingSender:
         # 代价是那条消息会丢；好处是"群里每一条都是 Bot 发的"这件事不再有例外。
         # 默认关：回退是为了撞验证码时别丢消息（丢消息比晚一点更糟）。
         self._official_only = bool(official_only)
+        # P12-J：**最近一次发送的失败原因**，供出站队列决定"能不能安全重试"。
+        # 只有 `rejected` 是"平台明确拒绝、确定未投递"⇒ 可以重发；
+        # `ambiguous`（网络错误/非 200/缺 message_id）**绝不能重发**（可能已投递）。
+        # 见 runtime/outbox.py 里那条铁律：平台未明确 ACK 时不换通道重发。
+        self.last_failure = ""
         self.counts = {"bot_ok": 0, "bot_rejected": 0,
                        "bot_ambiguous": 0, "account": 0,
                        "dropped_official_only": 0}
@@ -67,18 +72,24 @@ class RoutingSender:
                 # requests 是同步的，丢线程池，别阻塞事件循环
                 mid = await asyncio.to_thread(bot.send_text, cid, text)
                 self._note("bot_ok", cid, mid)
+                self.last_failure = ""
                 return True
             except BotApiRejected as e:
                 # 明确拒绝、确定未投递 → 默认允许回退账号（撞验证码时别丢消息）
                 self._note("bot_rejected", cid, str(e))
+                self.last_failure = "rejected"
                 if self._official_only:
-                    # 只走官方通道：宁可这条失败并留下显式记录，也不悄悄换成账号发
+                    # 只走官方通道：这条失败会被出站队列**在官方通道上重试**，
+                    # 而不是悄悄换成账号发（出站队列按 last_failure 判断可否安全重试）
                     self._note("dropped_official_only", cid, str(e))
                     return False
             except BotApiAmbiguous as e:
                 # 可能已投递 → 绝不重发，直接判失败
                 self._note("bot_ambiguous", cid, str(e))
+                self.last_failure = "ambiguous"
                 return False
 
         self._note("account", cid)
-        return await self._account.send(text, cid, allow_fallback=allow_fallback)
+        ok = await self._account.send(text, cid, allow_fallback=allow_fallback)
+        self.last_failure = "" if ok else "account_unknown"
+        return ok
