@@ -231,6 +231,21 @@ class OutboxStore:
                 (status, n)).fetchall()
         return [dict(r) for r in rows]
 
+    def failed_count(self) -> int:
+        """失败记录条数（P12-AB：巡检靠它发现"某条消息静默丢了"）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM outbound WHERE status=?", (FAILED,)).fetchone()
+        return int(row["n"])
+
+    def recent_failed(self, n: int = 1) -> list[dict]:
+        """最近的失败记录（新→旧）。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM outbound WHERE status=? ORDER BY created_at DESC LIMIT ?",
+                (FAILED, n)).fetchall()
+        return [dict(r) for r in rows]
+
     def close(self) -> None:
         with self._lock:
             try:
@@ -268,6 +283,26 @@ class OutboxSender:
     # 透传未覆盖的属性/方法给真实 sender
     def __getattr__(self, name):
         return getattr(self._inner, name)
+
+    # ---- 队列观测（P12-AB：巡检与状态行要能看见"有没有消息丢了"）----
+
+    def failed_count(self) -> int:
+        try:
+            return int(self._store.failed_count())
+        except Exception:                                      # noqa: BLE001
+            return 0
+
+    def recent_failed(self, n: int = 1) -> list:
+        try:
+            return list(self._store.recent_failed(n))
+        except Exception:                                      # noqa: BLE001
+            return []
+
+    def pending_count(self) -> int:
+        try:
+            return int(self._store.pending_count())
+        except Exception:                                      # noqa: BLE001
+            return 0
 
     @property
     def worker_id(self) -> str:
@@ -340,8 +375,13 @@ class OutboxSender:
             return 0
         try:
             self._store.reclaim_expired()
-        except Exception:                                      # noqa: BLE001
-            pass
+        except Exception as e:                                 # noqa: BLE001
+            # P12-AB：这个失败原来是静默的 —— 后果是"租约过期的记录永远回不到
+            # pending"，也就是那条消息再也不会被重试，而日志里什么都没有。
+            try:
+                log_line("⚠️ outbox: 回收过期租约失败 " + str(e)[:80])
+            except Exception:                                  # noqa: BLE001
+                pass
         try:
             rows = self._store.by_status("failed", n=50)
         except Exception:                                      # noqa: BLE001

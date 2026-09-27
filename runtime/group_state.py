@@ -13,6 +13,28 @@ import time
 import state_store
 from runtime.tuning import get as _tune   # P12-B：可调参数
 
+_WARNED: set = set()
+
+
+def _warn(what: str, exc: Exception) -> None:
+    """写状态失败时吼一声（P12-AB）。
+
+    这些写入原来是 `except: pass` —— 静默丢掉的却是**用户可见的东西**
+    （记忆没存上、上一段丢了导致 `/继续` 说"没有上一段"），日志里一个字都没有。
+    每个原因只喊一遍，不刷屏。
+    """
+    key = what + "|" + type(exc).__name__
+    if key in _WARNED:
+        return
+    _WARNED.add(key)
+    msg = "⚠️ group_state: 写 {} 失败（{}: {}）".format(
+        what, type(exc).__name__, str(exc)[:80])
+    try:
+        from runtime.obs import log as _log
+        _log(msg)
+    except Exception:                                          # noqa: BLE001
+        print(msg)
+
 
 __all__ = [
     "_get_fasao_state", "_set_fasao_state", "_get_dj_state", "_set_dj_state",
@@ -88,16 +110,16 @@ def _remember(cid: str, text: str, from_name: str) -> None:
                     "at": time.strftime("%Y-%m-%d %H:%M")})
         state_store.group_set(cid, "memory",
                              mem[-int(_tune("memory.max", cid)):])
-    except Exception:
-        pass
+    except Exception as e:                                     # noqa: BLE001
+        _warn("记忆", e)
 
 
 def _set_last_action(cid: str, action: dict) -> None:
     """记录上一段动作上下文（供 /继续 续写）."""
     try:
         state_store.group_set(cid, "last_action", action)
-    except Exception:
-        pass
+    except Exception as e:                                     # noqa: BLE001
+        _warn("上一段动作", e)
 
 
 def _get_last_action(cid: str):

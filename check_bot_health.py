@@ -13,6 +13,7 @@ token 续期失败、代理断、Socket.IO 断线（这些 bot 自己感知不�
     python check_bot_health.py          # 正常静默，异常发微信
 """
 import json
+import sqlite3
 import subprocess
 import sys
 import time
@@ -32,6 +33,7 @@ ACCESS_EXPIRE_ALERT_SEC = -300  # access_token 过期超过 5 分钟（续期没
 REFRESH_WARN_DAYS = 7           # refresh_token 剩余 < 7 天预告警（到期前留出重登窗口）
 REFRESH_TOKEN_TTL_SEC = 30 * 86400  # Supabase refresh_token 默认有效期 30 天（从 last_sign_in_at 起算）
 PROFILES_MAX_KB = 5120          # profiles.json 大小阈值 5MB，超过提示优化档案存储
+OUTBOX_PENDING_MAX = 20         # 出站队列积压阈值（条）——超过说明发送通道可能卡住
 
 
 def log(msg: str, to_stdout: bool = False):
@@ -220,6 +222,43 @@ def check_profiles_size() -> int:
     return 0
 
 
+def check_outbox() -> dict | None:
+    """只读看一眼出站队列：`{pending, failed, last}`；读不到返回 None。
+
+    P12-AB（2026-09-27 体检）：2026-09-26 有一条星象卡发送失败
+    （`last_error = sender 返回 False`）之后就永远躺在 `failed` 里 ——
+    没有轮询、没有告警、没人知道（巡检才是唯一会"定期看全量"的角色）。
+    这里用 `mode=ro` 打开，绝不锁生产库、绝不写。
+    """
+    db = ROOT / "data" / "outbox.db"
+    if not db.exists():
+        return None
+    con = None
+    try:
+        con = sqlite3.connect("file:{}?mode=ro".format(db.as_posix()), uri=True,
+                              timeout=5)
+        con.row_factory = sqlite3.Row
+        failed = int(con.execute(
+            "SELECT COUNT(*) n FROM outbound WHERE status='failed'").fetchone()["n"])
+        pending = int(con.execute(
+            "SELECT COUNT(*) n FROM outbound WHERE status IN ('pending','leased')"
+        ).fetchone()["n"])
+        row = con.execute(
+            "SELECT created_at, chatroom_id, text, last_error FROM outbound"
+            " WHERE status='failed' ORDER BY created_at DESC LIMIT 1").fetchone()
+        return {"pending": pending, "failed": failed,
+                "last": dict(row) if row else None}
+    except Exception as e:                                     # noqa: BLE001
+        log("出站队列读不到：" + str(e)[:60])
+        return None
+    finally:
+        if con is not None:
+            try:
+                con.close()
+            except Exception:                                  # noqa: BLE001
+                pass
+
+
 # ---------- 主逻辑 ----------
 
 def main():
@@ -338,6 +377,27 @@ def main():
 
     # 6. Socket.IO
     transition("sio", check_sio(), "Socket.IO 连接失败/重试", "Socket.IO 连接恢复正常")
+
+    # 7. 出站队列（P12-AB）：**新增失败**就告警（单条也算），积压太多也告警。
+    #    为什么按"新增"而不是"有失败"：失败的记录按设计不会自动重发，
+    #    会长期留在表里 —— 只要有失败就告警会变成永久刷屏。
+    ob = check_outbox()
+    if ob is not None:
+        ob_state = alerts.setdefault("outbox", {})
+        prev_failed = int(ob_state.get("failed", 0))
+        cur_failed = int(ob.get("failed") or 0)
+        if cur_failed > prev_failed:
+            last = ob.get("last") or {}
+            new_alerts.append(
+                "出站队列新增 {} 条发送失败（累计 {}）：{} [{}] {}".format(
+                    cur_failed - prev_failed, cur_failed,
+                    str(last.get("chatroom_id") or "")[:8],
+                    len(str(last.get("text") or "")),
+                    str(last.get("text") or "")[:40].replace("\n", " ")))
+        ob_state["failed"] = cur_failed
+        transition("outbox_pending", int(ob.get("pending") or 0) > OUTBOX_PENDING_MAX,
+                   "出站队列积压 {} 条（发送通道可能卡住）".format(ob.get("pending")),
+                   "出站队列恢复通畅")
 
     # 汇总发送
     if new_alerts or recovered:

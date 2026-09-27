@@ -2,9 +2,18 @@
 
 `state` 夹具把 bot 的状态读写换成内存 dict，
 避免测试污染 `state.json`（那里面是线上发情值/状态机数据）。
+
+P12-AB（2026-09-27 体检）：`dbdir` 的清理原来是
+`shutil.rmtree(..., ignore_errors=True)` —— 测试里很多地方直接 `OutboxStore(...)`
+不关连接，Windows 上句柄还开着就删不掉，于是 `tests/_tmp` 一路攒到 **2,202 个目录 /
+44.7 MB** 都没人发现（静默忽略错误 = 没人知道）。现在：先 `gc` + 关 state_store、
+再带 chmod 重试几次，删不掉的**报出来**；另外每次 pytest 开跑前先扫一遍残留。
 """
+import gc
+import os
 import shutil
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -15,6 +24,54 @@ sys.path.insert(0, str(ROOT))
 
 import bot  # noqa: E402
 
+TMP_ROOT = ROOT / "tests" / "_tmp"
+_UNREMOVED: list = []
+
+
+def _on_rmtree_error(func, path, _exc):
+    """Windows 上只读/占用的文件：改权限再试一次（拿不到就算了）。"""
+    try:
+        os.chmod(path, 0o700)
+        func(path)
+    except Exception:                                          # noqa: BLE001
+        pass
+
+
+def _force_rmtree(d: Path) -> bool:
+    """尽力把一个测试临时目录删干净，返回是否成功。
+
+    顺序很关键：先 gc（CPython 下 sqlite 连接随引用计数释放）再删；
+    很多测试直接 `OutboxStore(dbdir / "o.db")` 不关 —— 句柄一放就能删掉。
+    """
+    try:
+        import state_store
+        state_store.close()
+    except Exception:                                          # noqa: BLE001
+        pass
+    for _ in range(3):
+        gc.collect()
+        try:
+            shutil.rmtree(d, onerror=_on_rmtree_error)
+        except Exception:                                      # noqa: BLE001
+            pass
+        if not d.exists():
+            return True
+        time.sleep(0.05)
+    return not d.exists()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _sweep_tmp_dirs():
+    """开跑前把上次残留的临时目录扫一遍（测试自己会漏下少量）。"""
+    if TMP_ROOT.exists():
+        for child in list(TMP_ROOT.iterdir()):
+            if child.is_dir():
+                _force_rmtree(child)
+    yield
+    if _UNREMOVED:
+        print("\n[dbdir] 有 {} 个临时目录没删掉：{}".format(
+            len(_UNREMOVED), _UNREMOVED[:3]))
+
 
 @pytest.fixture
 def dbdir():
@@ -23,12 +80,13 @@ def dbdir():
     替代 pytest 的 `tmp_path`：本机沙箱下 tmpdir 插件会 PermissionError
     （basetemp 在系统 Temp，scandir 被拒）。
     """
-    d = Path(__file__).resolve().parent / "_tmp" / uuid.uuid4().hex
+    d = TMP_ROOT / uuid.uuid4().hex
     d.mkdir(parents=True, exist_ok=True)
     try:
         yield d
     finally:
-        shutil.rmtree(d, ignore_errors=True)
+        if not _force_rmtree(d):
+            _UNREMOVED.append(str(d))
 
 
 @pytest.fixture

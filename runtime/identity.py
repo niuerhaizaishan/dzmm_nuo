@@ -48,6 +48,24 @@ def pending_name_count() -> int:
     """还等着补真名的 uid 个数（体检/自证用）。"""
     return len(_pending_names)
 
+
+_WARNED: set = set()
+
+
+def _warn_once(what: str, exc: Exception) -> None:
+    """每个原因只喊一遍（P12-AB：静默失败是上一轮事故藏两小时的原因）。"""
+    key = what + "|" + type(exc).__name__
+    if key in _WARNED:
+        return
+    _WARNED.add(key)
+    msg = "⚠️ identity: {} 失败（{}: {}）".format(what, type(exc).__name__,
+                                              str(exc)[:80])
+    try:
+        from runtime.obs import log as _log
+        _log(msg)
+    except Exception:                                          # noqa: BLE001
+        print(msg)
+
 # P12-H：配置里的所有 Bot（key -> {key,uid,name,short,cid}）。
 # 由 `register_bots()` 注入；`_BOT_UIDS`/`_BOT_NAMES` 是它的两个派生集合。
 _BOTS: dict = {}
@@ -316,8 +334,10 @@ def _load_member_names(cid: str = None):
             if name:
                 _name_cache[uid] = name
                 _pending_names.discard(uid)
-    except Exception:
-        pass
+    except Exception as e:                                     # noqa: BLE001
+        # P12-AB：原来是静默 pass —— 后果是"昵称缓存一直补不上"，
+        # 之后每次取名字都退化成档案名/uid 前缀，而没人知道是这次拉取失败了。
+        _warn_once("加载成员昵称", e)
 
 
 def _on_event_loop() -> bool:

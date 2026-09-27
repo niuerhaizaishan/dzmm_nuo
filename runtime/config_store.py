@@ -683,6 +683,24 @@ def reload(defaults: dict) -> Config:
 
 # ---------------------------------------------------------------- 写（供后续界面用）
 
+def _warn_backup(err: str) -> None:
+    """配置备份失败：每个原因只喊一遍（P12-AB）。"""
+    key = "backup|" + err[:40]
+    if key in _WARNED_BACKUP:
+        return
+    _WARNED_BACKUP.add(key)
+    msg = ("⚠️ config_store: 配置备份失败（{}）—— 本次仍会写入新配置，"
+           "但这一次没有可回滚的备份").format(err[:120])
+    try:
+        from runtime.obs import log as _log
+        _log(msg)
+    except Exception:                                          # noqa: BLE001
+        print(msg)
+
+
+_WARNED_BACKUP: set = set()
+
+
 def save(raw: dict, defaults: dict) -> Config:
     """校验 → 备份 → 原子写。**校验不过一个字都不写。**
 
@@ -697,8 +715,10 @@ def save(raw: dict, defaults: dict) -> Config:
         dst = bd / "config-{}.json".format(time.strftime("%Y%m%d-%H%M%S"))
         try:
             shutil.copy2(str(p), str(dst))
-        except Exception:                                       # noqa: BLE001
-            pass
+        except Exception as e:                                  # noqa: BLE001
+            # P12-AB：备份失败**不能**静默 —— 紧接着就会覆盖 config.json，
+            # 用户以为"每次保存都自动备份"，其实这一次没有（出事了才发现没得回滚）。
+            _warn_backup(str(e))
         for old in sorted(bd.glob("config-*.json"))[:-KEEP_BACKUPS]:
             try:
                 old.unlink()

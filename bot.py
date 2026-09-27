@@ -332,6 +332,34 @@ def save_state(s: dict) -> None:
     state_store.save_state(s)
 
 
+def _log_outbox_status(sender) -> None:
+    """周期性把出站队列的状态写进日志（P12-AB）。
+
+    为什么要有：2026-09-26 有一条星象卡发送失败（`sender 返回 False`）后
+    就永远躺在 `failed` 里没人知道 —— 日志里只有当时一个 `❌`。
+    现在每半小时一行，写明 pending/failed 与**最近一条失败**是什么。
+    """
+    try:
+        failed = int(getattr(sender, "failed_count", lambda: 0)() or 0)
+        pending = int(getattr(sender, "pending_count", lambda: 0)() or 0)
+    except Exception:                                          # noqa: BLE001
+        return
+    line = "📤 出站队列：pending={} failed={}".format(pending, failed)
+    if failed:
+        try:
+            last = (getattr(sender, "recent_failed", lambda n=1: [])(1) or [None])[0]
+        except Exception:                                      # noqa: BLE001
+            last = None
+        if last:
+            line += "；最近失败 {} {} {}「{}」— {}".format(
+                time.strftime("%m-%d %H:%M", time.localtime(last.get("created_at") or 0)),
+                str(last.get("chatroom_id") or "")[:8],
+                len(str(last.get("text") or "")),
+                str(last.get("text") or "")[:30].replace("\n", " "),
+                str(last.get("last_error") or "")[:40])
+    log(line)
+
+
 def _write_text_file(path: str, text: str) -> None:
     """写文本文件（P12-AA：给 `asyncio.to_thread` 用的同步小工具）。"""
     with open(path, "w", encoding="utf-8") as f:
@@ -2642,6 +2670,8 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
     last_read_skip_log = {cid: 0.0 for cid in groups}
     # P12-AA：每个群上次"批量刷新成员昵称缓存"的时间（在工作线程里做，防事件循环发 HTTP）
     _names_loaded_at = {cid: 0.0 for cid in groups}
+    # P12-AB：上次打印出站队列状态的时间（每 30 分钟一行，失败了要看得见）
+    _outbox_status_at = [0.0]
     _was_sio_connected = False  # 上一次 Socket.IO 连接状态（恢复检测用边沿：断→连）
     _last_scan_day = str(_scan_load().get("day") or "")  # 上次档案扫描日期（每天 06:00 一次）
 
@@ -2657,6 +2687,10 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
         # 两个实例同时应用会互相踩。
         if is_primary:
             await hot_reload_check()
+            # P12-AB：每 30 分钟把出站队列状态写一行（失败消息不能只有当时那一个 ❌）
+            if time.time() - _outbox_status_at[0] >= 1800:
+                _outbox_status_at[0] = time.time()
+                _log_outbox_status(sender)
         # 检测 renew_token 连续失败信号，主动退出交给 entrypoint 重启
         if (ROOT / "token.emergency").exists():
             try:
