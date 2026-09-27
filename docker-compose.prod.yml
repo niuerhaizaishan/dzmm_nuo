@@ -57,6 +57,12 @@ services:
       # 身份识别优先用 bots[].uid，没写就用这里的名称去成员表里认。
       DZMM_BOT_TOKEN_ROSE: "${DZMM_BOT_TOKEN_ROSE:-}"
       DZMM_BOT_SECRET_ROSE: "${DZMM_BOT_SECRET_ROSE:-}"
+      # 认证群那个 Bot 的 Webhook Secret（P12-J；原来只有 ROSE 那个透传了）
+      DZMM_BOT_SECRET: "${DZMM_BOT_SECRET:-}"
+      # ---- P12-J：官方 Bot Webhook 接收端（收消息走平台直推，不再只靠 Socket.IO）----
+      # 0/不设 = 关闭（默认关，行为与之前一致）。开了之后容器监听这个端口，
+      # 由宿主机 Caddy 终止 TLS 后反代进来（见 ports 里的 127.0.0.1 绑定）。
+      DZMM_WEBHOOK_PORT: "${DZMM_WEBHOOK_PORT:-0}"
       # 唯一登录者会话锁（P5.1）。off = 不互斥
       DZMM_SESSION_LOCK: "${DZMM_SESSION_LOCK:-on}"
       # 出站限流（P5.2）。off = 不限流
@@ -85,6 +91,9 @@ services:
       # （P9 之后授权方式已改成账号密码登录；早期那套 URL 令牌已废弃，
       #   容器内 bind 仍**必须**是 0.0.0.0，见上面 DZMM_ADMIN_HOST 的注释。）
       - "${DZMM_ADMIN_BIND:-0.0.0.0}:8090:8090"
+      # P12-J Webhook：**只绑回环**（127.0.0.1），公网入口一律由宿主机 Caddy
+      # 终止 TLS 后反代 —— 这样外界扫不到这个端口，只有 Caddy 能连它。
+      - "127.0.0.1:${DZMM_WEBHOOK_PORT:-8091}:${DZMM_WEBHOOK_PORT:-8091}"
     volumes:
       # 运行数据持久化
       - ./state.json:/app/state.json

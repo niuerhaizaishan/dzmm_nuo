@@ -3478,6 +3478,30 @@ async def _run_all(interval: float, dry: bool, once: bool) -> None:
     subscriber = SioSubscriber(GROUPS)
     sub_task = asyncio.create_task(subscriber.start())
 
+    # P12-J：官方 Bot Webhook 接收端（可选，`DZMM_WEBHOOK_PORT` 打开）。
+    # 它把平台**直推**的群消息塞进同一个队列 ⇒ 主循环一行都不用改，
+    # 而"读消息"不再只依赖侧车账号的 Socket.IO（那条路会断线重连、受风控影响）。
+    wh_runner = None
+    _wh_port = int(os.environ.get("DZMM_WEBHOOK_PORT") or 0)
+    if _wh_port:
+        try:
+            import webhook_server as _wh
+            _secrets = _wh.collect_secrets(_CFG.bots_for_identity())
+            if not _secrets:
+                log("P12-J: 开了 Webhook 端口但没有配置 Secret"
+                    "（.env 需要 DZMM_BOT_SECRET / DZMM_BOT_SECRET_ROSE），跳过")
+            else:
+                _app = _wh.build_app(secrets=_secrets,
+                                     push=lambda cid, m: subscriber.push(cid, m),
+                                     log=log)
+                wh_runner = await _wh.start(_app, "0.0.0.0", _wh_port)
+                log("P12-J: Webhook 接收端已监听 :{}（白名单 Secret {} 个，"
+                    "路径 /bot/webhook，按 message_id 去重）".format(
+                        _wh_port, len(_secrets)))
+        except Exception as _e:                                # noqa: BLE001
+            log("P12-J: Webhook 启动失败（不影响 Socket.IO 收消息）："
+                + str(_e)[:80])
+
     try:
         if _parallel_groups_on() and len(GROUPS) > 1:
             log("P12-I: 按群并行=开，每群一个主循环实例（共 {} 个）".format(len(GROUPS)))
@@ -3507,6 +3531,11 @@ async def _run_all(interval: float, dry: bool, once: bool) -> None:
                             state=state, subscriber=subscriber, is_primary=True)
     finally:
         sub_task.cancel()
+        if wh_runner is not None:
+            try:
+                await wh_runner.cleanup()
+            except Exception:                                  # noqa: BLE001
+                pass
         try:
             await sender.close()
         except Exception:                                      # noqa: BLE001

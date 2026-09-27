@@ -47,6 +47,16 @@ class SioSubscriber:
         self._reconnect_count = 0
 
     # ---------- 对外接口 ----------
+    def push(self, cid: str, msg: dict) -> int:
+        """把一条消息放进这个群的待处理队列，返回入队后条数。
+
+        P12-J：Webhook 收到平台直推的消息时用它入队 —— 于是"读消息"有两条来源
+        （Socket.IO 与 Webhook），而主循环那边一行都不用改（`drain` 取的是同一个队列）。
+        """
+        buf = self._buffer.setdefault(cid, [])
+        buf.append(msg)
+        return len(buf)
+
     def drain(self, cid: str) -> list:
         """非阻塞取某群累积的新消息（一次性取空）。"""
         return self._buffer.pop(cid, [])
