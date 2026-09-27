@@ -238,6 +238,38 @@ def test_longest_first_stripping_handles_both_bots():
     assert names.index("薇丝-bot") < names.index("薇丝")
 
 
+# ------------------------------------------- 3b. 改名后（P12-S，2026-09-27）
+
+RENAMED = [
+    {"key": "nuo_main", "name": "小小糯-bot", "short": "小小糯",
+     "cid": CID_NUO, "uid": UID_NUO_BOT},
+    {"key": "weisi_rose", "name": "薇丝", "short": "薇丝",      # ← 平台已改名
+     "cid": CID_ROSE, "uid": UID_WEISI},
+]
+
+
+def test_renamed_bot_still_recognizes_old_and_new_writing():
+    """平台把「薇丝-bot」改名成「薇丝」之后：两种写法都得认（历史消息里都有）。"""
+    ident.register_bots(RENAMED)
+    assert ident.mentions_self("薇丝-bot 你好", CID_ROSE) is True
+    assert ident.mentions_self("薇丝 你好", CID_ROSE) is True
+    assert ident.is_at_me("@薇丝 你好呀") is True
+    assert ident.is_at_me("@薇丝-bot 你好呀") is True
+    names = ident.self_names()
+    assert {"薇丝", "薇丝-bot", "薇丝bot"} <= names, names
+
+
+def test_renamed_bot_strips_the_at_prefix_cleanly():
+    """剥 @ 不能留残余：改名后 `@薇丝-bot 你好呀` 必须整段剥成 `你好呀`。
+
+    残余会原样进 LLM prompt（"`-bot 你好呀`"），客人看不见但模型看得见。
+    """
+    import bot
+    ident.register_bots(RENAMED)
+    assert bot._strip_at("@薇丝-bot 你好呀", CID_ROSE) == "你好呀"
+    assert bot._strip_at("@薇丝 你好呀", CID_ROSE) == "你好呀"
+
+
 # ---------------------------------------------------------------- 4. 配置层
 
 def _raw(**bot_over):

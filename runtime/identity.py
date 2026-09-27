@@ -32,6 +32,10 @@ BOT_UID = (os.environ.get("DZMM_BOT_ID") or "").strip()
 BOT_NAME = (os.environ.get("DZMM_BOT_NAME") or "小小糯").strip()
 BOT_NAME_SHORT = (os.environ.get("DZMM_BOT_SHORT") or "小小糯").strip()
 
+# Bot 名常见的后缀写法：平台上的显示名两种都出现过（`薇丝-bot` / `薇丝`）。
+# 匹配与剥 @ 都要同时认，见 `_with_bot_variants`。
+_BOT_SUFFIXES = ("-bot", "-机器人", "bot", "机器人", " bot", "机器人～")
+
 # 昵称缓存（uid -> 昵称），跨轮次复用
 _name_cache: dict = {}
 
@@ -66,15 +70,38 @@ def is_self(uid) -> bool:
     return uid in self_uids()
 
 
+def _with_bot_variants(name: str) -> set:
+    """一个 Bot 名，加上它常见的后缀/去后缀写法（`薇丝` / `薇丝-bot` / `薇丝bot` …）。
+
+    P12-S（2026-09-27）：平台上的 Bot 从「薇丝-bot」改名成了「薇丝」。
+    历史消息里两种写法都会出现，而名字要同时用于
+    「@ 我」判定与「剥 @ 前缀」—— 少了变体，`@薇丝-bot 你好` 会被剥成 `-bot 你好`
+    （残余原样进 LLM prompt，见 `self_names_longest_first` 的说明）。
+    """
+    n = str(name or "").strip()
+    if not n:
+        return set()
+    out = {n}
+    low = n.lower()
+    for suf in _BOT_SUFFIXES:
+        out.add(n + suf)
+        # 配置里本来就带后缀的（`薇丝-bot`），也给出剥掉后缀的写法
+        if len(n) > len(suf) and low.endswith(suf.lower()):
+            out.add(n[: -len(suf)])
+    return {x for x in out if x}
+
+
 def self_names() -> set:
     """判定「@的是我」用的名字集合。
 
     账号名查成员表；Bot 名**读配置**（Bot API 没有成员接口，查不到）。
+    每个名字都带上常见后缀变体（见 `_with_bot_variants`），改名前后都认。
     """
-    names = {get_full_name(NUO_UID), get_name(NUO_UID)} | set(_BOT_NAMES)
+    names = {get_full_name(NUO_UID), get_name(NUO_UID)}
+    for nm in set(_BOT_NAMES):
+        names |= _with_bot_variants(nm)
     if BOT_UID:
-        names.add(BOT_NAME)
-        names.add(BOT_NAME_SHORT)
+        names |= _with_bot_variants(BOT_NAME) | _with_bot_variants(BOT_NAME_SHORT)
     return {n for n in names if n}
 
 
@@ -82,7 +109,8 @@ def self_names_for(cid: str = None) -> set:
     """**某个群里**「我」可能被叫到的全部名字 = 账号名 + 各 Bot 名 + 该群人设名。
 
     为什么要按群算：群里的客人叫的是**人设名**。玫瑰房的管家叫「薇丝」，
-    而账号名是「小小糯～」、Bot 名是「薇丝-bot」—— 只认 self_names() 的话，
+    而账号名是「小小糯～」、Bot 名是「薇丝」（2026-09-27 之前叫「薇丝-bot」，
+    两种写法都认，见 `_with_bot_variants`）—— 只认 self_names() 的话，
     客人喊一声「薇丝」会被当成在叫别人（房间不接话、调戏也不计数）。
 
     `personas` 延迟导入：本模块是叶子工具，不能被根模块的导入顺序绑住。
