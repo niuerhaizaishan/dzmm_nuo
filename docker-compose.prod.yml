@@ -57,6 +57,10 @@ services:
       # 身份识别优先用 bots[].uid，没写就用这里的名称去成员表里认。
       DZMM_BOT_TOKEN_ROSE: "${DZMM_BOT_TOKEN_ROSE:-}"
       DZMM_BOT_SECRET_ROSE: "${DZMM_BOT_SECRET_ROSE:-}"
+      # ---- P12-T：第三个 Bot（「上班如上坟，下班如还魂」群的「若瑾」）----
+      # 同上：逐键透传，名字与群绑定在 config.json 的 bots[] 里。
+      DZMM_BOT_TOKEN_RUOJIN: "${DZMM_BOT_TOKEN_RUOJIN:-}"
+      DZMM_BOT_SECRET_RUOJIN: "${DZMM_BOT_SECRET_RUOJIN:-}"
       # 认证群那个 Bot 的 Webhook Secret（P12-J；原来只有 ROSE 那个透传了）
       DZMM_BOT_SECRET: "${DZMM_BOT_SECRET:-}"
       # ---- P12-J：官方 Bot Webhook 接收端（收消息走平台直推，不再只靠 Socket.IO）----
