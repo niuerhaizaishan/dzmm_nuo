@@ -173,6 +173,16 @@ _FEATURES_RAW = (
                 Param("devil.cold_quiet_hour", "几点前静默", 8, "点", 0, 23),
             )),
     Feature("insult", "羞辱/毒舌", "game"),
+    # P12-AC（2026-09-27 屋主）：`@` 时的问答回复。
+    # 以前是"没有开关的隐式行为"，而且喂的上下文只有 4 条、还**不含机器人自己
+    # 说过的话**（没有对话连续性）；回复长度也写死 400 token + 提示词要求"1-3 句"。
+    # 现在：带多少条上下文、回复多长都是按群可调参数，并且可以整块关掉。
+    Feature("chat", "问答回复（@ 时回答）", "people", params=(
+        Param("reply.max_tokens", "回复长度上限", 800, "token", 100, 3000,
+              note="太小会把话说到一半就断（400 时常见）；太大=话太长"),
+        Param("reply.context_msgs", "带多少条上下文", 20, "条", 4, 60,
+              note="含机器人自己说过的话，才有对话连续性；调大=更连贯但更慢/更贵"),
+    )),
 
     # ---- B. 公演与内容生成（12）
     Feature("perf", "公演", "content", resets=("perf",),
@@ -299,7 +309,7 @@ _WIRED = (
     "dice", "perf", "perf_review", "story", "vote", "scene", "scene_continue",
     "scene_rewrite", "scene_end", "diaojiao", "help", "memory_remember",
     "memory_recall", "devil_roast", "intro", "sync", "register", "query",
-    "trend", "rank_heat", "recap", "summary", "fortune", "poem", "insult",
+    "trend", "rank_heat", "recap", "summary", "fortune", "poem", "insult", "chat",
     # --- 第三批（房间玩法 / 入群筛查 / @消息子功能 / 告警 / 自动触发）---
     "room_welcome", "room_refuse", "room_order", "room_flower", "room_ghost",
     "room_lewd", "room_owner_cmd", "horoscope",

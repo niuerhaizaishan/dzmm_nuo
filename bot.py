@@ -3439,27 +3439,40 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                 if perf_q:
                                     reply = await asyncio.to_thread(summarize_person_perf, perf_q[0], perf_q[1])
                                 else:
-                                    # 普通问答：精简上下文 + 注入记忆
-                                    ctx = []
-                                    for m in msgs[-4:]:
-                                        muid = m.get("sent_by", "")
-                                        if is_self(muid):
-                                            continue
-                                        mtxt = (m.get("content") or {}).get("text", "").strip()
-                                        if mtxt:
+                                    # 普通问答：带上下文（含**自己说过的话**）+ 注入记忆
+                                    # P12-AC：上下文条数与回复长度都按群可调；整块可以关。
+                                    if not _feat_on(cid, "chat"):
+                                        reply = None
+                                    else:
+                                        _ctxn = int(_tune("reply.context_msgs", cid))
+                                        ctx = []
+                                        for m in msgs[-max(2, _ctxn):]:
+                                            muid = m.get("sent_by", "")
+                                            mtxt = (m.get("content") or {}).get("text", "").strip()
+                                            if not mtxt:
+                                                continue
+                                            if is_self(muid):
+                                                # ⚠️ 自己说过的话**要带上**（标成"我"）：
+                                                # 原来直接 continue 丢掉，等于每句话都从零开始
+                                                # 回答 —— 用户看到的就是"没有上下文"。
+                                                ctx.append({"sender": "我", "text": mtxt})
+                                                continue
                                             ctx.append({"sender": get_name(muid), "text": mtxt})
-                                    glabel = _gender_label(at_sender)  # 女生/男生/未知
-                                    ctx.append({"sender": get_name(at_sender) + ("（" + glabel + "）" if glabel != "未知" else ""), "text": q})
-                                    # P12-AA：记忆检索内部会调模型（两级精筛），
-                                    # 必须放工作线程 —— 紧邻的 generate_reply 本来就包了，
-                                    # 这一处漏了，等于每条带记忆注入的 @ 消息都堵一下。
-                                    mem = await asyncio.to_thread(
-                                        _retrieve_memory, cid, q,
-                                        _tune("memory.inject", cid))
-                                    if mem:
-                                        mem_lines = "\n".join("- " + m["text"] for m in mem)
-                                        ctx.insert(0, {"sender": "记忆", "text": "你之前记住的相关的事：\n" + mem_lines})
-                                    reply = await asyncio.to_thread(generate_reply, ctx)
+                                        glabel = _gender_label(at_sender)  # 女生/男生/未知
+                                        ctx.append({"sender": get_name(at_sender) + ("（" + glabel + "）" if glabel != "未知" else ""), "text": q})
+                                        # P12-AA：记忆检索内部会调模型（两级精筛），
+                                        # 必须放工作线程 —— 紧邻的 generate_reply 本来就包了，
+                                        # 这一处漏了，等于每条带记忆注入的 @ 消息都堵一下。
+                                        mem = await asyncio.to_thread(
+                                            _retrieve_memory, cid, q,
+                                            _tune("memory.inject", cid))
+                                        if mem:
+                                            mem_lines = "\n".join("- " + m["text"] for m in mem)
+                                            ctx.insert(0, {"sender": "记忆", "text": "你之前记住的相关的事：\n" + mem_lines})
+                                        reply = await asyncio.to_thread(
+                                            generate_reply, ctx,
+                                            max_tokens=int(_tune("reply.max_tokens", cid)),
+                                            context_msgs=_ctxn)
                             reply = (reply or "").strip()
                             if reply:
                                 reply = "🤖 " + reply

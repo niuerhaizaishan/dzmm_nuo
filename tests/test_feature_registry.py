@@ -65,11 +65,16 @@ def _declared_tables():
 
 # ---------------------------------------------------------------- 1. 注册表自洽
 
-def test_registry_has_64_features():
+def test_registry_has_65_features():
     """65 → 64：`rewrite`（改写档案）经核实**没有真实触发**（`is_rewrite_cmd`
-    只服务场景重写，已被 `scene_rewrite` 覆盖），按注册表自己的规矩删掉了。"""
-    assert len(F.FEATURES) == 64
-    assert len(set(F.keys())) == 64, "key 必须唯一"
+    只服务场景重写，已被 `scene_rewrite` 覆盖），按注册表自己的规矩删掉了。
+
+    64 → 65（P12-AC，2026-09-27）：新增 `chat`（`@` 时的问答回复）——
+    它原先是一条**没有开关的隐式行为**，上下文/长度也都写死；现在有闸门、
+    长度与上下文条数都按群可调（`reply.max_tokens` / `reply.context_msgs`）。
+    """
+    assert len(F.FEATURES) == 65
+    assert len(set(F.keys())) == 65, "key 必须唯一"
 
 
 def test_every_feature_is_well_formed():
@@ -83,9 +88,12 @@ def test_every_feature_is_well_formed():
 
 
 def test_category_counts_match_the_plan():
-    """与 docs/功能与人设配置方案.md §9.1 的分组数量对齐（people 少 1 = 删掉 rewrite）。"""
+    """与 docs/功能与人设配置方案.md §9.1 的分组数量对齐。
+
+    people 少 1 = 删掉 `rewrite`；people 多 1 = P12-AC 新增 `chat`（@ 问答回复）。
+    """
     got = {c: len(v) for c, v in F.by_category().items()}
-    assert got == {"game": 15, "content": 12, "people": 10, "screen": 7,
+    assert got == {"game": 15, "content": 12, "people": 11, "screen": 7,
                    "schedule": 9, "room": 7, "alert": 4}
 
 
