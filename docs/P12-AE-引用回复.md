@@ -81,6 +81,14 @@ B 形态（Telegram 兼容 `bot<token>/sendMessage`）同样忽略
 `tests/test_feature_registry.py` 里为此留了一份写明理由的例外清单
 （`_DELIBERATE_OFF`），不让"默认关"悄悄变多。
 
+### 一键按群打开
+
+```bash
+docker cp tools/enable_quote_reply.py dzmm-bot:/app/          # tools/ 不进镜像（.dockerignore）
+docker exec dzmm-bot python /app/enable_quote_reply.py                       # dry-run
+docker exec dzmm-bot python /app/enable_quote_reply.py --apply --cid-prefix f4ec4c21
+```
+
 ---
 
 ## 3. 已上线与实测
@@ -110,19 +118,24 @@ P12: 功能 共=66 已接线=66 待接线=0 默认关=quote_reply 秒退=关
 
 ---
 
-## 4. 还没做的第 2 条（等屋主定夺）
+## 4. 屋主的决定（2026-09-27）
 
-官方通道没有引用能力，**唯一**能做引用的是账号通道（Socket.IO `message:send`
-带 `content.reference`，或浏览器右键回复）。代价很明确 ——
-`tools/probe_group_identities.py` 实测两个身份在这个群里的署名：
+**第 2 条：保持若瑾-bot 身份，不做引用。** 理由就是上面那张表的代价：
+为了"挂引用"改走账号，上班群里她的回复会从「若瑾」变成「小小糯～」，
+代价大于收益。所以官方通道的这条限制**接受**，不再绕。
+（将来若平台给 `send-message` 加上回复字段，`tools/probe_reply_capability.py`
+一跑就知道 —— 探针留在仓库里就是为了那天。）
 
-| 身份 | 群里显示 | isBot |
-|---|---|---|
-| 若瑾 Bot（uid `9938211c`） | **若瑾** | True |
-| 侧车账号（uid `503e3cb9`） | **小小糯～** | False |
+**开关范围：上班群 + 认证群。**
 
-也就是说：一旦为了"挂引用"改走账号，上班群里她的回复会从「若瑾」变成
-「小小糯～」。所以这件事**不能由代码替屋主决定**，先把差别摆出来。
+```
+19:46:39 P12: 热加载 功能 · f4ec4c21…|quote_reply : 跟随默认 → 开   ← 上班群
+19:51:25 P12: 热加载 功能 · bd7fe6a4…|quote_reply : 跟随默认 → 开   ← 认证群
+```
+
+玫瑰房**不开**：那个群的"谁能触发管家"是 `_is_room_trigger` + `_room_should_reply`
+一套完整策略（客人只能被婉拒、只有主人能下命令），引用触发会绕过它。
+要用就在那个群单独开，并先想清楚要不要保留那条婉拒规则。
 
 ---
 
