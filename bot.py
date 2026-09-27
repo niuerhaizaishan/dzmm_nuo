@@ -991,6 +991,34 @@ def is_rank_cmd(cmd: str) -> bool:
     return any(k in cmd for k in keywords)
 
 
+# 玫瑰房里**对所有人开放**的指令（客人也能用，不参与"只有 Vv姐姐 能吩咐我"的婉拒）。
+# 2026-09-27 屋主要求「开放 /查 指令给所有人」：查档案是"看资料"，不是"吩咐管家做事"，
+# 所以它不该被那句婉拒挡住。目前只有查档案一族（`is_profile_cmd` 覆盖的前缀）。
+#
+# ⚠️ 不加名字也要放行（`/查` 后面空着也照样走命令分支）：那样会落到"看不懂的指令"
+# 话术，比"这间屋子只有 Vv姐姐 能吩咐我哦～"更贴切。
+ROOM_OPEN_CMDS = ("/查", "/whois", "/资料")
+
+
+def is_open_room_cmd(cmd: str) -> bool:
+    """这条指令在房间群里是否对所有人开放（见 `ROOM_OPEN_CMDS`）."""
+    c = str(cmd or "").strip()
+    return any(c.startswith(pre) for pre in ROOM_OPEN_CMDS)
+
+
+def _room_cmd_refused(cid: str, cmd: str, sender: str) -> bool:
+    """房间群里这条 `/` 指令要不要变成一次"婉拒"（只有主人能下命令）.
+
+    这是房间群对指令的**唯一闸门**（`main_loop` 里调它）：开放的指令（`/查`）放行，
+    其余非主人发的一律改成管家的婉拒话术。
+    """
+    if not cmd or cid not in ROOM_CIDS:
+        return False
+    if _room_owner(cid, sender):
+        return False                        # 主人下命令照常执行
+    return not is_open_room_cmd(cmd)
+
+
 def rank_summary() -> str:
     """生成骚度排行（高潮次数为主，发情值为辅，活跃度不参与排名，排除小小糯）."""
     cid = _active_cid()
@@ -2828,8 +2856,9 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         except Exception as _e:                # noqa: BLE001
                             log("⚠️ [{}] 放回队列失败：{}".format(cid[:8], str(_e)[:60]))
 
-                    # 房间群：客人发 / 指令 → 变成一次"婉拒"的房间回应（只有主人能下命令）
-                    if cmd and cid in ROOM_CIDS and not _room_owner(cid, cmd_sender):
+                    # 房间群：客人发 / 指令 → 变成一次"婉拒"的房间回应（只有主人能下命令）。
+                    # 例外：`/查` 一族对所有人开放（2026-09-27 屋主要求），照常走命令分支。
+                    if _room_cmd_refused(cid, cmd, cmd_sender):
                         room_hit = (cmd_sender, cmd)
                         cmd = ""
                         at_msg = ""
@@ -3265,6 +3294,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             else:
                                 reply = None  # 静默：管家不在，门也没有
                         elif r_text.startswith("/") and not _room_owner(cid, r_uid) \
+                                and not is_open_room_cmd(r_text) \
                                 and _feat_on(cid, "room_refuse"):
                             reply = ROOM_GUEST_REFUSE  # 客人用指令 → 固定话术婉拒，不惊动 AI
                         elif (_is_flower_grab(r_text)
