@@ -73,18 +73,24 @@ def test_generate_reply_passes_the_token_budget(monkeypatch):
     assert seen["max_tokens"] == 800
 
 
-def test_at_branch_includes_its_own_lines_and_reads_the_tunings():
-    """源码级：`@` 分支必须把"我自己说过的话"喂进去、并读这两个参数与闸门。"""
+def test_at_branch_reads_the_tunings_and_uses_the_transcript():
+    """源码级：`@` 分支必须读这两个参数与闸门，且上下文来自**本群滚动记录**。
+
+    P12-AD 之后这里改成"用记录 + 排掉当前这条"：以前直接拿 `msgs[-N:]` 当上下文，
+    可 `msgs` 里只有新消息、还包含**当前这条提问**，于是同一句话喂两遍。
+    """
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
     i = src.index("普通问答：带上下文")
     j = src.index('reply = (reply or "").strip()', i)
     seg = src[i:j]
     assert '_feat_on(cid, "chat")' in seg, "要能被开关关掉"
-    assert '{"sender": "我", "text": mtxt}' in seg, "自己说过的话要带上（标成「我」）"
+    assert "_recent_turns(cid, _ctxn, exclude_mid=_ask_mid)" in seg, \
+        "上下文要来自滚动记录，并排掉当前提问"
+    assert "_seed_turns" in seg, "第一次@要从平台补一次历史"
     assert "_tune(\"reply.context_msgs\", cid)" in seg
     assert "_tune(\"reply.max_tokens\", cid)" in seg
-    # 旧的"末尾 4 条 + 丢掉自己的话"不许回来
-    assert "for m in msgs[-4:]" not in seg
+    # 旧的"拿这批新消息当上下文"不许回来
+    assert "for m in msgs[-" not in seg
 
 
 # ---------------------------------------------------------------- 提示词口径

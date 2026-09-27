@@ -375,6 +375,76 @@ def _read_text_file(path: str) -> str:
         return ""
 
 
+# ---- 本群滚动上下文（P12-AD） -------------------------------------------------
+# 为什么需要：收到的那"一批消息"里**只有新消息**（webhook/sio 推来的），
+# 机器人自己发出去的话根本不会回到这条队列里（批处理扫描还显式 `is_self → continue`）。
+# 所以 `msgs[-N:]` 拿不到对话历史 —— 2026-09-27 实测的后果是：
+# 用户 @ 两句，她答"说两遍，是想让我记住"（当前问题被喂了两遍）、
+# 又说"我不太确定你在回应哪句话，那话我还没说"（她看不到自己上一句）。
+# 这里维护一份**进程内**的滚动上下文：进来的每句话 + 我们自己发出去的每句话。
+_TURNS: dict = {}            # cid -> [{"who", "text", "mid"}]
+_TURN_MAX = 80               # 每群最多记多少条（够 context_msgs 用）
+_TURN_SEEN: dict = {}        # cid -> {message_id}（防同一批/回读重复入上下文）
+_TURN_SEEDED: set = set()    # 已经从平台补过一次历史的群
+
+
+def _remember_turn(cid: str, who: str, text: str, mid: str = None) -> None:
+    """把一句话记进本群的滚动上下文（含我们自己说的话）。"""
+    text = (text or "").strip()
+    if not text:
+        return
+    if mid:
+        seen = _TURN_SEEN.setdefault(cid, set())
+        if mid in seen:
+            return
+        seen.add(mid)
+        if len(seen) > 300:                                    # 有界，别无限涨
+            _TURN_SEEN[cid] = set(list(seen)[-150:])
+    lst = _TURNS.setdefault(cid, [])
+    # 近 3 条里有同一个人说过一模一样的话 → 当回读，不再记。
+    # 为什么按"文本"也要去一次：我们自己发出去的话，要么在发送处记（没有 message_id），
+    # 要么稍后被平台回读进来（有 message_id），只有按文本才能把这两次并成一次。
+    if any(t.get("who") == who and t.get("text") == text for t in lst[-3:]):
+        return
+    lst.append({"who": who, "text": text, "mid": mid})
+    del lst[:-_TURN_MAX]
+
+
+def _recent_turns(cid: str, n: int = 20, exclude_mid: str = None) -> list:
+    """取最近 N 条上下文（`exclude_mid` = 当前这条问题，别喂两遍）。"""
+    out = []
+    for t in _TURNS.get(cid, [])[-max(1, int(n)):]:
+        if exclude_mid and t.get("mid") == exclude_mid:
+            continue
+        out.append({"sender": t["who"], "text": t["text"]})
+    return out
+
+
+def _seed_turns(cid: str) -> None:
+    """第一次用到某个群的上下文时，从平台补一次最近消息（每群每进程一次）。
+
+    阻塞调用（平台 HTTP）—— 调用方必须走 `asyncio.to_thread`。
+    """
+    if cid in _TURN_SEEDED:
+        return
+    _TURN_SEEDED.add(cid)
+    if _TURNS.get(cid):
+        return
+    try:
+        msgs = get_messages(cid, 20, None, None, PLATFORM_READ_TIMEOUT)
+    except Exception as e:                                     # noqa: BLE001
+        log("⚠️ [" + cid[:8] + "] 补对话历史失败（不影响回答）：" + str(e)[:60])
+        return
+    for m in msgs or []:
+        uid = m.get("sent_by", "")
+        txt = ((m.get("content") or {}).get("text") or "").strip()
+        if not txt:
+            continue
+        _remember_turn(cid, "我" if is_self(uid) else get_name(uid), txt,
+                       m.get("message_id"))
+    log("🧠 [" + cid[:8] + "] 对话历史已补 " + str(len(_TURNS.get(cid) or [])) + " 条")
+
+
 def _save_group(cid: str, group_state: dict) -> None:
     """只落**本群**那一行（P12-AA，2026-09-27 体检）。
 
@@ -2852,6 +2922,16 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                     # P12-I 延迟自证：起点 + "消息在路上等了多久"
                     _t_round = time.time()
                     _lag = message_lag(msgs)
+                    # P12-AD：把这批**所有**消息记进本群滚动上下文（含我们自己发的，
+                    # 批处理后面的 `is_self → continue` 只是不处理指令，不代表不用记）。
+                    for _m in msgs:
+                        _mtxt = ((_m.get("content") or {}).get("text") or "").strip()
+                        if not _mtxt:
+                            continue
+                        _muid = _m.get("sent_by", "")
+                        _remember_turn(
+                            cid, "我" if is_self(_muid) else get_name(_muid),
+                            _mtxt, _m.get("message_id"))
                     group_state = state.get(cid) or {}
                     last_id = group_state.get("last_id")
                     # 定位 pending：Socket.IO 推送直接去重，HTTP 兜底用 last_id 定位
@@ -3387,6 +3467,8 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                 # 那种消息不能再加"🤖 "，否则前缀就不在最前面了。
                                 reply = reply if _no_prefix else ("🤖 " + reply)
                                 log("💬 " + reply[:200])
+                                _remember_turn(cid, "我", reply[2:].strip()
+                                               if reply.startswith("🤖 ") else reply)
                                 if dry:
                                     log("[dry] skip")
                                 else:
@@ -3445,19 +3527,13 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                         reply = None
                                     else:
                                         _ctxn = int(_tune("reply.context_msgs", cid))
-                                        ctx = []
-                                        for m in msgs[-max(2, _ctxn):]:
-                                            muid = m.get("sent_by", "")
-                                            mtxt = (m.get("content") or {}).get("text", "").strip()
-                                            if not mtxt:
-                                                continue
-                                            if is_self(muid):
-                                                # ⚠️ 自己说过的话**要带上**（标成"我"）：
-                                                # 原来直接 continue 丢掉，等于每句话都从零开始
-                                                # 回答 —— 用户看到的就是"没有上下文"。
-                                                ctx.append({"sender": "我", "text": mtxt})
-                                                continue
-                                            ctx.append({"sender": get_name(muid), "text": mtxt})
+                                        # P12-AD：上下文来自本群滚动记录（含我们自己的
+                                        # 历史回复），而不是"这一批新消息"；并排除当前
+                                        # 这一条提问 —— 它下面会以问句身份进 ctx，
+                                        # 否则同一句话喂两遍（实测她会答"说两遍…"）。
+                                        _ask_mid = (_at_msg_obj or {}).get("message_id")
+                                        await asyncio.to_thread(_seed_turns, cid)
+                                        ctx = _recent_turns(cid, _ctxn, exclude_mid=_ask_mid)
                                         glabel = _gender_label(at_sender)  # 女生/男生/未知
                                         ctx.append({"sender": get_name(at_sender) + ("（" + glabel + "）" if glabel != "未知" else ""), "text": q})
                                         # P12-AA：记忆检索内部会调模型（两级精筛），
@@ -3477,6 +3553,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             if reply:
                                 reply = "🤖 " + reply
                                 log("💬 " + reply[:200])
+                                _remember_turn(cid, "我", reply[2:].strip())  # P12-AD
                                 if dry:
                                     log("[dry] skip")
                                 else:
@@ -3627,6 +3704,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             if reply:
                                 reply = "🤖 " + reply
                                 log("💬 " + reply[:200])
+                                _remember_turn(cid, "我", reply[2:].strip())  # P12-AD
                                 if dry:
                                     log("[dry] skip")
                                 else:
