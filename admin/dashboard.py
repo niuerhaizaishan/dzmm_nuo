@@ -896,6 +896,10 @@ LOCK_AFTER = 5                   # 连续失败几次开始锁
 LOCK_BASE = 300                  # 首次锁 5 分钟，之后翻倍
 LOCK_MAX = 3600                  # 上限 1 小时
 MAX_BODY = 4096                  # 登录表单体积上限
+# 其它页面（人设/功能/文案模板）是**整页回传**：全部人设文本 + 全部话术 + 全部开关，
+# URL 编码后中文一字占 9 字节。2026-09-27 实测人设页已经到 60KB+，
+# 原来 `MAX_BODY * 16 = 64KB` 的线一碰就 400（报的还是"请求格式不对"，很难查）。
+MAX_FORM_BODY = MAX_BODY * 256   # 1MB —— 留足余量，同时仍然拒绝异常大的请求
 
 _sessions = {}                   # sid -> 过期时间戳
 _fails = {}                      # ip -> [失败次数, 解锁时间戳]
@@ -1412,7 +1416,14 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
         except Exception:
             length = 0
-        if length <= 0 or length > MAX_BODY * 16:
+        if length <= 0:
+            return None
+        if length > MAX_FORM_BODY:
+            # 2026-09-27 实测：人设页要**整页回传**（3 个人设的文本 + 全部话术），
+            # URL 编码后中文一字 9 字节，加了 19 条话术后就越过原来 64KB 的线，
+            # 结果保存直接 400「请求格式不对」—— 页面看起来坏了，真因却是体积上限。
+            print("[admin] 表单被拒：{} 字节超过上限 {}".format(length, MAX_FORM_BODY),
+                  flush=True)
             return None
         body = self.rfile.read(length).decode("utf-8", "replace")
         return parse_qs(body, keep_blank_values=True)

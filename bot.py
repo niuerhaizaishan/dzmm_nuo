@@ -936,16 +936,30 @@ def _extract_xp(profile_text: str) -> list:
     return []
 
 
+
+def _ph(cid: str, key: str, fallback: str = "", **kw) -> str:
+    """取本群人设的固定话术；没配就退回代码里的兜底句。
+
+    P12-Y：发骚/调教/注册这些**提示语**原来硬编码在流程里，全是小小糯的软萌口吻
+    （"…哦～""…啦～"），注册那几句甚至写着"糯糯姐"——落到若瑾身上名字和口吻都不对。
+    统一走这里之后，人设话术表能一句话换掉（页面可改、热加载 1 秒生效）。
+    """
+    try:
+        return p(key, cid, **kw) or fallback
+    except Exception:                                          # noqa: BLE001
+        return fallback
+
+
 def register_user(query: str, sender_uid: str) -> str:
     """注册用户，返回结果文本."""
     msgs = get_messages_all(_active_cid())  # 拉一次，找用户+发言都复用
     if query:
         # 代注册：只允许糯糯（群主）
         if sender_uid != OWNER_UID:
-            return "只有糯糯姐才能帮别人注册哦～你自己发 /注册 就可以啦～"
+            return _ph(_active_cid(), "reg_self_only", "只有糯糯姐才能帮别人注册哦～你自己发 /注册 就可以啦～")
         uid, full = _find_user_in_msgs(query, msgs)
         if not uid:
-            return "没找到这个人呢，注册不了～"
+            return _ph(_active_cid(), "reg_not_found", "没找到这个人呢，注册不了～")
     else:
         uid = sender_uid
         full = get_full_name(uid)
@@ -953,7 +967,9 @@ def register_user(query: str, sender_uid: str) -> str:
     # 已注册则幂等：不重复建档，直接提示
     existing = get_profile(uid)
     if existing:
-        return "✅ " + full + " 已经注册过啦～不用重复注册哦，发 /查 " + full + " 就能看档案啦～"
+        return _ph(_active_cid(), "reg_exists",
+                   "✅ " + full + " 已经注册过啦～不用重复注册哦，"
+                   "发 /查 " + full + " 就能看档案啦～", who=full)
 
     u = get_user(_active_cid(), uid)
     profile_text = _member_profile_text(uid, full, msgs)
@@ -973,8 +989,10 @@ def register_user(query: str, sender_uid: str) -> str:
         "query_count": 0,
     }
     if upsert_profile(uid, profile):
-        return "✅ " + full + " 注册成功啦～已经记进档案，以后查" + full + "会更丰富哦～"
-    return "注册失败，存档出了点问题～"
+        return _ph(_active_cid(), "reg_ok",
+                   "✅ " + full + " 注册成功啦～已经记进档案，"
+                   "以后查" + full + "会更丰富哦～", who=full)
+    return _ph(_active_cid(), "reg_fail", "注册失败，存档出了点问题～")
 
 
 def is_profile_cmd(cmd: str) -> str:
@@ -1737,7 +1755,7 @@ def continue_last(cid: str, cmd: str = "", sender_uid: str = "") -> str:
         history = fs.get("history") or []
         if not history:
             _set_fasao_state(cid, {"active": False})
-            return "还没有发骚内容可以继续哦～先 /发骚 试试～"
+            return _ph(cid, "cont_no_content", "还没有发骚内容可以继续哦～先 /发骚 试试～")
         try:
             # combo 去括号再传给续写 prompt，避免签名里的「裳姐姐」串角色
             combo_clean = _strip_parenthesis(fs.get("combo", ""))
@@ -1755,7 +1773,7 @@ def continue_last(cid: str, cmd: str = "", sender_uid: str = "") -> str:
                 text = ""
         text = (text or "").strip()
         if not text:
-            return "续写失败啦，换个指令试试～"
+            return _ph(cid, "cont_fail", "续写失败啦，换个指令试试～")
         text = _spice_emoji(text, p("spice_emoji", cid))      # P12-X：续写也撒表情
         target_uid = fs.get("uid")
         if target_uid:
@@ -1772,18 +1790,18 @@ def continue_last(cid: str, cmd: str = "", sender_uid: str = "") -> str:
     # 羞辱续写
     action = _get_last_action(cid)
     if not action:
-        return "还没有上一段可以继续哦～先 /发骚 或 /羞辱 某人试试～"
+        return _ph(cid, "cont_no_action", "还没有上一段可以继续哦～先 /发骚 或 /羞辱 某人试试～")
     atype = action.get("type")
     try:
         if atype == "insult":
             text = generate_insult_continue(action.get("material", ""), action.get("output", ""), custom)
         else:
-            return "上一段不是可以继续的内容哦～"
+            return _ph(cid, "cont_bad_type", "上一段不是可以继续的内容哦～")
     except Exception:
-        return "续写失败啦，换个指令试试～"
+        return _ph(cid, "cont_fail", "续写失败啦，换个指令试试～")
     text = (text or "").strip()
     if not text:
-        return "续写失败啦，换个指令试试～"
+        return _ph(cid, "cont_fail", "续写失败啦，换个指令试试～")
     text = _spice_emoji(text, p("spice_emoji", cid))          # P12-X：羞辱续写也撒表情
     # 续写加分（和目标原指令一致：羞辱 +15）
     target_uid = action.get("uid")
@@ -1816,11 +1834,11 @@ def rewrite_last(cid: str, cmd: str = "") -> str:
     """重新生成发骚的上一段（可带调整方向）."""
     fs = _get_fasao_state(cid)
     if not fs.get("active"):
-        return "现在没有进行中的发骚哦～先 /发骚 试试～"
+        return _ph(cid, "rewrite_idle", "现在没有进行中的发骚哦～先 /发骚 试试～")
     history = fs.get("history") or []
     if not history:
         _set_fasao_state(cid, {"active": False})
-        return "还没有发骚内容可以重写哦～先 /发骚 试试～"
+        return _ph(cid, "rewrite_no_content", "还没有发骚内容可以重写哦～先 /发骚 试试～")
     direction = is_rewrite_cmd(cmd) or ""
     try:
         text = generate_scene_rewrite(_strip_parenthesis(fs.get("combo", "")), history[:-1], history[-1], direction,
@@ -1829,7 +1847,7 @@ def rewrite_last(cid: str, cmd: str = "") -> str:
         text = ""
     text = (text or "").strip()
     if not text:
-        return "重写失败啦，再试一次～"
+        return _ph(cid, "rewrite_fail", "重写失败啦，再试一次～")
     text = _spice_emoji(text, p("spice_emoji", cid))          # P12-X：重写也撒表情
     history[-1] = text
     fs["history"] = history
@@ -1914,9 +1932,9 @@ def _active_play_hint(cid: str) -> str:
     if _get_perf_state(cid).get("active"):
         return "🎭 公演进行中哦～暂无法响应，想参与就直接发言，等公演结束后再试～"
     if _get_fasao_state(cid).get("active"):
-        return "🎲 发骚进行中哦～暂无法响应其他指令，想继续发 /继续，想结束发 /结束～"
+        return _ph(cid, "play_busy_fasao", "🎲 发骚进行中哦～暂无法响应其他指令，想继续发 /继续，想结束发 /结束～")
     if _get_dj_state(cid).get("active"):
-        return "🔗 调教进行中哦～暂无法响应其他指令，想参与发 /命令 xxx，想结束发 /调教结束～"
+        return _ph(cid, "play_busy_diaojiao", "🔗 调教进行中哦～暂无法响应其他指令，想参与发 /命令 xxx，想结束发 /调教结束～")
     if _get_story_state(cid).get("active"):
         return "🎬 剧情进行中哦～暂无法响应其他指令，想投票发 /选 X，想结束发 /剧情结束～"
     return None
@@ -3035,7 +3053,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             if dj.get("active"):
                                 end_text = await asyncio.to_thread(
                                     _dj_end_text, dj.get("target_uid"), dj)
-                                reply = "🔗 调教结束啦～"
+                                reply = _ph(cid, "dj_end", "🔗 调教结束啦～")
                                 if end_text:
                                     reply += "\n" + end_text
                                 _set_dj_state(cid, {"active": False})
@@ -3053,7 +3071,7 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             dj = _get_dj_state(cid)
                             if dj.get("active"):
                                 if not dj_cmd:
-                                    reply = "命令不能为空哦～格式 /命令 xxx"
+                                    reply = _ph(cid, "dj_cmd_empty", "命令不能为空哦～格式 /命令 xxx")
                                 else:
                                     dj["phase"] = "等回应"
                                     dj["last_activity"] = time.time()
@@ -3079,12 +3097,12 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         elif is_diaojiao_cmd(cmd) is not None and _feat_on(cid, "diaojiao"):
                             # 发起调教
                             if _get_dj_state(cid).get("active"):
-                                reply = "调教进行中哦～先 /调教结束 再发起新的～"
+                                reply = _ph(cid, "dj_busy", "调教进行中哦～先 /调教结束 再发起新的～")
                             else:
                                 reply = await asyncio.to_thread(start_diaojiao, cid, cmd, cmd_sender)
                         elif _get_dj_state(cid).get("active") and _feat_on(cid, "diaojiao"):
                             # 调教进行中，其他指令屏蔽（同样必须跟开关走，理由见公演那处）
-                            reply = "🔗 调教进行中哦～想参与就发 /命令 xxx，或 /调教结束 收尾～"
+                            reply = _ph(cid, "dj_block", "🔗 调教进行中哦～想参与就发 /命令 xxx，或 /调教结束 收尾～")
                         elif is_continue_cmd(cmd) and _continue_allowed(cid):
                             # 续写（发骚续写优先，continue_last 内部分发发骚/羞辱）
                             # ★ 共享分支：按上一次动作的**类型**决定归哪个功能管
@@ -3157,7 +3175,8 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                 reply = p("sync_only_owner", cid)
                             else:
                                 if not dry:
-                                    await sender.send("🤖 收到同步指令～正在拉取增量消息，稍等一下下哦～", cid)
+                                    await sender.send(_ph(cid, "sync_working",
+                                              "🤖 收到同步指令～正在拉取增量消息，稍等一下下哦～"), cid)
                                 reply = await asyncio.to_thread(sync_profiles)
                         elif (reg_query := is_register_cmd(cmd)) is not None and _feat_on(cid, "register"):
                             # 注册：先发提醒，再执行，最后发结果

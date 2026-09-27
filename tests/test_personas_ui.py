@@ -402,6 +402,22 @@ def test_save_rejects_overlong_phrase(srv):
     assert cfgp.read_text(encoding="utf-8") == before
 
 
+def test_full_page_form_exceeds_the_old_body_cap():
+    """整页回传**稍微一长**就顶破原来 64KB 的线 —— 上限必须放宽。
+
+    2026-09-27 实测：这一页要回传 3 个人设的文本 + 全部话术，URL 编码后中文一字 9 字节；
+    整页本身就 ~55KB，用户随手把一条话术写长一点就越过 `MAX_BODY * 16 = 64KB`，
+    保存直接 400「请求格式不对」（页面看起来坏了，真因却是体积上限）。
+    这条钉住"别再把上限调回去"。
+    """
+    from admin import dashboard as _d
+    small = len(urllib.parse.urlencode(_page_form("x"), doseq=True))
+    big = len(urllib.parse.urlencode(
+        _page_form("x", **{"pphrase[nuo][mem_saved]": "啊" * 1001}), doseq=True))
+    assert big > 64 * 1024, "一条长话术就能顶破旧上限（整页约 {}KB）".format(small // 1024)
+    assert _d.MAX_FORM_BODY > big * 2, "上限要留足余量：{}".format(_d.MAX_FORM_BODY)
+
+
 def test_save_without_csrf_is_refused(srv):
     base, cfgp = srv
     cookie = _login(base)
