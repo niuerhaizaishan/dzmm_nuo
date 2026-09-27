@@ -94,23 +94,34 @@ def test_ah_goes_more_colloquial_and_drops_written_style():
     assert e.count("→") >= 4, "正反例对照至少要四组"
 
 
-def test_ah_decorates_with_the_marks_and_keeps_one_definition():
-    assert P.RUOJIN_WARM_MARKS == "！！！❤️❤️❤️❤️"
+def test_ah_sprinkles_bangs_and_hearts_not_a_fixed_string():
+    """⚠️ 口径纠正（屋主当天）：不是加"！！！❤️❤️❤️❤️"这一句，而是**多用感叹号 + 多撒 ❤️**。
+
+    第一版我把那四个心当成固定串写进了提示词（`RUOJIN_WARM_MARKS`），屋主纠正后删掉，
+    改成标点与表情的用法规则。这条测试钉住"别再退回固定串"。
+    """
     e = P.RUOJIN_EXTRA
-    assert P.RUOJIN_WARM_MARKS in e, "提示词里要带上这串（否则模型不知道长什么样）"
-    assert "一条消息最多一处" in e, "控频是这串值不值钱的关键"
-    assert "每两三条" in e
-    # 屋主当天选的：正文也挂
-    assert "玩法正文里也要带" in e
-    # ⚠️ 第一版只写"可以带"，实测 5 条回复里出现 0 次 —— 必须写成"要真用出来"，
-    #    并且明确它**不算卖萌**（否则模型会跟"别堆♡"那条合并理解）
-    assert "要真用出来" in e
-    assert "不算" in e and "卖萌" in e
-    # 话术表里只有一处登记，且能取到
-    assert P.p("warm_marks", RUOJIN_CID) == P.RUOJIN_WARM_MARKS
-    # 不许漏到别的群
-    auth = "bd7fe6a4-0065-4551-ad3d-94116dba8f9c"
-    assert P.p("warm_marks", auth) == "", "认证群不该拿到若瑾的装饰串"
+    assert not hasattr(P, "RUOJIN_WARM_MARKS"), "固定串已经删掉，别再回来"
+    assert "warm_marks" not in P.known_phrase_keys("ruojin")
+    assert "{marks}" not in e and "{tone}" not in e, "占位符必须都已替换"
+    # 要有的规则
+    assert "标点与表情" in e
+    assert "上感叹号" in e
+    assert "❤️ 多撒" in e and "一到四个都行" in e
+    assert "大部分回复都该至少带上一个" in e, "屋主要的是'多加一些'，不是偶尔一处"
+    assert "玩法正文里也撒" in e
+    # 但要有上限，别变成符号雨
+    assert "不超过 4 个" in e and "别变成符号雨" in e
+    assert "不算" in e and "卖萌" in e, "要说明它跟'别堆♡'那条不冲突"
+
+
+def test_ah_phrases_carry_bangs_and_hearts():
+    cid = RUOJIN_CID
+    assert "！" in P.p("mem_saved", cid)
+    assert "！" in P.p("no_play", cid)
+    assert "❤️" in P.p("dj_end", cid) and "！" in P.p("dj_end", cid)
+    assert "❤️" in P.p("fasao_end", cid)
+    assert "❤️" in P.p("reg_ok", cid, who="糯糯")
 
 
 def test_ah_colloquial_does_not_mean_shorter():
@@ -138,10 +149,9 @@ def test_ah_paragraph_cap_is_gone_like_the_base_prompt():
 
 def test_ah_phrases_are_warmer_but_still_her():
     cid = RUOJIN_CID
-    assert P.p("mem_saved", cid) == "记住了！！！"
-    assert P.p("fasao_end", cid).startswith("🎲 到这里")
-    assert P.RUOJIN_WARM_MARKS in P.p("dj_end", cid)
-    assert "❤️" in P.p("reg_ok", cid, who="糯糯")
+    assert P.p("mem_saved", cid) == "记住了！！"
+    assert P.p("no_play", cid).startswith("现在没局")
+    assert P.p("not_found", cid).endswith("！")
     # 仍然不许出现软糯标记（现有断言之外的定点检查）
     for key in ("mem_saved", "fasao_end", "dj_end", "reg_ok", "no_play", "not_found"):
         txt = P.p(key, cid, who="糯糯")

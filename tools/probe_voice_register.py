@@ -38,7 +38,7 @@ from runtime import tuning as T                                # noqa: E402
 
 RUOJIN = "f4ec4c21-fb48-4be2-9972-e4128f65923b"
 OLD_FILE = "ruojin_extra_p12ah_before.txt"
-MARKS = "！！！❤️❤️❤️❤️"
+HEART = "❤️"
 
 WRITTEN = ("建议", "注意", "希望", "进行", "保持", "因此", "非常", "应当", "目前",
            "情况", "方面", "予以", "十分", "较为", "并且", "以及", "而言", "是否",
@@ -61,11 +61,15 @@ def _split_sent(t):
 def _metrics(text):
     text = (text or "").strip()
     sents = _split_sent(text)
+    hearts = text.count(HEART)
+    bangs = text.count("！")
     return {"text": text, "n": len(text), "sents": len(sents),
             "written": sum(text.count(w) for w in WRITTEN),
             "tone": sum(text.count(w) for w in TONE),
             "moe": sum(text.count(w) for w in MOE),
-            "marks": text.count(MARKS)}
+            "hearts": hearts, "bangs": bangs,
+            # 符号雨：屋主的口径是"多加一些"，不是"整条只剩符号"
+            "storm": bool(hearts > 4 or bangs > 6)}
 
 
 def _run(tag):
@@ -99,23 +103,25 @@ def _show(tag, rows):
         print()
         print("  ── {} / {} ── {} 字 / {} 句 / 均句 {:.0f} 字".format(
             tag, label, r["n"], r["sents"], (r["n"] / r["sents"]) if r["sents"] else 0))
-        print("     书面词 {} | 语气词 {} | 卖萌 {} {} | 装饰 {}".format(
-            r["written"], r["tone"], r["moe"], "❌" if r["moe"] else "✅", r["marks"]))
+        print("     书面词 {} | 语气词 {} | 卖萌 {} {} | ❤️ {} | ！{} {}".format(
+            r["written"], r["tone"], r["moe"], "❌" if r["moe"] else "✅",
+            r["hearts"], r["bangs"], "⚠️符号雨" if r["storm"] else ""))
         print("     ", r["text"].replace("\n", "⏎")[:240])
 
 
 def _sum(rows):
     sents = sum(r["sents"] for r in rows.values()) or 1
-    sents_moe = sum(r["moe"] for r in rows.values())
     return {
         "条数": len(rows),
         "平均字数": round(sum(r["n"] for r in rows.values()) / max(1, len(rows))),
         "平均句长": round(sum(r["n"] for r in rows.values()) / sents, 1),
         "书面词合计": sum(r["written"] for r in rows.values()),
         "语气词合计": sum(r["tone"] for r in rows.values()),
-        "卖萌信号合计": sents_moe,
-        "装饰出现条数": sum(1 for r in rows.values() if r["marks"]),
-        "装饰总次数": sum(r["marks"] for r in rows.values()),
+        "卖萌信号合计": sum(r["moe"] for r in rows.values()),
+        "带❤️的条数": sum(1 for r in rows.values() if r["hearts"]),
+        "❤️总数": sum(r["hearts"] for r in rows.values()),
+        "！总数": sum(r["bangs"] for r in rows.values()),
+        "符号雨条数": sum(1 for r in rows.values() if r["storm"]),
     }
 
 
@@ -146,8 +152,8 @@ def main():
 
     new_text = P.PERSONAS["ruojin"]["extra"]
     print("=" * 72)
-    print("新版 extra {} 字 | 旧版快照 {} 字 | 装饰串 {}".format(
-        len(new_text), len(old_text), MARKS))
+    print("新版 extra {} 字 | 旧版快照 {} 字 | 口径：多上感叹号 + 多撒 ❤️（一到四个）".format(
+        len(new_text), len(old_text)))
     print("=" * 72)
 
     results = {}
@@ -173,7 +179,7 @@ def main():
     print("汇总")
     print("=" * 72)
     keys = ["条数", "平均字数", "平均句长", "书面词合计", "语气词合计",
-            "卖萌信号合计", "装饰出现条数", "装饰总次数"]
+            "卖萌信号合计", "带❤️的条数", "❤️总数", "！总数", "符号雨条数"]
     tags = list(results)
     print("  {:<14s}{}".format("指标", "".join("{:>10s}".format(t) for t in tags)))
     for k in keys:
@@ -182,16 +188,19 @@ def main():
     if len(tags) == 2:
         n, o = _sum(results["新版"]), _sum(results["旧版"])
         print()
-        print("  书面词 {} → {}（{}）".format(
-            o["书面词合计"], n["书面词合计"],
-            "降了 ✅" if n["书面词合计"] < o["书面词合计"] else "没降 ⚠️"))
-        print("  语气词 {} → {}（{}）".format(
-            o["语气词合计"], n["语气词合计"],
-            "升了 ✅" if n["语气词合计"] > o["语气词合计"] else "没升 ⚠️"))
-        print("  装饰：旧 {} 条 → 新 {} 条".format(
-            o["装饰出现条数"], n["装饰出现条数"]))
+        print("  ❤️ 带心条数 {} → {}（{}）".format(
+            o["带❤️的条数"], n["带❤️的条数"],
+            "多了 ✅" if n["带❤️的条数"] > o["带❤️的条数"] else "没多 ⚠️"))
+        print("  ❤️ 总数 {} → {}".format(o["❤️总数"], n["❤️总数"]))
+        print("  ！总数 {} → {}（{}）".format(
+            o["！总数"], n["！总数"],
+            "多了 ✅" if n["！总数"] > o["！总数"] else "没多 ⚠️"))
+        print("  书面词 {} → {}｜语气词 {} → {}".format(
+            o["书面词合计"], n["书面词合计"], o["语气词合计"], n["语气词合计"]))
         print("  卖萌信号：旧 {} / 新 {}（两边都必须 0）".format(
             o["卖萌信号合计"], n["卖萌信号合计"]))
+        print("  符号雨：旧 {} 条 / 新 {} 条（都该是 0）".format(
+            o["符号雨条数"], n["符号雨条数"]))
     print()
     print("done")
     return 0
