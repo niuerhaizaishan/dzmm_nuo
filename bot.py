@@ -2573,11 +2573,15 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         last_http_fallback[cid] = now_ts
                         if need_resync:
                             subscriber.clear_resync(cid)
-                        # 上限只用来**保护主循环**；它超时是"我们不等了"，不代表平台坏了
+                        # ⚠️ 超时**交给 requests 自己**（timeout= 传进去），
+                        # 不要只靠外面 wait_for 兜：那只是"我们不等了"，线程还在跑，
+                        # 池子（2 核机器上只有 5 个 worker）一满，之后所有 to_thread
+                        # 一起排队 —— 2026-09-27 就是这么静默了 11 分钟的。
                         try:
                             msgs = await asyncio.wait_for(
-                                asyncio.to_thread(get_messages, cid, 20),
-                                timeout=PLATFORM_READ_TIMEOUT)
+                                asyncio.to_thread(get_messages, cid, 20, None, None,
+                                                  PLATFORM_READ_TIMEOUT),
+                                timeout=PLATFORM_READ_TIMEOUT + 10)
                         except asyncio.TimeoutError:
                             log("⏱️ [{}] 读消息超过 {:.0f}s，本轮不等了（下轮再试）".format(
                                 cid[:8], PLATFORM_READ_TIMEOUT))
@@ -3502,6 +3506,17 @@ async def _run_all(interval: float, dry: bool, once: bool) -> None:
     一个群的长任务不再堵住另一个群（主实例额外负责全局工作）。
     """
     sender = _wrap_with_outbox(Sender(), dry)
+    # P12-J 教训：`asyncio.to_thread` 的默认池是 `min(32, cpu+4)` —— 这台机器 2 核
+    # 只有 **5 个 worker**。只要有几个平台读卡住（requests 超时前），池子就满，
+    # 之后连 LLM 生成都要排队（2026-09-27 实测静默 11 分钟）。
+    # 这里放大到 16：线程本身很轻，真正的保护靠"把超时交给 requests"。
+    try:
+        import concurrent.futures as _cf
+        asyncio.get_running_loop().set_default_executor(
+            _cf.ThreadPoolExecutor(max_workers=16, thread_name_prefix="dzmm"))
+        log("P12-J: 线程池 max_workers=16（默认只有 cpu+4=5，卡住就会连累生成）")
+    except Exception as _e:                                    # noqa: BLE001
+        log("P12-J: 设置线程池失败（不影响运行）：" + str(_e)[:60])
     if not dry:
         _log_runtime_status()
         try:

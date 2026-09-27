@@ -23,14 +23,23 @@ def get_cookie_string() -> str:
     return token_store.get_cookie_string()
 
 
-def api(path: str, inp: dict, cookies: dict | None = None) -> dict:
-    """调用 tRPC API."""
+def api(path: str, inp: dict, cookies: dict | None = None,
+        timeout: float = 15) -> dict:
+    """调用 tRPC API。
+
+    `timeout` 是**交给 requests 自己的**超时（P12-J）。为什么必须能传：
+    主循环用 `asyncio.wait_for` 包住 `to_thread(get_messages…)` 时，等不到只是
+    "放弃等待"，**线程还在跑**；这台机器 2 核，`to_thread` 默认池上限
+    `min(32, cpu+4)=5`，几个卡住的请求就能把池子占满 ⇒ 之后所有 `to_thread`
+    （包括 LLM 生成）一起排队（2026-09-27 实测：机器人静默 11 分钟、
+    webhook 消息在队列里躺了 5 分钟没人处理）。超时交给 requests，线程能及时归还。
+    """
     if cookies is None:
         cookies = get_cookies()
     q = urllib.parse.quote(json.dumps(inp))
     url = ORIGIN + "/api/trpc/" + path + "?input=" + q
     _throttle("trpc:" + path)                  # P5.2：令牌桶（失败开放，绝不阻塞）
-    resp = requests.get(url, cookies=cookies, timeout=15, proxies=PROXIES)
+    resp = requests.get(url, cookies=cookies, timeout=timeout, proxies=PROXIES)
     # 先看响应再解析：限流/验证码信号可能就在 body 里，非 JSON 响应也要能识别
     _note_resp(resp, path=path)                # P5.2：命中则进入全局冷却
     data = resp.json()
@@ -41,7 +50,7 @@ def api(path: str, inp: dict, cookies: dict | None = None) -> dict:
 
 
 def get_messages(chat_id: str, limit: int = 20, before: str | None = None,
-                 cookies: dict | None = None) -> list[dict]:
+                 cookies: dict | None = None, timeout: float = 15) -> list[dict]:
     if cookies is None:
         cookies = get_cookies()
     if before:
@@ -51,7 +60,7 @@ def get_messages(chat_id: str, limit: int = 20, before: str | None = None,
     else:
         inp = {"json": {"chatroomId": chat_id, "limit": limit, "before": None},
                "meta": {"values": {"before": ["undefined"]}, "v": 1}}
-    data = api("chatroom.getMessages", inp, cookies)
+    data = api("chatroom.getMessages", inp, cookies, timeout)
     return list(data.get("messages") or [])
 
 
