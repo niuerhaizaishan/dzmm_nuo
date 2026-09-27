@@ -2406,6 +2406,42 @@ def _wrap_with_outbox(sender, dry: bool):
         return inner
 
 
+# 同一条消息最多被"放回队列"几次（兜底防刷屏；正常路径 ≤1 次）
+REQUEUE_MAX = 3
+
+
+def _pick_leftover(cid, cmd, cmd_msg, at_msg, at_msg_obj, room_obj, already=None):
+    """这一轮没轮到、需要放回队列的消息。
+
+    铁律：**这一轮真正被处理的那条绝不放回**（优先级 `cmd` > `@消息` > 房间消息）。
+
+    ⚠️ 2026-09-27 玫瑰房事故就是这么刷屏的：一条 @ 消息**同时**命中 @ 分支与房间分支
+    （`_is_room_trigger` 把"被点名"也算房间触发），@ 分支赢了、房间那条被放回队列，
+    下一轮捞回来的还是它 ⇒ 每轮重来一次，薇丝每 1~2 秒回一条（实测 52 次放回、
+    约 3 分钟，最后靠重启清空内存队列才停下）。
+
+    另外给一条兜底：同一条最多放回 `REQUEUE_MAX` 次 —— 宁可漏一条，也绝不刷屏。
+    """
+    out = list(already or [])
+    consumed = cmd_msg if cmd else (at_msg_obj if at_msg else room_obj)
+    for obj in (at_msg_obj, room_obj, cmd_msg):
+        if obj is None or obj is consumed:
+            continue
+        if any(obj is x for x in out):
+            continue
+        out.append(obj)
+    keep = []
+    for obj in out:
+        n = int(obj.get("_requeue_n") or 0)
+        if n >= REQUEUE_MAX:
+            log("♻️ [{}] 同一条已放回 {} 次，不再放回（防刷屏）：{}".format(
+                cid[:8], n, str((obj.get("content") or {}).get("text") or "")[:20]))
+            continue
+        obj["_requeue_n"] = n + 1
+        keep.append(obj)
+    return keep
+
+
 async def main_loop(interval: float, dry: bool, once: bool, *,
                     groups: list = None, sender, state: dict,
                     subscriber, is_primary: bool = True):
@@ -2778,11 +2814,10 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                 _room_obj = m
                             else:
                                 _leftover.append(m)
-                    # `cmd` 优先于 @ / 房间分支：没轮到的那条也要放回去
-                    if cmd and _at_msg_obj is not None:
-                        _leftover.append(_at_msg_obj)
-                    if (cmd or at_msg) and _room_obj is not None:
-                        _leftover.append(_room_obj)
+                    # `cmd` 优先于 @ / 房间分支：没轮到的那条放回去，**被处理的那条不放**
+                    # （见 `_pick_leftover` 的注释：放回被处理的那条 = 每轮重来一次）
+                    _leftover = _pick_leftover(
+                        cid, cmd, _cmd_msg, at_msg, _at_msg_obj, _room_obj, _leftover)
                     if _leftover:
                         try:
                             subscriber.requeue(cid, _leftover)
