@@ -18,7 +18,8 @@ import re
 from runtime import bot_photo
 
 __all__ = ["LAYOUTS", "FILE_OF", "URL_TMPL", "layout_of", "photo_url",
-           "wants_photo", "maybe_send", "send_layout", "DEFAULT_LAYOUT"]
+           "wants_photo", "maybe_send", "send_layout", "DEFAULT_LAYOUT",
+           "is_layout_cmd", "_bare_layout"]
 
 DEFAULT_LAYOUT = "玫瑰房"          # 初始布局：恢复/复原/没认出来时的那张
 URL_TMPL = "https://www.nuonuo.pw/img/room/{}.jpg"
@@ -46,6 +47,13 @@ _CHANGE_WORDS = ("改变", "换成", "换回", "换一个", "改成", "改回", 
                  "布置", "装修", "改造", "弄成", "装成", "布成", "重新",
                  "恢复", "复原", "回到", "来一个", "来个", "风格")
 
+# 去掉称呼（@薇丝 / 薇丝）与标点后，整句**正好**是一个布局名时的清洗规则。
+# 屋主 2026-09-27 问"必须得说房间改成泳池才能触发场景吗" → 不必：光说「泳池」也行，
+# 但"泳池真好看""我想去泳池"这种**不算**（不是"整句就是布局名"）。
+_NOISE_RE = re.compile(r"[@\s,，。.!！?？:：；;、~～\-—]+")
+_BARE_SUFFIX = ("风格", "房间", "模式", "吧", "呢", "呀")
+_BARE_MAX = 8          # "户外烧烤"=4，"玫瑰泳池"=4；再长就不是报名字了
+
 
 def layout_of(text: str) -> str:
     """这句话在说哪种布局；认不出来返回空串."""
@@ -63,8 +71,36 @@ def photo_url(layout: str) -> str:
     return URL_TMPL.format(f) if f else ""
 
 
+def _bare_layout(text: str, cid: str = None) -> str:
+    """整句**就是一个布局名**时返回那个布局名，否则空串.
+
+    先去称呼（`@薇丝` / `薇丝`）与标点，再看剩下的是不是正好等于布局名或它的关键词；
+    允许尾巴带"风格/房间/模式/吧/呢/呀"。这样：
+
+        「泳池」「薇丝 泳池」「@薇丝 审问室」「烧烤」「玫瑰房」 → 认 ✓
+        「我想去泳池」「泳池真好看」「泳池照片」              → 不认 ✗（不是在报名字）
+    """
+    t = str(text or "")
+    try:
+        from runtime.identity import self_names_for
+        for nm in sorted([n for n in self_names_for(cid) if n], key=len, reverse=True):
+            t = t.replace("@" + nm, " ").replace(nm, " ")
+    except Exception:                                        # noqa: BLE001
+        pass
+    t = _NOISE_RE.sub("", t)
+    if not t or len(t) > _BARE_MAX:
+        return ""
+    for suf in _BARE_SUFFIX:
+        if t.endswith(suf) and len(t) > len(suf):
+            t = t[: -len(suf)]
+    for name, kws in LAYOUTS:
+        if t == name or t in kws:
+            return name
+    return ""
+
+
 def is_layout_cmd(text: str, cid: str = None, uid: str = None) -> bool:
-    """是不是**屋主**在下"改布局"的命令（含能认出的布局名）."""
+    """是不是**屋主**在下"改布局"的命令（能认出布局名，且有改的意图 **或** 整句就是布局名）."""
     t = str(text or "")
     if not t or not uid:
         return False
@@ -78,7 +114,9 @@ def is_layout_cmd(text: str, cid: str = None, uid: str = None) -> bool:
         return False                    # 认不出的风格不发图
     if any(w in t for w in _ROOM_LAYOUT_WORDS):
         return True
-    return any(w in t for w in _CHANGE_WORDS)
+    if any(w in t for w in _CHANGE_WORDS):
+        return True
+    return bool(_bare_layout(t, cid))   # 光报布局名也算（"泳池"/"薇丝 审问室"）
 
 
 def wants_photo(text: str, cid: str = None, uid: str = None) -> bool:

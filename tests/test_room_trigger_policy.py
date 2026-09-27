@@ -123,6 +123,15 @@ def test_owner_commands_do_not_need_the_name():
     assert trig("@橘先生 顺便把屋子改成泳池", VV) is True
 
 
+def test_bare_layout_name_enters_the_room_branch():
+    """屋主 2026-09-27："必须得说房间改成泳池吗" → 不必，光报布局名也算。"""
+    assert trig("泳池", VV) is True
+    assert trig("薇丝 审问室", NUONUO) is True
+    assert trig("@薇丝 烧烤", VV) is True
+    assert trig("泳池", GUEST) is False        # 客人还是不能换布局
+    assert trig("我想去泳池", VV) is False      # 闲聊不算
+
+
 def test_other_groups_are_untouched():
     """认证群不走房间闸门（这些判定只服务玫瑰房）."""
     assert trig("摘花", GUEST, AUTH) is False

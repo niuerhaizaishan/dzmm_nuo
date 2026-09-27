@@ -104,6 +104,31 @@ def test_bare_room_name_is_not_a_command():
     assert RL.wants_photo("玫瑰房真好看", ROSE, VV) is False
 
 
+# ------------------------------------------------- 光报布局名也算（屋主 2026-09-27）
+
+@pytest.mark.parametrize("text,expect", [
+    ("泳池", "玫瑰泳池"), ("薇丝 泳池", "玫瑰泳池"), ("@薇丝 泳池", "玫瑰泳池"),
+    ("泳池风格", "玫瑰泳池"), ("审问室", "审问室"), ("薇丝 审问室", "审问室"),
+    ("烧烤", "户外烧烤"), ("户外烧烤", "户外烧烤"), ("玫瑰房", "玫瑰房"),
+    ("恢复", "玫瑰房"), ("泳池吧", "玫瑰泳池"),
+])
+def test_bare_layout_name_works_for_owner(text, expect):
+    assert RL._bare_layout(text, ROSE) == expect, text
+    assert RL.is_layout_cmd(text, ROSE, VV) is True, text
+
+
+@pytest.mark.parametrize("text", [
+    "我想去泳池", "泳池真好看", "泳池照片", "今天聊点别的", "玫瑰房不错",
+])
+def test_bare_name_does_not_fire_on_chatter(text):
+    assert RL._bare_layout(text, ROSE) == "", text
+    assert RL.is_layout_cmd(text, ROSE, VV) is False, text
+
+
+def test_bare_name_still_owner_only():
+    assert RL.is_layout_cmd("泳池", ROSE, GUEST) is False
+
+
 # ---------------------------------------------------------------- 发送
 
 def test_maybe_send_posts_the_matching_url_once():
