@@ -1036,8 +1036,12 @@ def _room_cmd_refused(cid: str, cmd: str, sender: str) -> bool:
     return not is_open_room_cmd(cmd)
 
 
-def rank_summary() -> str:
-    """生成骚度排行（高潮次数为主，发情值为辅，活跃度不参与排名，排除小小糯）."""
+def rank_summary(top: int = 10) -> str:
+    """生成骚度排行（高潮次数为主，发情值为辅，活跃度不参与排名，排除小小糯）。
+
+    `top`：只列前 N 名（屋主 2026-09-27："发骚排行只展示前 10 名就可以"）。
+    认证群 65 个人全列出来是 2000+ 字 / 66 行的刷屏长消息，没必要。
+    """
     cid = _active_cid()
     group_state = (load_state() or {}).get(cid) or {}
     heat = group_state.get("heat_value") or {}
@@ -1050,8 +1054,10 @@ def rank_summary() -> str:
         return ""
     _load_member_names()
     items = sorted(uids, key=lambda u: (-today_climax.get(u, 0), -climax.get(u, 0), -heat.get(u, 0), -counts.get(u, 0)))
+    total = len(items)
+    shown = items[:max(1, int(top))]
     lines = ["🔥 骚度排行"]
-    for i, uid in enumerate(items, 1):
+    for i, uid in enumerate(shown, 1):
         name = get_name(uid)  # 简化名字（去掉括号/波浪号后缀）
         h = heat.get(uid, 0)
         c = counts.get(uid, 0)
@@ -1066,6 +1072,8 @@ def rank_summary() -> str:
             lines.append("🥉 " + line)
         else:
             lines.append(str(i) + ". " + line)
+    if total > len(shown):
+        lines.append("…（共 " + str(total) + " 人有记录，只列前 " + str(len(shown)) + " 名）")
     return "\n".join(lines)
 
 
@@ -1733,14 +1741,16 @@ def continue_last(cid: str, cmd: str = "", sender_uid: str = "") -> str:
         try:
             # combo 去括号再传给续写 prompt，避免签名里的「裳姐姐」串角色
             combo_clean = _strip_parenthesis(fs.get("combo", ""))
-            text = generate_scene_continue(combo_clean, history, custom)
+            text = generate_scene_continue(combo_clean, history, custom,
+                                           max_tokens=int(_tune("scene.max_tokens", cid)))
         except Exception:
             text = ""
         if not (text or "").strip():
             # 续写失败（超时/空），重试一次
             try:
                 combo_clean = _strip_parenthesis(fs.get("combo", ""))
-                text = generate_scene_continue(combo_clean, history, custom)
+                text = generate_scene_continue(combo_clean, history, custom,
+                                               max_tokens=int(_tune("scene.max_tokens", cid)))
             except Exception:
                 text = ""
         text = (text or "").strip()
@@ -1811,7 +1821,8 @@ def rewrite_last(cid: str, cmd: str = "") -> str:
         return "还没有发骚内容可以重写哦～先 /发骚 试试～"
     direction = is_rewrite_cmd(cmd) or ""
     try:
-        text = generate_scene_rewrite(_strip_parenthesis(fs.get("combo", "")), history[:-1], history[-1], direction)
+        text = generate_scene_rewrite(_strip_parenthesis(fs.get("combo", "")), history[:-1], history[-1], direction,
+                                      max_tokens=int(_tune("scene.max_tokens", cid)))
     except Exception:
         text = ""
     text = (text or "").strip()

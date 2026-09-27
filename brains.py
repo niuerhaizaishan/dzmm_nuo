@@ -358,8 +358,9 @@ GREETING_PROMPT = _p("GREETING_PROMPT", """你是"小小糯～"，给群里的�
 SCENE_PROMPT = _p("SCENE_PROMPT", """你是"小小糯～"，现在是涩涩骰子主持人。根据给定的"人物×场景×体位×附加玩法"，写一段色气拉满、直白露骨的情境描写。
 
 要求：
-- 250-350字，画面感强，像小黄文开头，有起承转合
-- 分段控制在 10 行以内（约 4-6 段，别一句话一段，否则会被系统截断）
+- 700-1100字，画面感强，像小黄文开头，有起承转合
+- 【长度】写到 700 字以上再收尾；该分段就分段（一般 12-20 行），
+  别一句话一段，也别为了"行数"提前收尾 —— 平台现在收长消息没问题（实测 60+ 行照发）
 - 直白露骨，具体到动作、身体反应、声音、气味、环境细节、心理活动
 - 【每次必须不一样】随机选一种叙事角度，禁止每次都套同一个模板：
   · 旁观偷窥视角（"门缝外，有人屏住了呼吸……"）
@@ -421,8 +422,9 @@ SCENE_CONTINUE_PROMPT = _p("SCENE_CONTINUE_PROMPT", """你是"小小糯～"，�
 - 如果没给用户指定方向，根据上下文自然推进剧情（动作升级、感官更强烈、心理更露骨）
 - 绝对不要增加其他人物（只用已有的人物，或用"她"/道具演绎）
 - 不要重复已经写过的内容，续写新的发展
-- 250-350字，直白露骨，具体到动作、身体反应、声音、气味、环境细节
-- 分段控制在 10 行以内（约 4-6 段，别一句话一段，否则会被系统截断）
+- 600-1000字，直白露骨，具体到动作、身体反应、声音、气味、环境细节
+- 【长度】写到 600 字以上再收尾；该分段就分段（一般 12-20 行），别一句话一段，
+  也别为了"行数"提前收尾 —— 平台现在收长消息没问题（实测 60+ 行照发）
 - 保持百合向（女女），施动者用"她"或道具，禁止出现"他"
 - 【叙事人称】整篇第三人称，用主角的名字（可去括号）或"她"（女生）/"他"（男生）指代主角，绝对不要用第一人称"我"，保持和前文同一个视角，不要中途切成"我"
 - 带软糯可爱的小小糯语气（"～♡"），S属性支配感
@@ -456,8 +458,9 @@ SCENE_REWRITE_PROMPT = _p("SCENE_REWRITE_PROMPT", """你是"小小糯～"，用�
 - 如果没给调整方向，换个角度/写法重新写上一段（同样剧情节点，写得更好）
 - 不是续写新内容，而是替换上一段
 - 绝对不要增加其他人物（只用已有的人物，或用"她"/道具演绎）
-- 250-350字，直白露骨，具体到动作、身体反应、声音、气味、环境细节
-- 分段控制在 10 行以内（约 4-6 段，别一句话一段，否则会被系统截断）
+- 600-1000字，直白露骨，具体到动作、身体反应、声音、气味、环境细节
+- 【长度】写到 600 字以上再收尾；该分段就分段（一般 12-20 行），别一句话一段，
+  也别为了"行数"提前收尾 —— 平台现在收长消息没问题（实测 60+ 行照发）
 - 保持百合向（女女），施动者用"她"或道具，禁止出现"他"
 - 【叙事人称】整篇第三人称，用主角的名字（可去括号）或"她"（女生）/"他"（男生）指代主角，绝对不要用第一人称"我"，保持和前文同一个视角，不要中途切成"我"
 - 带软糯可爱的小小糯语气（"～♡"），S属性支配感
@@ -643,18 +646,16 @@ HEAT_FASAO_PROMPT = _p("HEAT_FASAO_PROMPT", """你是"小小糯～"，现在要�
 - 开头不要加"🤖"，系统会自动加""")
 
 
-def _call_llm(system_prompt: str, user_content: str,
-              api_key: str = DEFAULT_KEY, max_tokens: int = 100,
-              timeout: int = 30, model: str = None) -> str:
-    """调用 DeepSeek，解析 JSON 响应。
+def _call_llm_raw(system_prompt: str, user_content: str,
+                  api_key: str = DEFAULT_KEY, max_tokens: int = 100,
+                  timeout: int = 30, model: str = None):
+    """**一次**底层调用 → `(text, finish_reason)`。
 
-    这里是全部提示词的唯一出口：分群人设在这里注入（默认群原样返回，零开销）。
+    `finish_reason == "length"` 就是被 `max_tokens` 掐断了。
+    2026-09-27 实测（屋主："妹子群发骚有截断"）：认证群一段发骚正文停在
+    「屁股却不受控制地往裳手心里」—— 700 token 的额度用完了，
+    而模型本来还要往下写。`_call_llm(extend=True)` 会据此自动续写。
     """
-    try:
-        import personas
-        system_prompt = personas.apply_persona(system_prompt)
-    except Exception:
-        pass
     payload = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
@@ -672,12 +673,67 @@ def _call_llm(system_prompt: str, user_content: str,
     data = resp.json()
     try:
         reply = data["choices"][0]["message"]["content"]
+        finish = str(data["choices"][0].get("finish_reason") or "")
     except Exception:
-        reply = ""
+        reply, finish = "", ""
     reply = (reply or "").strip()
     # 清掉所有 🤖，bot.py 会统一加一个
     reply = reply.replace("🤖", "").strip()
-    return reply
+    return reply, finish
+
+
+# 续写指令：把"被截断"变成"接着写完"。措辞要压住模型重抄一遍的冲动。
+CONTINUE_HINT = ("\n\n【紧接着往下写】上面那段被长度上限截断了。"
+                 "请**直接从断掉的地方接着写下一句**："
+                 "不要重复已经写过的内容、不要重写开头、不要任何解释/标题/序号，"
+                 "人称、语气、标点风格保持一致。")
+
+
+def _join_continuation(head: str, more: str, window: int = 80) -> str:
+    """把续写接到上一段后面。
+
+    模型经常把上一段的尾巴**重抄一遍**再往下写，所以先剥掉重复的前缀；
+    剥不掉（重复得比 window 还长）也照样接上 —— 宁可多一句重复，也不要丢内容。
+    """
+    more = (more or "").lstrip()
+    if not more:
+        return head
+    for n in range(min(window, len(more)), 7, -1):
+        if head.endswith(more[:n]):
+            more = more[n:].lstrip()
+            break
+    return head + more
+
+
+def _call_llm(system_prompt: str, user_content: str,
+              api_key: str = DEFAULT_KEY, max_tokens: int = 100,
+              timeout: int = 30, model: str = None,
+              extend: bool = False, max_rounds: int = 3) -> str:
+    """全部提示词的唯一出口：分群人设在这里注入 + （可选）**截断自动续写**。
+
+    `extend=True`：被 `max_tokens` 掐断时自动再要一段接上，最多 `max_rounds` 段。
+    长文（发骚/场景这类"写正文"的）都该开；短句（算命/问候/巡查）不用。
+    """
+    try:
+        import personas
+        system_prompt = personas.apply_persona(system_prompt)
+    except Exception:
+        pass
+    text, finish = _call_llm_raw(system_prompt, user_content, api_key,
+                                 max_tokens, timeout, model)
+    if not (extend and text and finish == "length"):
+        return text
+    for _ in range(max(0, int(max_rounds) - 1)):
+        cont = (user_content + "\n\n【已经写好的部分（不要重复，接着它往下写）】\n"
+                + text[-1200:] + CONTINUE_HINT)
+        more, finish = _call_llm_raw(system_prompt, cont, api_key,
+                                     max_tokens, timeout, model)
+        if not more:
+            break
+        text = _join_continuation(text, more)
+        if finish != "length":
+            break
+    return text
 
 
 def generate_reply(messages: list[dict], api_key: str = DEFAULT_KEY,
@@ -888,9 +944,19 @@ def generate_devil_roast(context_text: str, target_text: str = "", api_key: str 
     return _call_llm(prompt, content, api_key, max_tokens=200)
 
 
-def generate_scene(combo_text: str, api_key: str = DEFAULT_KEY) -> str:
+# P12-W（2026-09-27，屋主："妹子群发骚有截断""上班群发骚内容太少"）：
+# 发骚/场景这一族的正文长度上限从 700 提到 1800，并且**被截断就自动续写**
+# （`extend=True`）。700 的实测后果：认证群有一段正文停在「往裳手心里」。
+# 上限本身可调（tuning `scene.max_tokens`），调用方按群传进来。
+SCENE_MAX_TOKENS = 1800
+SCENE_TIMEOUT = 90
+
+
+def generate_scene(combo_text: str, api_key: str = DEFAULT_KEY,
+                   max_tokens: int = SCENE_MAX_TOKENS) -> str:
     """涩涩骰子：生成情境描写."""
-    return _call_llm(SCENE_PROMPT, combo_text, api_key, max_tokens=700, timeout=60)
+    return _call_llm(SCENE_PROMPT, combo_text, api_key,
+                     max_tokens=max_tokens, timeout=SCENE_TIMEOUT, extend=True)
 
 
 def generate_xp(profile_text: str, api_key: str = DEFAULT_KEY) -> str:
@@ -906,29 +972,36 @@ def generate_insult_continue(material_text: str, last_output: str, custom: str =
     return _call_llm(INSULT_CONTINUE_PROMPT, content, api_key, max_tokens=600)
 
 
-def generate_scene_continue(combo_text: str, history: list, custom: str = "", api_key: str = DEFAULT_KEY) -> str:
+def generate_scene_continue(combo_text: str, history: list, custom: str = "",
+                            api_key: str = DEFAULT_KEY,
+                            max_tokens: int = SCENE_MAX_TOKENS) -> str:
     """继续涩涩场景：场景信息 + 最近几段已写内容 + 可选自定义方向."""
     hist_text = "\n\n".join(history[-8:])  # 最近 8 段，长剧情更连贯
     content = "场景信息：\n" + combo_text + "\n\n已写内容（最近几段，接着写）：\n" + hist_text
     if custom:
         content += "\n\n用户指定续写方向（务必照此描写）：" + custom
-    return _call_llm(SCENE_CONTINUE_PROMPT, content, api_key, max_tokens=700, timeout=60)
+    return _call_llm(SCENE_CONTINUE_PROMPT, content, api_key,
+                     max_tokens=max_tokens, timeout=SCENE_TIMEOUT, extend=True)
 
 
 def generate_scene_end(full_name: str, history: list, api_key: str = DEFAULT_KEY) -> str:
     """发骚结束收尾小结."""
     hist_text = "\n\n".join(history[-3:])
     content = "主角：\n" + full_name + "\n\n已写内容：\n" + hist_text
-    return _call_llm(SCENE_END_PROMPT, content, api_key, max_tokens=200, timeout=60)
+    return _call_llm(SCENE_END_PROMPT, content, api_key,
+                     max_tokens=400, timeout=SCENE_TIMEOUT, extend=True)
 
 
-def generate_scene_rewrite(combo_text: str, prev_history: list, last_output: str, direction: str = "", api_key: str = DEFAULT_KEY) -> str:
+def generate_scene_rewrite(combo_text: str, prev_history: list, last_output: str,
+                           direction: str = "", api_key: str = DEFAULT_KEY,
+                           max_tokens: int = SCENE_MAX_TOKENS) -> str:
     """重写发骚的上一段（替换 history 最后一段）."""
     prev_text = "\n\n".join(prev_history[-2:]) if prev_history else "（这是第一段，没有前文）"
     content = "场景信息：\n" + combo_text + "\n\n前文（要接上，保持连贯）：\n" + prev_text + "\n\n上一段（用户不满意、要重写这段）：\n" + last_output
     if direction:
         content += "\n\n用户调整方向（务必照此重写）：" + direction
-    return _call_llm(SCENE_REWRITE_PROMPT, content, api_key, max_tokens=700, timeout=60)
+    return _call_llm(SCENE_REWRITE_PROMPT, content, api_key,
+                     max_tokens=max_tokens, timeout=SCENE_TIMEOUT, extend=True)
 
 
 def generate_diaojiao(target_text: str, command: str, api_key: str = DEFAULT_KEY) -> str:

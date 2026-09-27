@@ -191,7 +191,9 @@ def scene(cmd: str) -> str:
     if profile_ctx and not custom:
         ai_input += "\n主角资料（贴合人设描写，只描写主角本人，不增加其他人物）：\n" + "\n".join(profile_ctx)
     try:
-        text = generate_scene(ai_input)
+        text = generate_scene(ai_input,
+                              max_tokens=int(_tune("scene.max_tokens",
+                                                   ctx.get_active_cid())))
     except Exception:
         text = ""
     text = (text or "").strip()

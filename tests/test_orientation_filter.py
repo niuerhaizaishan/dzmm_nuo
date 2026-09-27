@@ -144,7 +144,8 @@ def test_scene_allows_female_target_by_default(monkeypatch, ruojin_ctx):
     monkeypatch.setattr(fasao, "_parse_scene_target", lambda t: ("u-f", "阿雅", []))
     monkeypatch.setattr(fasao, "_gender_of", lambda uid, cid=None, **kw: "女生")
     monkeypatch.setattr(fasao, "_pick_combo_by_xp", lambda xp: ("场景", "体位", "附加"))
-    monkeypatch.setattr(fasao, "generate_scene", lambda s: "（桩场景）")
+    monkeypatch.setattr(fasao, "generate_scene",
+                        lambda s, **kw: "（桩场景）")
     monkeypatch.setattr(fasao, "_set_last_action", lambda *a, **kw: None)
     monkeypatch.setattr(fasao, "_set_fasao_state", lambda *a, **kw: None)
     monkeypatch.setattr(fasao, "_add_heat", lambda *a, **kw: None)
@@ -171,7 +172,8 @@ def test_scene_allows_male_target(monkeypatch, ruojin_ctx):
     monkeypatch.setattr(fasao, "_parse_scene_target", lambda t: ("u-m", "小张", []))
     monkeypatch.setattr(fasao, "_gender_of", lambda uid, cid=None, **kw: "男生")
     monkeypatch.setattr(fasao, "_pick_combo_by_xp", lambda xp: ("场景", "体位", "附加"))
-    monkeypatch.setattr(fasao, "generate_scene", lambda s: "（桩场景）")
+    monkeypatch.setattr(fasao, "generate_scene",
+                        lambda s, **kw: "（桩场景）")
     monkeypatch.setattr(fasao, "_set_last_action", lambda *a, **kw: None)
     monkeypatch.setattr(fasao, "_set_fasao_state", lambda *a, **kw: None)
     monkeypatch.setattr(fasao, "_add_heat", lambda *a, **kw: None)

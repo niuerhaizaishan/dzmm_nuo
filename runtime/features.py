@@ -110,6 +110,10 @@ _FEATURES_RAW = (
             params=(
                 Param("scene.timeout", "无互动超时", 900, "秒", 60, 7200,
                       note="多久没人接就自动结束（防状态卡死）"),
+                Param("scene.max_tokens", "正文长度上限", 1800, "token", 300, 4000,
+                      note="原先写死 700，实测会把正文掐在半句话上"
+                           "（2026-09-27 屋主报「发骚有截断/内容太少」）；"
+                           "被截断时还会自动续写接上"),
             )),
     Feature("scene_continue", "场景续写", "game"),
     Feature("scene_rewrite", "场景重写", "game"),

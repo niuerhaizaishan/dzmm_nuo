@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import bot  # noqa: E402
+import brains  # noqa: E402
 from runtime import tuning as T  # noqa: E402
 
 import runtime.fasao as fasao  # noqa: E402
@@ -59,6 +60,8 @@ def test_defaults_match_the_code_constants():
         ("heat.story_protagonist", heat.HEAT_STORY_PROTAGONIST),
         # 超时（原先是散在各处的字面量，这里把值钉住）
         ("scene.timeout", 15 * 60),
+        # 发骚正文长度上限（2026-09-27 屋主："有截断""内容太少" → 700 → 1800）
+        ("scene.max_tokens", brains.SCENE_MAX_TOKENS),
         ("diaojiao.timeout", 300),
         ("diaojiao.idle_seconds", 30),
         ("dice.timeout", bot.DICE_TIMEOUT_SEC),
