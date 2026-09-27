@@ -31,7 +31,11 @@ DEFAULT_BURST = 15
 COOLDOWN_SEC = 60.0
 CAPTCHA_COOLDOWN_SEC = 300.0
 DEFAULT_WAIT_TIMEOUT = 10.0
-
+# ⚠️ 冷却期的等待上限（P12-J 从 10 秒降到 2 秒）。
+# 冷却期里 `acquire` 是**睡**的，而这个值就是每次平台调用最多睡多久 ⇒
+# 一条普通回复要调两三次平台 = 20~30 秒，用户看到的是"机器人不回复"。
+# 2 秒足够让令牌桶喘口气，又不至于把回复拖到分钟级。
+COOLDOWN_WAIT_TIMEOUT = 2.0
 # 限流/风控信号（大小写不敏感的子串）
 THROTTLE_MARKERS = ("请稍后再试", "请勿发送重复", "过于频繁", "操作频繁",
                     "too many requests", "rate limit", "429")
@@ -144,12 +148,13 @@ def acquire(reason: str = "", cost: float = 1.0, priority: int = 1,
     try:
         deadline = time.monotonic() + max(0.0, timeout)
 
-        # 1) 冷却期先等
+        # 1) 冷却期先等（**用更短的上限**：冷却里睡 10 秒会把回复拖成分钟级）
         cd = cooldown_remaining()
         if cd > 0:
             _bump("cooldown_waits")
             waited = True
-            time.sleep(min(cd, max(0.0, deadline - time.monotonic())))
+            time.sleep(min(cd, COOLDOWN_WAIT_TIMEOUT,
+                           max(0.0, deadline - time.monotonic())))
 
         # 2) 令牌桶
         b = _bucket()

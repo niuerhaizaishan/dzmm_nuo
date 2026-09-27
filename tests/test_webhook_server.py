@@ -253,6 +253,53 @@ def test_sio_subscriber_dedupe_window_is_bounded():
     assert len(sub._seen_ids) == before
 
 
+def test_successful_message_read_does_not_arm_captcha_cooldown():
+    """P12-J 真事故（影响最大的一条）：`dzmm.api()` 过去对**每个**响应都扫
+    "限流/验证码"标记，而 `chatroom.getMessages` 的 body 是**一整页群消息** ——
+    群里任何人（包括机器人自己那条"平台风控中"的公告）说到「验证码/风控」，
+    就会把全局冷却拉满 300 秒；冷却期里每次平台调用又 sleep 10 秒
+    ⇒ 一条普通回复要 70 秒以上，表现出来就是"机器人不回复了"。
+
+    现在只在**出错**的响应上扫标记。这条测试就是钉住它。
+    """
+    import dzmm
+    import runtime.throttle as T
+
+    class _Resp:
+        def __init__(self, body, status=200):
+            self._body = body
+            self.status_code = status
+            self.text = body if isinstance(body, str) else json.dumps(body,
+                                                                      ensure_ascii=False)
+
+        def json(self):
+            if isinstance(self._body, str):
+                raise ValueError("not json")
+            return self._body
+
+    T.reset()
+    # 直接调 note_response 时它仍会命中（它只认文本）—— 所以**关键是 api() 的调用条件**：
+    src = __import__("inspect").getsource(dzmm.api)
+    assert "if status != 200 or has_err or data is None:" in src
+    assert "_note_resp(resp, path=path)" in src
+    assert T.cooldown_remaining() == 0.0, "成功响应不该留下冷却"
+
+    # ③ 错误响应仍然会命中（别把真验证码也放过）
+    T.reset()
+    bad = _Resp({"error": {"json": {"message": "captcha_required"}}})
+    T.note_response(bad)
+    assert T.cooldown_remaining() > 0, "真验证码必须仍然触发冷却"
+    T.reset()
+
+
+def test_cooldown_wait_is_short():
+    """冷却期等待上限必须短（10 秒会把回复拖成分钟级）。"""
+    import runtime.throttle as T
+    assert T.COOLDOWN_WAIT_TIMEOUT <= 3.0
+    src = __import__("inspect").getsource(T.acquire)
+    assert "COOLDOWN_WAIT_TIMEOUT" in src
+
+
 def test_run_all_passes_bot_specs_not_identity_dicts():
     """源码级钉住：`_run_all` 必须传 `_CFG.bots`（带 token_env）。"""
     import bot as B

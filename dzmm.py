@@ -40,10 +40,22 @@ def api(path: str, inp: dict, cookies: dict | None = None,
     url = ORIGIN + "/api/trpc/" + path + "?input=" + q
     _throttle("trpc:" + path)                  # P5.2：令牌桶（失败开放，绝不阻塞）
     resp = requests.get(url, cookies=cookies, timeout=timeout, proxies=PROXIES)
-    # 先看响应再解析：限流/验证码信号可能就在 body 里，非 JSON 响应也要能识别
-    _note_resp(resp, path=path)                # P5.2：命中则进入全局冷却
-    data = resp.json()
-    if isinstance(data, dict) and "error" in data:
+    status = getattr(resp, "status_code", 0)
+    try:
+        data = resp.json()
+    except Exception:
+        data = None
+    has_err = isinstance(data, dict) and "error" in data
+    # ⚠️ 只在**出错**的响应上找"限流/验证码"标记（P12-J 修）。
+    # 以前对每个响应都扫全文，而 `chatroom.getMessages` 的 body 是**一整页群消息** ——
+    # 于是群里任何人（包括机器人自己那条"平台风控中"的群公告）说到「验证码/风控」
+    # 就会把全局冷却拉满 300 秒，冷却期里每次平台调用又 sleep 10 秒
+    # ⇒ 一条普通回复要 70 秒以上，表现出来就是"机器人不回复了"。
+    if status != 200 or has_err or data is None:
+        _note_resp(resp, path=path)            # P5.2：命中则进入全局冷却
+    if data is None:
+        raise RuntimeError("tRPC " + path + ": 响应不是 JSON（HTTP {}）".format(status))
+    if has_err:
         msg = data["error"].get("json", {}).get("message", str(data["error"])) if isinstance(data.get("error"), dict) else str(data.get("error"))
         raise RuntimeError("tRPC " + path + ": " + msg)
     return data.get("result", {}).get("data", {}).get("json", {})
@@ -165,9 +177,18 @@ def remove_member(chatroom_id: str, member_id: str, cookies: dict | None = None)
                          json={"json": {"chatroomId": chatroom_id, "memberId": member_id}},
                          headers={"Content-Type": "application/json",
                                   "Origin": ORIGIN, "Referer": ORIGIN + "/"})
-    _note_resp(resp, path="groupChat.removeMember")
-    data = resp.json()
-    if isinstance(data, dict) and data.get("error"):
+    try:
+        data = resp.json()
+    except Exception:
+        data = None
+    # 同 api()：只在出错响应上找标记（成功响应里可能是别的内容）
+    if getattr(resp, "status_code", 0) != 200 or not isinstance(data, dict) \
+            or data.get("error"):
+        _note_resp(resp, path="groupChat.removeMember")
+    if not isinstance(data, dict):
+        raise RuntimeError("removeMember: 响应不是 JSON（HTTP {}）".format(
+            getattr(resp, "status_code", 0)))
+    if data.get("error"):
         msg = data["error"].get("json", {}).get("message", str(data["error"]))
         raise RuntimeError("removeMember: " + msg)
     return True
