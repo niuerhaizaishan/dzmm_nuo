@@ -215,7 +215,7 @@ def test_transcript_has_time_and_day_separators(tea):
 
 
 def test_recap_output_budget_was_raised(monkeypatch):
-    """输入变全了，输出也要有地方写（400 → 800 token）。"""
+    """输入变全了、格式也改成多行了，输出也要有地方写（400 → 800 → **1200**）。"""
     seen = {}
 
     def spy(_sp, _uc, _key=None, max_tokens=None, **kw):
@@ -224,7 +224,93 @@ def test_recap_output_budget_was_raised(monkeypatch):
 
     monkeypatch.setattr(brains, "_call_llm", spy)
     brains.generate_recap("转录", "紫苑", "最近 3 小时", "无")
-    assert seen["max_tokens"] == 800
+    assert seen["max_tokens"] == 1200
+
+
+# ---------------------------------------------------------------- ⑤ 内容更丰富
+
+def test_recap_prompt_asks_for_multi_line_sections():
+    """屋主 2026-09-29："内容要再丰富完善一些，有些单薄"。
+
+    旧提示词硬性要求"只输出 3 行、每行 35/25/20 字" —— 满打满算 80~140 字，
+    内容必然单薄。现在改成三段、段内每条一行（每段 2~3 条）。
+    """
+    import brains
+    p = brains.RECAP_PROMPT
+    assert "只输出 **3 行**" not in p, "旧的'只输出三行'必须撤掉"
+    assert "每段 2~3 条" in p
+    assert "· <一条一个要点" in p
+    assert "总共 6~9 行" in p
+    # 每段要写什么，要具体到"谁和谁、结论或分歧"
+    assert "谁和谁、聊了什么、聊出什么结论或分歧" in p
+    assert "带上他的原话" in p
+
+
+def test_recap_parser_keeps_every_line_of_a_section(monkeypatch):
+    """解析器原来每段只留**最后一行**（`body[k] = s`）—— 多写也被丢掉。"""
+    raw = ("💬 大家在聊：\n"
+           "· 糯糯和橘先生在接龙唱山歌，越唱越起劲\n"
+           "· 珍妮接了一句花歌，把场子接住了\n"
+           "🎭 群里的事：\n"
+           "· 09:20 投票结果出来了，09:30 演《公园》\n"
+           "· 黑瞳进群了\n"
+           "📌 等你回：\n"
+           "· 破坏菌早上喊了你一声「紫苑姐」\n")
+    body = RC._parse_recap_sections(raw)
+    assert len(body["💬"]) == 2 and len(body["🎭"]) == 2 and len(body["📌"]) == 1
+    assert body["💬"][0].startswith("糯糯和橘先生")
+    assert "大家在聊" not in " ".join(body["💬"]), "标题行不能被当成内容"
+
+
+def test_recap_parser_accepts_inline_and_dash_styles():
+    """模型可能写成「💬 大家在聊：糯糯在唱歌」或 `- xxx`，都要认。"""
+    raw = ("💬 大家在聊：糯糯在唱歌\n"
+           "- 橘先生接了下一句\n"
+           "🎭 群里的事: 黑瞳进群了\n")
+    body = RC._parse_recap_sections(raw)
+    assert body["💬"] == ["糯糯在唱歌", "橘先生接了下一句"]
+    assert body["🎭"] == ["黑瞳进群了"]
+
+
+def test_recap_line_cap_fits_the_rich_format():
+    """屋主现场："📌 等你回" 整段消失 —— 真凶是收尾那句 `lines[:10]`。
+
+    新格式正常输出 2 + 3×(1 标题 + 2~3 条) = 11~14 行，旧上限 10 会把最后一段切掉。
+    """
+    src = (ROOT / "runtime" / "recap.py").read_text(encoding="utf-8")
+    ret = [ln.strip() for ln in src.splitlines()
+           if ln.strip().startswith('return "\\n".join(lines[')]
+    assert ret, "找不到返回处"
+    assert "lines[:10]" not in ret[0], "旧的 10 行上限必须撤掉：{}".format(ret[0])
+    cap = int(ret[0].split("lines[:")[1].split("]")[0])
+    assert cap >= 20, "上限要放得下 头2行 + 3段×(1标题+5条)：当前 {}".format(cap)
+
+
+def test_recap_never_drops_the_waiting_section():
+    """模型漏写「📌 等你回」时，代码要用已知事实补一条（实测 2026-09-29 就漏过）。
+
+    补的内容只能来自 `hits`（谁提到过他），不许让模型编 —— 所以这段逻辑必须在
+    `recap_absent` 里，且引用 `hits`/`who`/`sample`。
+    """
+    src = (ROOT / "runtime" / "recap.py").read_text(encoding="utf-8")
+    i = src.index("📌 那段**不准缺席**")
+    seg = src[i:i + 600]
+    assert 'body["📌"]' in seg
+    assert "hits" in seg and "没人等你，安心潜水吧" in seg
+
+
+def test_recap_prompt_says_all_three_sections_are_mandatory():
+    import brains
+    assert "三段都必须写" in brains.RECAP_PROMPT or "每段都要写" in brains.RECAP_PROMPT
+
+
+def test_recap_assembles_multi_line_sections():
+    """拼装：补回固定标题 + `· ` 前缀，段内多条都要出现。"""
+    src = (ROOT / "runtime" / "recap.py").read_text(encoding="utf-8")
+    assert "_parse_recap_sections(raw)" in src, "recap_absent 要用这个解析器"
+    assert "_SECTION_TITLE" in src
+    assert '"{} {}："' in src, "要按段补标题"
+    assert 'lines.append("· " + r' in src, "要按条补 `· ` 前缀"
 
 
 # ---------------------------------------------------------------- ④ 斜杠闸门

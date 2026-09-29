@@ -158,9 +158,9 @@ _SPECS = [
         max_newlines=0, max_chars=400,
         sample_user="7 天分数：60,70,80,55,90,88,72 均值 73 最高 90 最低 55"),
     _c2("RECAP_PROMPT", "缺勤回顾",
-        "固定三行，每行以 💬 / 🎭 / 📌 开头",
-        must_keep=("💬", "🎭", "📌"),
-        max_newlines=2, sample_user="提问的人：小糯\n群里聊了打本和晚饭"),
+        "三段（💬/🎭/📌），段内每条一行以「· 」开头，每段 2~3 条",
+        must_keep=("💬", "🎭", "📌", "· "),
+        max_newlines=14, sample_user="提问的人：小糯\n群里聊了打本和晚饭"),
     _c2("STORY_END_PROMPT", "剧情结局",
         "8 行以内的收尾，不带选项",
         must_keep=("8 行",),
@@ -369,7 +369,9 @@ def run_selftest(key: str, llm=None, text=None, user=None) -> dict:
             pass
     issues = []
     try:
-        reply = llm(system, user, max_tokens=400, timeout=45) or ""
+        # 400 → 800（P12-AM）：这条是"按提示词真调一次、看形状对不对"的体检。
+        # recap 这类长输出的提示词，400 token 会在体检里被截断，然后误报"换行数不对"。
+        reply = llm(system, user, max_tokens=800, timeout=45) or ""
     except Exception as e:                                      # noqa: BLE001
         return {"ok": False, "skipped": False, "reply": "",
                 "issues": ["调用失败：{}".format(str(e)[:200])], "shape": {}}

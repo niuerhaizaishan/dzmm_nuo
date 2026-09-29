@@ -41,6 +41,10 @@ MIN_WINDOW_SEC = 300                # 起点距现在不足 5 分钟 ⇒ 认为�
                                     #   就是提问自己 —— 见 `_recap_window` 里的说明）
 
 
+# 三段的固定标题（解析时重建，不让模型自由发挥标题）
+_SECTION_TITLE = {"💬": "大家在聊", "🎭": "群里的事", "📌": "等你回"}
+
+
 def is_recap_cmd(cmd: str):
     """识别 /我不在 /补课 /错过 指令，返回窗口描述（可为空串）；None = 不是."""
     for p in ["/我不在", "/补课", "/错过了什么", "/错过"]:
@@ -299,6 +303,45 @@ def _recap_transcript(msgs: list, cid: str = None) -> tuple:
     return ("\n".join(lines), n_msg)
 
 
+def _parse_recap_sections(raw: str) -> dict:
+    """把模型输出解析成 `{💬: [条, …], 🎭: […], 📌: […]}`（P12-AM）。
+
+    为什么要单独一个函数：老实现是 `body[k] = s` —— **每段只留最后一行**，
+    而新提示词要求"段内每条一行、每段 2~3 条"，多写会被静默丢掉（屋主反馈"内容单薄"
+    就是这么来的）。抽成函数后可以直接测。
+
+    两种行都认：
+      · 标题行 `💬 大家在聊：` —— 只认它的 emoji，**标题本身不算内容**（下面会重建标题）
+      · 内容行 `· 糯糯和橘先生在接龙唱山歌`（`·`/`-`/`•`/`*` 都认，没有前缀也认）
+    """
+    body, cur = {}, None
+    for ln in str(raw or "").split("\n"):
+        s = ln.strip()
+        if not s:
+            continue
+        hit = next((k for k in ("💬", "🎭", "📌") if s.startswith(k)), None)
+        if hit:
+            cur = hit
+            body.setdefault(cur, [])
+            rest = s[len(hit):].strip().lstrip("：:").strip()
+            if not rest:
+                continue
+            head = re.split(r"[：:]", rest)[0].strip()
+            if ("：" in rest or ":" in rest or head == _SECTION_TITLE.get(hit)) \
+                    and len(head) <= 8:
+                # 「💬 大家在聊：」这类**只有标题**的行 → 冒号后面的才算内容
+                after = rest[len(head):].lstrip("：: ").strip()
+                if after:
+                    body[cur].append(after)
+                continue
+            body[cur].append(rest)
+        elif cur:
+            rest = s.lstrip("·-•*・ ").strip()
+            if rest:
+                body[cur].append(rest)
+    return body
+
+
 async def recap_absent(cid: str, uid: str, text: str = "",
                        exclude_mid: str = None) -> str:
     """「我不在的时候群里发生了什么」——返回 ≤10 行的回顾.
@@ -364,19 +407,32 @@ async def recap_absent(cid: str, uid: str, text: str = "",
     except Exception as e:
         log("回顾生成失败: " + str(e)[:60])
         raw = ""
-    body = {}
-    for ln in str(raw or "").split("\n"):
-        s = ln.strip()
-        for k in ("💬", "🎭", "📌"):
-            if s.startswith(k):
-                body[k] = s
+    # P12-AM（屋主 2026-09-29："内容要再丰富完善一些，有些单薄"）：
+    # 原来是"每段只保留**最后一行**"（`body[k] = s`）—— 而提示词又硬性要求"只输出 3 行、
+    # 每行 35/25/20 字"，加起来才 80~140 字，内容自然单薄。
+    # 现在：提示词改成"三段、段内每条一行以 `· ` 开头（每段 2~3 条）"，
+    # 解析交给 `_parse_recap_sections()` **按段累积**。
+    body = _parse_recap_sections(raw)
+    # 📌 那段**不准缺席**：模型偶尔会漏写（2026-09-29 实测：只给了 💬/🎭 两段，
+    # 于是"等你回"整段消失，用户看到的就是残缺）。缺了就用**代码已知的事实**补一条
+    # —— 内容来自 `hits`（谁提到过他），不让模型编。
+    if not [r for r in (body.get("📌") or []) if r]:
+        if hits:
+            body["📌"] = ["、".join(who) + " 提到你 " + str(hits) + " 次"
+                          + ("，比如「" + sample + "」" if sample else "")]
+        else:
+            body["📌"] = ["没人等你，安心潜水吧"]
     lines = ["📮 你不在的时候（" + win_txt + "，群里 " + str(total) + " 条"
              + ("，这里挑最近 " + str(n_shown) + " 条看" if total > n_shown else "") + "）",
              bell]
     for k in ("💬", "🎭", "📌"):
-        if body.get(k):
-            lines.append(body[k])
-    if len(lines) < 3:
+        rows = [r for r in (body.get(k) or []) if r][:5]
+        if not rows:
+            continue
+        lines.append("{} {}：".format(k, _SECTION_TITLE[k]))
+        for r in rows:
+            lines.append("· " + r.replace("\n", " "))
+    if not any(body.get(k) for k in ("💬", "🎭", "📌")):
         lines.append("（群里挺热闹的，但" + _pme(cid) + "没提炼出什么重点，要不你再问细一点？）")
     # 记录冷却
     try:
@@ -391,4 +447,9 @@ async def recap_absent(cid: str, uid: str, text: str = "",
         pass
     log("📮 [" + cid[:8] + "] 回顾: " + get_name(uid)[:12] + " 窗口 " + win_txt
         + " 共 " + str(total) + " 条，提及 " + str(hits) + " 次")
-    return "\n".join(lines[:10])
+    # ⚠️ P12-AM：这里原来是 `lines[:10]`（旧格式总共才 5 行，10 行上限没问题）。
+    # 改成"三段、段内 2~3 条"之后，正常输出就是 2 + 3×(1+3) = 14 行 ——
+    # **最后一段被这行沉默截掉**（2026-09-29 实测：📌 等你回 整段消失，
+    # 工具还报"段落不全"）。上限按新格式的极端情况给足：
+    # 头 2 行 + 3 段 × (1 标题 + 5 条) = 20 行。
+    return "\n".join(lines[:20])
