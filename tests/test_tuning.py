@@ -110,6 +110,9 @@ def test_defaults_match_the_code_constants():
         ("recap.cooldown", recap.RECAP_COOLDOWN),
         ("recap.max_msgs", recap.RECAP_MAX_MSGS),
         ("recap.max_hours", recap.RECAP_MAX_HOURS),
+        # P12-AK：默认回退窗口（原来在 recap.py 里写死 6 小时）+ 要忽略的内容关键词
+        ("recap.default_hours", 6),
+        ("recap.ignore_kw", ""),
     ]
     wrong = [(k, T.get(k), ref) for k, ref in pairs if T.get(k) != ref]
     assert not wrong, "参数默认值与原常量不一致：{}".format(wrong)

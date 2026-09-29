@@ -1,4 +1,4 @@
-"""功能注册表（P12-A）：**66 个功能的声明式清单** + 唯一的开关判定点 + 状态复位。
+"""功能注册表（P12-A）：**67 个功能的声明式清单** + 唯一的开关判定点 + 状态复位。
 
 ### 为什么要有这个模块
 
@@ -192,6 +192,13 @@ _FEATURES_RAW = (
     # 默认**关**＝今天的行为（只有 @ 才答）；要在哪个群用，按群把开关打开。
     Feature("quote_reply", "别人引用回复我也接话", "people", default=False,
             note="关＝只有 @ 才答（今天的行为）；开＝别人右键回复我的消息也答"),
+    # P12-AK（2026-09-29 屋主）：顶层茶水间那种"群里还跑着别家 bot 的游戏"的群。
+    # 群友发的 `/开始摸鱼躲藏`、`/记忆考核`、`/答案 xxx`、`/继续` 全是**别家 bot 的语法**；
+    # 我们一接进这种群，主循环会把它们当成"给我的指令"，走到兜底就回一句"这个我不会" ——
+    # 779 人的群里每条游戏指令都回一句，是灾难。
+    # 关掉它 = 这个群**不接任何 `/` 指令**（只留 @ 问答那条路）。默认开＝今天的行为。
+    Feature("slash_cmds", "接群内斜杠指令", "people",
+            note="关＝这个群的 /xxx 一律不理（让给别家 bot）；开＝照旧处理"),
 
     # ---- B. 公演与内容生成（12）
     Feature("perf", "公演", "content", resets=("perf",),
@@ -216,6 +223,18 @@ _FEATURES_RAW = (
         Param("recap.cooldown", "同窗口冷却", 30, "秒", 0, 3600),
         Param("recap.max_msgs", "喂给 AI 的条数", 400, "条", 20, 1000),
         Param("recap.max_hours", "回溯窗口上限", 48, "小时", 1, 168),
+        # P12-AK：问"我不在的时候发生了什么"却没指定时间段时的回退窗口。
+        # 原来是写死的 6 小时（`runtime/recap.py`），现在按群可调 ——
+        # 有的群一小时几百条，6 小时的转录能把提示词塞满。
+        Param("recap.default_hours", "默认窗口", 6, "小时", 1, 48,
+              note="没写时间段时回看多久；群越热闹越该调小"),
+        # P12-AK：recap 要**忽略的内容**关键词（逗号分隔，空 = 不过滤）。
+        # 用途：群里跑着别家 bot 的游戏（打卡 / 摸鱼躲藏 / 记忆考核…），那些
+        # "XX，躲猫猫开始…""第 3 级通过…""恭喜 XX 完成第 5 级记忆考核" 全是噪音，
+        # 实测能占到窗口内消息的 **39%**（2026-09-29 顶层茶水间取样）。
+        # 按群配（`cid|recap.ignore_kw`），所以只影响配了的那个群。
+        Param("recap.ignore_kw", "忽略的内容关键词", "", "",
+              note="逗号分隔；命中即不进转录、也不算『有人找你』"),
     )),
     Feature("summary", "群聊总结", "content",
             note="判定是子串匹配且很宽（含「情况/记录/发生/讨论/整理」），"
@@ -319,7 +338,7 @@ _WIRED = (
     "scene_rewrite", "scene_end", "diaojiao", "help", "memory_remember",
     "memory_recall", "devil_roast", "intro", "sync", "register", "query",
     "trend", "rank_heat", "recap", "summary", "fortune", "poem", "insult", "chat",
-    "quote_reply",
+    "quote_reply", "slash_cmds",
     # --- 第三批（房间玩法 / 入群筛查 / @消息子功能 / 告警 / 自动触发）---
     "room_welcome", "room_refuse", "room_order", "room_flower", "room_ghost",
     "room_lewd", "room_owner_cmd", "horoscope",

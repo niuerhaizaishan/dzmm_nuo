@@ -65,7 +65,7 @@ def _declared_tables():
 
 # ---------------------------------------------------------------- 1. 注册表自洽
 
-def test_registry_has_66_features():
+def test_registry_has_67_features():
     """65 → 64：`rewrite`（改写档案）经核实**没有真实触发**（`is_rewrite_cmd`
     只服务场景重写，已被 `scene_rewrite` 覆盖），按注册表自己的规矩删掉了。
 
@@ -76,9 +76,14 @@ def test_registry_has_66_features():
     65 → 66（P12-AE，2026-09-27）：新增 `quote_reply`（别人右键回复我也接话）——
     与 `chat` 不同，它是**新增的触入口**，加进来就会改变今天的行为，
     所以 default=False（见 `test_only_the_deliberate_exception_may_default_off`）。
+
+    66 → 67（P12-AK，2026-09-29）：新增 `slash_cmds`（接群内斜杠指令）——
+    有些群（如顶层茶水间）里跑着**别家 bot 的游戏**，群友的 `/开始摸鱼躲藏`
+    会被我们当成指令、走到兜底回一句"这个我不会"。关掉它＝这个群不接 `/` 指令。
+    默认开＝今天的行为，不违反下面那条"默认必须等于今天"。
     """
-    assert len(F.FEATURES) == 66
-    assert len(set(F.keys())) == 66, "key 必须唯一"
+    assert len(F.FEATURES) == 67
+    assert len(set(F.keys())) == 67, "key 必须唯一"
 
 
 def test_every_feature_is_well_formed():
@@ -95,10 +100,11 @@ def test_category_counts_match_the_plan():
     """与 docs/功能与人设配置方案.md §9.1 的分组数量对齐。
 
     people 少 1 = 删掉 `rewrite`；people 多 1 = P12-AC 新增 `chat`（@ 问答回复）；
-    people 再多 1 = P12-AE 新增 `quote_reply`（引用回复也接话）。
+    people 再多 1 = P12-AE 新增 `quote_reply`（引用回复也接话）；
+    people 再多 1 = P12-AK 新增 `slash_cmds`（接群内斜杠指令的闸门）。
     """
     got = {c: len(v) for c, v in F.by_category().items()}
-    assert got == {"game": 15, "content": 12, "people": 12, "screen": 7,
+    assert got == {"game": 15, "content": 12, "people": 13, "screen": 7,
                    "schedule": 9, "room": 7, "alert": 4}
 
 

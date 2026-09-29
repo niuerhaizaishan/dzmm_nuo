@@ -3117,6 +3117,12 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             continue  # 跳过 bot 自己的消息，避免 self-echo
                         t = (m.get("content") or {}).get("text", "").strip()
                         if t.startswith("/"):
+                            # P12-AK：这个群不接 `/` 指令（顶层茶水间那种群里跑着别家 bot 的
+                            # 游戏，`/开始摸鱼躲藏`、`/记忆考核`、`/答案 xxx` 全是它的语法）。
+                            # 不拦的话会走到兜底回一句"这个我不会" —— 779 人的群里就是刷屏。
+                            # 关掉闸门 = 这些消息**完全不理**（只留 @ 问答那条路）。
+                            if not _feat_on(cid, "slash_cmds"):
+                                continue
                             if not cmd:
                                 cmd = t
                                 cmd_sender = m.get("sent_by", "")

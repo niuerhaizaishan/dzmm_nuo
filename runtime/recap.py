@@ -12,6 +12,7 @@ from brains import generate_recap
 from dzmm import get_messages_since
 from personas import me as _pme, p as _pp          # 自称 + 按群人设文案（小小糯/薇丝）
 from runtime.ctx import PRIMARY_CID
+from runtime.features import on as _feat_on   # P12-AK：本群接不接 `/` 指令（决定 /xxx 算不算噪音）
 from runtime.identity import _load_member_names, get_full_name, get_name, is_self
 from runtime.obs import log
 import state_store
@@ -145,7 +146,10 @@ def _recap_window(cid: str, uid: str, text: str):
     since = prev or last
     if since and now - since <= _tune("recap.max_hours", cid) * 3600:
         return (since, now, "")
-    return (now - 6 * 3600, now, "最近 6 小时")
+    # P12-AK：回退窗口按群可调（原来写死 6 小时 —— 热闹的群一小时几百条，
+    # 6 小时的转录能把提示词塞满；顶层茶水间先设 2-3 小时）。
+    h = max(1, int(_tune("recap.default_hours", cid)))
+    return (now - h * 3600, now, "最近 " + str(h) + " 小时")
 
 
 def _day0(dt) -> float:
@@ -166,7 +170,59 @@ def _fmt_ts(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%m-%d %H:%M")
 
 
-def _recap_mentions(msgs: list, uid: str):
+def _ignore_kw(cid: str = None) -> tuple:
+    """本群 recap 要忽略的内容关键词（逗号/顿号/空格分隔，空 = 不过滤）。
+
+    P12-AK：群里常跑着**别家 bot 的游戏** —— 顶层茶水间实测（2026-09-29 取样 100 条）
+    `总监事「bot」` 一人发了 38 条，"XX，躲猫猫开始…""【巡查】…""第 3 级通过…"
+    "恭喜 XX 完成第 5 级记忆考核" 这类占了窗口的 **39%**；群友自己发的
+    `/开始摸鱼躲藏`、`/记忆考核`、`/答案 xxx`、`/继续` 也是同一套噪音。
+    这些内容进了转录只会让 recap 变成"游戏播报"，所以要按群过滤掉。
+    """
+    raw = str(_tune("recap.ignore_kw", cid) or "").strip()
+    if not raw:
+        return ()
+    parts = re.split(r"[,，、;；\s]+", raw)
+    return tuple(p for p in (x.strip() for x in parts) if p)
+
+
+def _is_noise(text: str, kw: tuple, cid: str = None) -> bool:
+    """这条消息算不算要忽略的噪音。
+
+    两类（P12-AK）：
+      1. 命中 `recap.ignore_kw` 关键词（游戏播报："躲猫猫开始…""第 3 级通过…"）；
+      2. **本群不接 `/` 指令**（`slash_cmds` 关）时，`/xxx` 属于**别家 bot 的协议** ——
+         `/躲 6`、`/答案 D4BfI`、`/继续`、`/记忆考核` 这些既不是聊天也不是给我们的指令，
+         留着只会把转录塞满（2026-09-29 实测：过滤后的前 8 行里有 7 行是它们）。
+    """
+    t = text or ""
+    if kw and any(k in t for k in kw):
+        return True
+    if t.startswith("/") and cid and not _feat_on(cid, "slash_cmds"):
+        return True
+    return False
+
+
+def _msg_kind(m: dict) -> str:
+    """非文字消息也给个标记，别在转录里凭空消失（图片/语音/表情/撤回…）。"""
+    c = m.get("content") or {}
+    t = str(c.get("type") or "text")
+    if t == "sticker":
+        return "[表情]"
+    if t in ("image", "photo"):
+        return "[图片]"
+    if t == "audio":
+        return "[语音]"
+    if t == "video":
+        return "[视频]"
+    if t in ("recalled", "recall"):
+        return "[撤回]"
+    if t == "system":
+        return "[系统]"
+    return ""
+
+
+def _recap_mentions(msgs: list, uid: str, kw: tuple = (), cid: str = None):
     """扫窗口内有没有人提到/@他。返回 (次数, 提到他的人名列表, 一句样例)."""
     names = {get_full_name(uid), get_name(uid)}
     names = {n for n in names if n and len(n) >= 2}
@@ -179,6 +235,8 @@ def _recap_mentions(msgs: list, uid: str):
         t = (m.get("content") or {}).get("text", "")
         if not t or "加入了群聊" in t:
             continue  # 入群提示里的名字不算"有人找你"（但仍保留在转录里给 AI 归纳）
+        if _is_noise(t, kw, cid):
+            continue  # P12-AK：游戏播报里的"提到"不算有人找他
         if any(("@" + n) in t or (n in t) or (n[:4] in t and len(n) >= 4) for n in names):
             hits += 1
             nm = get_name(m.get("sent_by", "")) or "有人"
@@ -190,19 +248,41 @@ def _recap_mentions(msgs: list, uid: str):
 
 
 def _recap_transcript(msgs: list, cid: str = None) -> tuple:
-    """消息列表 → 给 AI 的转录文本 + 条数（bot 消息标成本群自称，长文截断）."""
+    """消息列表 → 给 AI 的转录文本 + 条数。
+
+    P12-AK（屋主 2026-09-29："小小糯的**输入内容要丰富完整一些**"）—— 原来这段很瘦，
+    三种信息都在丢：每条**截断到 80/100 字**、**非文字消息直接丢**（图片/语音/表情
+    全没了）、**没有时间**（跨天时模型不知道哪句是几点说的）。现在：
+      · 文本基本不截断（单条封顶 300 字，防一条长文吃掉全部预算）；
+      · 非文字按类型补标记（[图片]/[语音]/[表情]/[撤回]）；
+      · 每条前带时间 `HH:MM`，跨天处插一行日期分隔；
+      · 命中 `recap.ignore_kw` 的噪音（游戏播报/打卡等）不进转录。
+    """
     lines = []
+    n_msg = 0
     _me = _pme(cid)
+    kw = _ignore_kw(cid)
+    last_day = ""
     for m in msgs:
         u = m.get("sent_by", "")
-        t = ((m.get("content") or {}).get("text") or "").strip()
-        if not t:
+        c = m.get("content") or {}
+        t = (c.get("text") or "").strip()
+        if _is_noise(t, kw, cid) or (not t and not _msg_kind(m)):
             continue
-        if is_self(u):
-            lines.append(_me + ": " + t[:100])
+        ts = _msg_ts(m)
+        if ts:
+            day = datetime.fromtimestamp(ts).strftime("%m-%d")
+            if day != last_day:
+                lines.append("— " + day + " —")      # 日期分隔行（不算消息条数）
+                last_day = day
+            stamp = datetime.fromtimestamp(ts).strftime("%H:%M")
         else:
-            lines.append(get_name(u) + ": " + t[:80])
-    return ("\n".join(lines), len(lines))
+            stamp = ""
+        body = t[:300] if t else _msg_kind(m)
+        who = _me if is_self(u) else get_name(u)
+        lines.append("[{}] {}: {}".format(stamp or "--:--", who, body))
+        n_msg += 1
+    return ("\n".join(lines), n_msg)
 
 
 async def recap_absent(cid: str, uid: str, text: str = "") -> str:
@@ -241,8 +321,9 @@ async def recap_absent(cid: str, uid: str, text: str = "") -> str:
     if total == 0:
         return "（翻了翻小本子）" + (wlabel or "你不在的这段时间") + "群里一条消息都没有，安静得像没人～"
     kept = msgs[-int(_tune("recap.max_msgs", cid)):]
+    _kw = _ignore_kw(cid)
     transcript, n_shown = _recap_transcript(kept, cid)
-    hits, who, sample = _recap_mentions(msgs, uid)
+    hits, who, sample = _recap_mentions(msgs, uid, _kw, cid)
     end_show = until if (until and until < time.time() - 60) else time.time()
     if wlabel:
         win_txt = wlabel + " · " + _fmt_ts(since) + " ~ " + _fmt_ts(end_show)

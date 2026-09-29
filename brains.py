@@ -1233,12 +1233,17 @@ RECAP_PROMPT = _p("RECAP_PROMPT", """你是"小小糯～"，群里的软糯小�
 
 def generate_recap(transcript: str, who: str, window_txt: str, mention_txt: str,
                    api_key: str = DEFAULT_KEY) -> str:
-    """生成「你不在的时候群里发生了什么」的三行摘要（💬 / 🎭 / 📌）."""
+    """生成「你不在的时候群里发生了什么」的三行摘要（💬 / 🎭 / 📌）.
+
+    P12-AK：`max_tokens` 400 → 800。转录现在**不再把每条砍到 80 字**（屋主要
+    "输入内容丰富完整一些"），喂进去的信息多了，输出也该有地方写全 ——
+    400 token 大约只够每段一句，容易把"发生了什么"讲成干提纲。
+    """
     content = ("提问的人：" + who + "\n"
                + "离开时段：" + window_txt + "\n"
                + "有人找他/提到他的情况：" + (mention_txt or "无") + "\n\n"
                + "【这段时间的群聊记录】\n" + transcript)
-    return _call_llm(RECAP_PROMPT, content, api_key, max_tokens=400)
+    return _call_llm(RECAP_PROMPT, content, api_key, max_tokens=800)
 
 
 TREND_PROMPT = _p("TREND_PROMPT", """你是"小小糯～"，群里的软糯小秘书。有人在看自己【过去 7 天的运势趋势】，上面已经给好了这 7 天每天的分数、均值、最高/最低日、四维均值、以及有没有凶日。你只负责写【最后一段回顾】。
