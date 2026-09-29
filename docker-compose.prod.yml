@@ -141,6 +141,19 @@ services:
       # 续期失败计数与 emergency 冷却时间戳（原先也没挂，重建即丢）
       - ./renew_fail_state.json:/app/renew_fail_state.json
       - ./renew_emergency_state.json:/app/renew_emergency_state.json
+      # ---- P12-AI（2026-09-27）：浏览器 profile 挂出来，别再"每次重建都冷登录" ----
+      # 症状（屋主报"经常 token 续期失效"）：这些 Playwright 持久化 profile 原先**没挂载**，
+      # 容器一重建（每次 deploy 都会重建）里面就是空的 ⇒ `headless_relogin.py` 没有缓存
+      # 登录态可用，只能重新走一遍**账号密码登录** —— 而那正是最容易被风控/验证码拦下的路径。
+      # 挂上之后重建仍是热登录态，验证码概率大幅下降。
+      #   pw_profile / pw_profile_greet：bot 的常驻群页与问候页（重建后不必重新加载）
+      #   pw_login：登录态缓存（就是上面那条"冷登录"的关键）
+      #   pw_captcha：人工过验证码专用（独立 profile，避免与自动登录互相干扰）
+      # entrypoint 启动前会清掉里面残留的 `Singleton*` 锁，否则新容器的 chromium 会拒绝启动。
+      - ./pw_profile:/app/pw_profile
+      - ./pw_profile_greet:/app/pw_profile_greet
+      - ./pw_login:/app/pw_login
+      - ./pw_captcha:/app/pw_captcha
       # 验证码远程桌面：挂载 X socket，容器内 chromium headed 显示到宿主机虚拟屏
       - /tmp/.X11-unix:/tmp/.X11-unix
       # 凭据（本地从已迁移的 token JSON + login 挂载；云端改用 secrets）

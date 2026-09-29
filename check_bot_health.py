@@ -139,8 +139,36 @@ def check_token() -> dict:
     return result
 
 
+def check_session_state() -> dict:
+    """读业务探针结果（`renew_token.py` 写的 `data/session_state.json`）—— P12-AJ。
+
+    返回 `{"dead": bool, "probe": str, "ago": 分钟}`：
+      · `dead=True` 只在**探针说业务调用也 401** 时为真（会话真失效）；
+      · 文件太旧（>30 分钟）或不存在 ⇒ 不下结论（dead=False），免得重启初期误报；
+      · access_token 过期**不算** dead —— 那只是只读接口的事。
+    """
+    out = {"dead": False, "probe": "", "ago": 0.0}
+    try:
+        p = env_config.data_dir() / "session_state.json"
+        if not p.exists():
+            return out
+        d = json.loads(p.read_text(encoding="utf-8"))
+        ago = (time.time() - float(d.get("at") or 0)) / 60.0
+        out["probe"] = str(d.get("probe") or "")
+        out["ago"] = ago
+        if ago <= 30 and d.get("alive") is False:
+            out["dead"] = True
+    except Exception:
+        pass
+    return out
+
+
 def check_renew() -> bool:
-    """renew_token.log 最近 15 分钟内是否有 FAIL。"""
+    """renew_token.log 最近 15 分钟内是否有**真失败**。
+
+    P12-AJ：`/api/auth/token` 的 401 现在只记 `NOTE:`（它不是续期接口，401 是常态），
+    所以这里只看 `FAIL:`（真错误）与 `SESSION_DEAD:`（会话真死）—— 不再被 401 误报。
+    """
     log_path = ROOT / "renew_token.log"
     if not log_path.exists():
         return False
@@ -148,7 +176,7 @@ def check_renew() -> bool:
         lines = log_path.read_text(encoding="utf-8").splitlines()
         now = time.time()
         for line in reversed(lines):
-            if "FAIL" in line:
+            if "FAIL" in line or "SESSION_DEAD" in line:
                 # 解析时间戳（格式 YYYY-MM-DD HH:MM:SS）
                 try:
                     ts = line[:19]
@@ -334,10 +362,19 @@ def main():
     # 关掉 alert_token ⇒ 不再发 token 告警，但**续期/重登动作照常**（那是保命的，
     # 不该被"少发一条通知"牵连）。
     _alert_token = _feat_on("", "alert_token")
-    if access_remain is not None and _alert_token:
-        transition("token", access_remain < ACCESS_EXPIRE_ALERT_SEC,
-                   f"access_token 过期且续期失败（已过期 {(-access_remain)/60:.0f} 分钟）",
-                   "token 续期恢复正常")
+    # P12-AJ：**access_token 过期 ≠ 会话失效**。
+    # `/api/auth/token` 只是把会话里当前的 access_token 读出来回显（实测：会话新鲜时
+    # 返回的 token 与本地逐字节相同），过期后它必然 401 —— 而业务调用往往照常工作。
+    # 以前按"过期 5 分钟"告警，是全项目最大的一条误报源（renew 日志里 1220 次
+    # `SKIP: token 未变化`、80 次 emergency 让 bot 每小时自杀重启，多半由此而来）。
+    # 现在改判**业务探针**结果（renew_token.py 每轮写 data/session_state.json）。
+    sess = check_session_state()
+    if _alert_token:
+        transition("token", sess.get("dead", False),
+                   "会话已失效（业务调用也未授权），已触发重登"
+                   + (f"（探针 {sess.get('probe')}，{sess.get('ago', 0):.0f} 分钟前）"
+                      if sess.get("probe") else ""),
+                   "会话恢复正常（业务调用可用）")
     if refresh_days is not None and refresh_days < REFRESH_WARN_DAYS:
         was_alerted = alerts.get("refresh_token", {}).get("alerted", False)
         if _alert_token:

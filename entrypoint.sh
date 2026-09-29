@@ -7,6 +7,14 @@ cd /app
 
 echo "=== DZMM bot 容器启动（$(date '+%Y-%m-%d %H:%M:%S')）==="
 
+# 0. P12-AI：清掉挂载进来的 chromium profile 里残留的 Singleton 锁。
+#    这些 profile 现在是挂载卷（重建不丢登录态），但上一次容器被重建时留下的
+#    SingletonLock 会让新容器里的 chromium 直接拒绝启动（"profile appears to be in use"）。
+#    锁只在进程活着时有意义 —— 新容器里那个进程早没了，删掉是对的。
+for d in pw_profile pw_profile_greet pw_login pw_captcha; do
+  rm -f "/app/$d"/Singleton* 2>/dev/null || true
+done
+
 # 1. 首次启动：确保登录态（token JSON 有效则跳过，失效则 headless 登录）
 echo "[entrypoint] 检查登录态..."
 python headless_relogin.py || echo "[entrypoint] ⚠️ 首次登录未完成（可能需手动过验证码）"

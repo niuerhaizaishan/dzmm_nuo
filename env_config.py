@@ -58,6 +58,27 @@ def in_container() -> bool:
     return os.environ.get("CONTAINER_MODE") == "1"
 
 
+def data_dir():
+    """运行数据的**挂载目录**（compose: `./data:/app/data`）。
+
+    P12-AI（2026-09-27）：一切"跨重启要留住"的小状态都该放这里 ——
+    放 `/app` 根下的话，容器一重建（每次 deploy 都会重建）就没了。
+    """
+    from pathlib import Path
+    return Path(__file__).resolve().parent / "data"
+
+
+def renew_backoff_file():
+    """撞验证码后的退避状态文件（`renew_token.py` 写、`sio_subscribe.py` 读）。
+
+    ⚠️ 必须在 `data/` 下：原先放 `/app/renew_browser_backoff.json`，而那个文件
+    **不在 compose 的挂载清单里** ⇒ 每次重建容器退避状态清零 ⇒
+    撞验证码后本该安静 1 小时，结果立刻又去打风控接口，越打越黑
+    （2026-09-27 屋主报"经常 token 续期失效"时查到的原因之一）。
+    """
+    return data_dir() / "renew_browser_backoff.json"
+
+
 def set_process_proxy_env():
     """为 aiohttp/socketio 等读环境变量的库设置 HTTP(S)_PROXY/WS(S)_PROXY。
     直连时清空这些变量（避免走空代理）。返回代理 URL（None=直连）。"""

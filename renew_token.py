@@ -69,9 +69,14 @@ def write_token_cookie(new_value: str) -> bool:
 
 
 def log(msg: str, to_stdout: bool = False):
-    """写日志到 renew_token.log；to_stdout=True 时发飞书告警（云端无 cron deliver，脚本内告警）。"""
+    """写日志到 renew_token.log；to_stdout=True 时发飞书告警（云端无 cron deliver，脚本内告警）。
+
+    ⚠️ 必须显式 `encoding="utf-8"`：巡检 `check_bot_health.check_renew()` 是按 UTF-8 读这个
+    文件的，而 Windows 上 `open()` 默认是 GBK —— 不写死就会出现"日志读不出来"的假故障
+    （测试里当场复现过：`UnicodeDecodeError: 'utf-8' codec can't decode byte 0xce`）。
+    """
     line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}"
-    with open(ROOT / "renew_token.log", "a") as f:
+    with open(ROOT / "renew_token.log", "a", encoding="utf-8") as f:
         f.write(line + "\n")
     if to_stdout:
         print(msg)
@@ -133,8 +138,10 @@ def _write_emergency() -> None:
         pass
 
 
-BROWSER_BACKOFF_FILE = ROOT / "renew_browser_backoff.json"
+BROWSER_BACKOFF_FILE = env_config.renew_backoff_file()   # P12-AI：放挂载的 data/ 下（重建不丢）
 BROWSER_BACKOFF_SEC = 3600  # 浏览器续期失败后 1 小时不再试（每 1 小时试一次，避免反复打风控接口）
+# P12-AJ：业务探针结果（会话活没活）。巡检与 Socket.IO 退避都看它，不再看 access_token 的 exp。
+SESSION_STATE_FILE = env_config.data_dir() / "session_state.json"
 
 
 def _browser_backoff_ok() -> bool:
@@ -151,6 +158,7 @@ def _browser_backoff_ok() -> bool:
 def _browser_backoff() -> None:
     """记录浏览器续期失败时间（写退避状态）。"""
     try:
+        BROWSER_BACKOFF_FILE.parent.mkdir(parents=True, exist_ok=True)
         BROWSER_BACKOFF_FILE.write_text(json.dumps({"ts": time.time()}), encoding="utf-8")
     except Exception:
         pass
@@ -169,6 +177,78 @@ def _browser_renew() -> int:
     except Exception as e:
         log("  浏览器续期调用异常: " + str(e)[:80])
         return 1
+
+
+def _api_probe() -> str:
+    """P12-AJ：业务探针 —— 用**真实业务调用**判断会话到底死没死。
+
+    ## 为什么需要它（2026-09-29 实测推翻旧结论）
+
+    `/api/auth/token` **不是续期接口** —— 它只是把会话里当前的 access_token
+    读出来回声给我们：
+
+      · 会话新鲜时（剩 3434 秒）调它 → 200，返回的 access_token 与本地**逐字节相同**；
+      · 日志统计：`SKIP: token 未变化` **1220 次**、`OK: token 续期成功` 689 次
+        （那 689 次是"抄到了服务端较新的 token"，不是我们续的）；
+      · access_token 一到期（登录后 1 小时）→ 立刻 **401「未授权」**；
+      · 浏览器身份访问也一样（页面加载 7 秒，cookie 与 refresh_token **零轮换**）。
+
+    于是旧逻辑把"这个接口 401"误判成"refresh_token 失效" →
+    每小时写一次 `token.emergency` → **bot 主动退出重启**（日志里 EMERGENCY 累计 80 次、
+    bot.log 每小时一条"检测到 token.emergency 信号"）→ 重启又触发一次真登录 →
+    攒风控、撞验证码（01:21 那次"迷宫滑块"）。而**业务调用几乎没报过 unauthorized**。
+
+    所以：401 之后必须再问一次业务接口，才能决定要不要重登。
+
+    返回 `"ok"`（业务可用）/ `"unauth"`（业务也 401，会话真死）/ `"error"`（探针本身失败）。
+    """
+    try:
+        import token_store
+        import dzmm
+        cid = _probe_cid()
+        if not cid:
+            return "error"
+        dzmm.api("chatroom.getMessages",
+                 {"json": {"chatroomId": cid, "limit": 1, "before": None},
+                  "meta": {"values": {"before": ["undefined"]}, "v": 1}},
+                 token_store.get_cookie_dict(), timeout=15)
+        return "ok"
+    except Exception as e:                                     # noqa: BLE001
+        msg = str(e)
+        low = msg.lower()
+        if "未授权" in msg or "unauthorized" in low or "401" in low:
+            return "unauth"
+        return "error"
+
+
+def _probe_cid() -> str:
+    """业务探针打哪个群：配置里第一个启用的群；读不到就用已知的认证群兜底。"""
+    try:
+        import os as _os
+        cfg = _os.environ.get("DZMM_CONFIG") or str(ROOT / "config" / "config.json")
+        raw = json.loads(Path(cfg).read_text(encoding="utf-8"))
+        for g in raw.get("groups") or []:
+            if g.get("enabled", True) and g.get("cid"):
+                return str(g["cid"])
+    except Exception:
+        pass
+    return "bd7fe6a4-0065-4551-ad3d-94116dba8f9c"
+
+
+def _write_session_state(probe: str) -> None:
+    """把"会话活没活"落盘，供**巡检**与 **Socket.IO 退避**判用（P12-AJ）。
+
+    以前这两处都拿 access_token 的 `expires_at` 当"会话是否有效"，
+    而那个值过期并不代表会话失效（只读接口会 401，业务照常）——
+    于是巡检误报、SIO 把重连退避拖到 1 小时。现在统一看这个文件。
+    """
+    try:
+        SESSION_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SESSION_STATE_FILE.write_text(json.dumps(
+            {"at": time.time(), "alive": probe == "ok", "probe": probe}),
+            encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _notify_captcha() -> None:
@@ -201,8 +281,11 @@ def _renew_locked() -> int:
             log("EMERGENCY: 连续 3 次续期失败，写 token.emergency 信号", to_stdout=True)
         return 1
 
-    # 2. 提前续期判断：token 剩余 > 600 秒则静默退出（消除过期窗口）
+    # 2. 提前"抄一手"：token 剩余 > 600 秒就记一笔"会话活着"后退出。
+    # ⚠️ P12-AJ：这个接口**不会续期**（见 `_api_probe` 的说明），所以这里只是顺带
+    # 刷新一下 session_state.json，让巡检/SIO 知道会话是好的。
     if d.get("expires_at", 0) - time.time() > RENEW_AHEAD_SEC:
+        _write_session_state("ok")
         record_success()
         return 0  # token 还很新鲜，无需续期
 
@@ -212,7 +295,7 @@ def _renew_locked() -> int:
         log("撞验证码退避中，跳过续期（不打接口，避免加剧风控）")
         return 1
 
-    # 3. 续期（token 剩余不足 600 秒，/api/auth/token 用 refresh_token 换新 token）
+    # 3. 读一眼当前 token（`/api/auth/token` 是**只读回显**接口，不是续期接口）
     try:
         new = get_new_token()
     except Exception as e:
@@ -238,15 +321,27 @@ def _renew_locked() -> int:
             _notify_captcha()
             return 1
         else:
-            # ['error'] = refresh_token 真失效 → 需要重新登录
-            # 立即写 emergency（缩短恢复时间），加冷却防"refresh失效+撞验证码"反复重启
-            log("FAIL: refresh_token 失效（" + str(new.get("error", ""))[:40]
-                + "），写 emergency 触发重登", to_stdout=True)
-            if _emergency_ok():
-                _write_emergency()
-                log("EMERGENCY: 已写 token.emergency 信号（触发重登）", to_stdout=True)
-            else:
-                log("  emergency 冷却中（1 小时内已写过），跳过")
+            # P12-AJ：**别急着判死**。只读接口不认我们的 access_token（它就是过期了），
+            # 但会话很可能还活着 —— 用业务调用再问一次才能下结论。
+            # ⚠️ 这一段的日志**不许出现 "FAIL"**：巡检的 check_renew() 按它告警，
+            #    而这里 401 是常态（每小时都会来），写 FAIL 就是误报源。
+            probe = _api_probe()
+            _write_session_state(probe)
+            if probe == "ok":
+                log("NOTE: 只读接口未授权（" + str(new.get("error", ""))[:20]
+                    + "），但业务调用正常 → 会话没死，不重登")
+                record_success()
+                return 0
+            if probe == "unauth":
+                log("SESSION_DEAD: 业务调用也未授权（会话真失效），写 emergency 触发重登",
+                    to_stdout=True)
+                if _emergency_ok():
+                    _write_emergency()
+                    log("EMERGENCY: 已写 token.emergency 信号（触发重登）", to_stdout=True)
+                else:
+                    log("  emergency 冷却中（1 小时内已写过），跳过")
+                return 1
+            log("NOTE: 只读接口未授权，业务探针本身失败（" + probe + "）→ 不下结论、不重登")
             return 1
 
     # 4. 更新 JSON（保留 user/token_type，换 access_token + expires；rotation 时同步新 refresh_token）

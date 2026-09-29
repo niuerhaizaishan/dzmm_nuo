@@ -158,23 +158,30 @@ class SioSubscriber:
         return ""
 
     def _token_stale(self) -> bool:
-        """access_token 已过期 或 renew 撞验证码退避中 → 此时重连也拿不到 token，应拉长退避。"""
+        """会话是不是真失效 → 决定重连退避拉多长（True = 拉长到 1 小时）。
+
+        P12-AJ 修正：**不再看 access_token 的 `expires_at`**。
+        实测（2026-09-29）：`/api/auth/token` 只是回显会话里当前的 access_token，
+        access_token 一过期它就 401，但**业务调用往往照常工作**（业务侧 unauthorized
+        全程只报过 6 次）。拿 exp 当"会话失效"，会在整整一小时内把 Socket.IO 的
+        重连退避顶到 3600 秒 —— 那段时间读消息只能靠 HTTP 兜底，正是"机器人变慢/漏消息"
+        观感的来源之一。
+        现在只看 renew_token 写的**业务探针**结果（`data/session_state.json`）。
+        """
         try:
-            import base64
-            c = token_store.get_cookie("sb-rls-auth-token")
-            if c:
-                v = c.get("value", "")
-                payload = v[len("base64-"):] if v.startswith("base64-") else v
-                payload += "=" * (-len(payload) % 4)
-                d = json.loads(base64.b64decode(payload))
-                if d.get("expires_at", 0) - time.time() < 0:
-                    return True  # access_token 已过期
+            st = env_config.data_dir() / "session_state.json"
+            if st.exists():
+                d = json.loads(st.read_text(encoding="utf-8"))
+                if d.get("alive") is False and time.time() - float(d.get("at") or 0) < 1800:
+                    return True
         except Exception:
             pass
-        # renew_token 撞验证码时的退避信号文件（renew_browser_backoff.json）
+        # renew_token 撞验证码时的退避信号文件（路径见 `env_config.renew_backoff_file()`）
         # 检查时间戳是否在 1 小时退避期内（过期则视为已恢复，避免风控解除后仍卡 1 小时退避）
+        # ⚠️ P12-AI：两边必须读**同一个路径** —— 它现在在挂载的 `data/` 下
+        # （原先 /app 根下，容器一重建就丢，退避形同虚设）。
         try:
-            bf = _ROOT / "renew_browser_backoff.json"
+            bf = env_config.renew_backoff_file()
             if bf.exists():
                 data = json.loads(bf.read_text(encoding="utf-8"))
                 if time.time() - data.get("ts", 0) < 3600:
