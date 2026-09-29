@@ -3427,8 +3427,10 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                             if not reply:
                                 reply = p("rank_empty", cid)
                         elif (rc_win := is_recap_cmd(cmd)) is not None and _feat_on(cid, "recap"):
-                            # 「我不在的时候群里发生了什么」（仅认证群）
-                            reply = await recap_absent(cid, cmd_sender, rc_win)
+                            # 「我不在的时候群里发生了什么」（按群范围开放，见 scopes.recap）
+                            reply = await recap_absent(
+                                cid, cmd_sender, rc_win,
+                                (_cmd_msg or {}).get("message_id"))
                             if not reply:
                                 reply = p("unknown_cmd", cid)  # 非认证群：当成"不认识这个指令"
                         elif (tr_days := is_trend_cmd(cmd)) is not None and _feat_on(cid, "trend"):
@@ -3555,7 +3557,9 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                                     reply = p("mem_saved", cid)
                             elif _recap_intent(q) and _feat_on(cid, "recap"):
                                 # 大白话入口：@小小糯 我不在的时候群里发生了什么
-                                reply = await recap_absent(cid, at_sender, q)
+                                reply = await recap_absent(
+                                    cid, at_sender, q,
+                                    (_at_msg_obj or {}).get("message_id"))
                                 if not reply:
                                     reply = ""
                             else:

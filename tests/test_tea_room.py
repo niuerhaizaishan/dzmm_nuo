@@ -21,6 +21,7 @@
 闸门（默认开＝今天的行为；茶水间关掉）。
 """
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -124,6 +125,51 @@ def test_default_window_uses_the_per_group_param(tea, monkeypatch):
     hours = (until - since) / 3600.0
     assert abs(hours - 3) < 0.05, "应按按群参数取 3 小时，实际 {:.2f}".format(hours)
     assert label == "最近 3 小时"
+
+
+def test_the_question_itself_is_not_part_of_the_window(tea, monkeypatch):
+    """屋主现场报的 bug：窗口塌成 0 分钟、还显示"群里 1 条"（那 1 条就是提问自己）。
+
+    根因：他在这个群**没发过言**，`bot.py` 的发言统计在处理这条提问时刚把它写进
+    `last_speak[uid]`（`prev_speak` 还是空的）⇒ `since = last_speak` = 提问那一刻。
+    """
+    now = time.time()
+    # 没发过言的人：prev 空、last 就是"刚才那句提问"
+    monkeypatch.setattr(RC.state_store, "load_state",
+                        lambda: {CID: {"last_speak": {"u9": now - 5}}})
+    since, until, label = RC._recap_window(CID, "u9", "我不在的时候群里发生了什么")
+    assert label == "最近 3 小时", "起点太近就该退回默认窗口，而不是 0 分钟：{}".format(label)
+    assert (until - since) / 3600.0 > 2.9
+
+
+def test_a_genuine_last_speak_still_wins(tea, monkeypatch):
+    """他真的离开了 40 分钟：那就用他的上一次发言当起点（别一律退回默认）。"""
+    now = time.time()
+    monkeypatch.setattr(RC.state_store, "load_state",
+                        lambda: {CID: {"last_speak": {"u9": now - 2400}}})
+    since, _u, label = RC._recap_window(CID, "u9", "我不在的时候群里发生了什么")
+    assert label == "" and abs((_u - since) - 2400) < 5
+
+
+def test_prev_speak_is_preferred_over_last(tea, monkeypatch):
+    """有 prev_speak（上上条）时用它 —— 那才是"这次发言之前"的边界。"""
+    now = time.time()
+    monkeypatch.setattr(RC.state_store, "load_state",
+                        lambda: {CID: {"prev_speak": {"u9": now - 7200},
+                                       "last_speak": {"u9": now - 30}}})
+    since, _u, label = RC._recap_window(CID, "u9", "我不在的时候群里发生了什么")
+    assert label == "" and abs((_u - since) - 7200) < 5
+
+
+def test_recap_accepts_exclude_mid():
+    """`recap_absent` 要能排掉当前那条提问（否则它会被算成"群里发生的事"）。"""
+    import inspect
+    sig = inspect.signature(RC.recap_absent)
+    assert "exclude_mid" in sig.parameters
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    assert 'recap_absent(\n                                    cid, at_sender, q,' in src, \
+        "@ 问答那条路要把当前消息 id 传进去"
+    assert "(_cmd_msg or {}).get(\"message_id\")" in src, "指令那条路也要传"
 
 
 def test_explicit_window_still_wins(tea, monkeypatch):

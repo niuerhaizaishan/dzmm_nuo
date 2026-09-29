@@ -36,6 +36,11 @@ RECAP_MAX_HOURS = 48                # 窗口最长 48 小时
 RECAP_COOLDOWN = 30                 # 同一时间窗重复问的冷却（换个时间段问不受限）
 
 
+MIN_WINDOW_SEC = 300                # 起点距现在不足 5 分钟 ⇒ 认为起点算错了，退回默认窗口
+                                    # （2026-09-29 现场：窗口塌成 0 分钟，"群里 1 条"
+                                    #   就是提问自己 —— 见 `_recap_window` 里的说明）
+
+
 def is_recap_cmd(cmd: str):
     """识别 /我不在 /补课 /错过 指令，返回窗口描述（可为空串）；None = 不是."""
     for p in ["/我不在", "/补课", "/错过了什么", "/错过"]:
@@ -139,12 +144,21 @@ def _recap_window(cid: str, uid: str, text: str):
         return (_day0(datetime.now()) + 12 * 3600, now, "今天下午起")
     if "晚上" in t:
         return (_day0(datetime.now()) + 18 * 3600, now, "今晚起")
-    # 默认：你上次发言之前的那一条
+    # 默认：你上次发言**之前**的那一条
+    #
+    # ⚠️ P12-AK 修（2026-09-29 屋主现场报的 bug）：
+    #   在顶层茶水间 @ 她问"我不在的时候发生了什么"，回的是
+    #   「你不在的时候（09-29 10:46 ~ 09-29 10:46，群里 1 条）」—— 窗口塌成 0 分钟。
+    #   原因：他**在这个群没发过言**。`bot.py` 的发言统计在处理这条提问时刚把它写进
+    #   `last_speak[uid]`（`prev_speak[uid]` 还是空的）⇒ `since = last_speak` =
+    #   **提问那一刻**，窗口里只剩这条提问本身（"1 条"就是它）。
+    #   修法：起点必须**明显早于现在**才算数（`MIN_WINDOW_SEC`），否则退回默认窗口。
     gs = (state_store.load_state().get(cid) or {})
     prev = (gs.get("prev_speak") or {}).get(uid)
     last = (gs.get("last_speak") or {}).get(uid)
     since = prev or last
-    if since and now - since <= _tune("recap.max_hours", cid) * 3600:
+    cap = _tune("recap.max_hours", cid) * 3600
+    if since and MIN_WINDOW_SEC <= (now - since) <= cap:
         return (since, now, "")
     # P12-AK：回退窗口按群可调（原来写死 6 小时 —— 热闹的群一小时几百条，
     # 6 小时的转录能把提示词塞满；顶层茶水间先设 2-3 小时）。
@@ -285,8 +299,13 @@ def _recap_transcript(msgs: list, cid: str = None) -> tuple:
     return ("\n".join(lines), n_msg)
 
 
-async def recap_absent(cid: str, uid: str, text: str = "") -> str:
-    """「我不在的时候群里发生了什么」——返回 ≤10 行的回顾."""
+async def recap_absent(cid: str, uid: str, text: str = "",
+                       exclude_mid: str = None) -> str:
+    """「我不在的时候群里发生了什么」——返回 ≤10 行的回顾.
+
+    `exclude_mid`：**当前这条提问**的消息 id。不排掉的话它会被当成"群里发生的事"
+    算进条数与转录（2026-09-29 现场："群里 1 条"就是提问自己）。
+    """
     if not _tune_scope("recap", cid):
         return ""
     gs = (state_store.load_state().get(cid) or {})
@@ -314,6 +333,9 @@ async def recap_absent(cid: str, uid: str, text: str = "") -> str:
     except Exception:
         pass
     msgs = [m for m in msgs if (m.get("content") or {}).get("text", "").strip()]
+    # 排掉当前这条提问本身（它是"问题"，不是"你不在的时候发生的事"）
+    if exclude_mid:
+        msgs = [m for m in msgs if str(m.get("message_id") or "") != str(exclude_mid)]
     # 按窗口终点过滤（"昨天"/"上周末"这类有明确结束时间，不能把今天的消息也算进来）
     if until and until < time.time() - 60:
         msgs = [m for m in msgs if _msg_ts(m) <= until]
