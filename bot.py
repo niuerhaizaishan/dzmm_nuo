@@ -838,23 +838,46 @@ class Sender:
                 await ta.click(timeout=5000)
                 # 等 React 受控组件响应 click（focus + 事件绑定），避免 insert_text 空输入
                 await asyncio.sleep(0.3)
-                # 逐行输入：行间用 Shift+Enter 换行（不发送），最后 Enter 发送。
-                # insert_text 一次性插入（已实测 React 正确接收，比逐字符 type 快 ~500 倍）。
-                lines = [ln for ln in text.split("\n")]
-                # P12-K：玫瑰房星象卡改五段式后有 18~20 行，旧上限 10 会把卡片砍半
-                # （`personas.ROSE_SIGN_MAX_LINES`）。这条链路只在官方 Bot API
-                # 明确拒绝时兜底用，多贴几行没有副作用。
-                if len(lines) > _personas.ROSE_SIGN_MAX_LINES:
-                    lines = lines[:_personas.ROSE_SIGN_MAX_LINES]
-                for i, line in enumerate(lines):
-                    await self.page.keyboard.insert_text(line)
-                    if i < len(lines) - 1:
-                        await self.page.keyboard.press("Shift+Enter")
-                await self.page.keyboard.press("Enter")
-                await asyncio.sleep(0.3)
+                # P12-AN：**账号通道单条上限 200 字**（实测 190 字能发、210 字发不出，
+                # 2026-09-29 用 `bot测试` 群夹逼出来的），超限时平台**静默丢弃** ——
+                # 我们的代码只看到"假成功检测"，而出站队列还把它记成 sent。
+                # 后果：顶层茶水间的缺勤回顾（400+ 字）一条都发不出去（屋主："@你怎么没反应了"）。
+                # 对策：超过上限就**切成多条**依次发（每条都照常读回验证）。
+                parts = _split_for_account(text, ACCOUNT_MSG_MAX_CHARS)
+                if len(parts) > 1:
+                    log("  ✂️ 长消息切成 {} 条（每条 ≤{} 字）".format(
+                        len(parts), ACCOUNT_MSG_MAX_CHARS))
                 _t2 = time.time()
-                # 读回验证（防假成功）：确认消息真的投递到群里
-                if await self._verify_sent(cid, text):
+                for _pi, _part in enumerate(parts):
+                    if _pi:
+                        # 上一段发完再打下一段：重新点一下输入框（焦点可能丢）
+                        try:
+                            await ta.click(timeout=5000)
+                            await asyncio.sleep(0.2)
+                        except Exception:                          # noqa: BLE001
+                            pass
+                    _plines = [ln for ln in _part.split("\n")]
+                    # P12-K：玫瑰房星象卡改五段式后有 18~20 行，旧上限 10 会把卡片砍半
+                    # （`personas.ROSE_SIGN_MAX_LINES`）。这条链路只在官方 Bot API
+                    # 明确拒绝时兜底用，多贴几行没有副作用。
+                    if len(_plines) > _personas.ROSE_SIGN_MAX_LINES:
+                        _plines = _plines[:_personas.ROSE_SIGN_MAX_LINES]
+                    # 逐行输入：行间用 Shift+Enter 换行（不发送），最后 Enter 发送。
+                    # insert_text 一次性插入（已实测 React 正确接收，比逐字符 type 快 ~500 倍）。
+                    for i, line in enumerate(_plines):
+                        await self.page.keyboard.insert_text(line)
+                        if i < len(_plines) - 1:
+                            await self.page.keyboard.press("Shift+Enter")
+                    await self.page.keyboard.press("Enter")
+                    await asyncio.sleep(0.3 if _pi == len(parts) - 1 else 1.0)
+                    _t2 = time.time()
+                    if not await self._verify_sent(cid, _part):
+                        if len(parts) > 1:
+                            log("  ⚠️ 第 {}/{} 段未投递".format(_pi + 1, len(parts)))
+                        self._record_fail()
+                        break
+                else:
+                    # 全部段落都读回成功才算成功
                     self._fail_streak = 0
                     self._consecutive_send_fail = 0
                     self._send_alerted = False
@@ -926,6 +949,14 @@ class Sender:
             spec.loader.exec_module(mod)
             d = mod.DZMMSocket(ORIGIN)
             ok = await asyncio.to_thread(d.send_message, cid, NUO_UID, text, get_cached_cookie())
+            # P12-AN：Socket.IO 那条路只看 HTTP 状态码，**不读回** —— 它是"假成功"的来源：
+            # 2026-09-29 现场出站队列里躺着 4 条 status=sent 的回顾，群里一条都没有。
+            # 所以这里补一次读回验证（跟 Playwright 那条路同一个判据）。
+            if ok:
+                await asyncio.sleep(1.2)
+                if not await self._verify_sent(cid, text):
+                    log("  fallback(DZMMSocket): ⚠️ 读回没看到，判为未投递")
+                    ok = False
             log("  fallback(DZMMSocket): " + ("✅" if ok else "❌") + " cid=" + cid[:8])
             return ok
         except Exception as e:
@@ -968,6 +999,44 @@ def should_reply(context: list[dict]) -> str:
         if t.startswith("/"):
             return t
     return ""
+
+
+# 账号通道（Playwright 打字发送）单条字数上限。
+# 实测（2026-09-29，`bot测试` 群夹逼）：**190 字能发、210 字发不出** →
+# 平台的限制是 200 字，**超了会静默丢弃**（前端不接受，Enter 无效）。
+# 我们取 190 留余量（emoji/全角都算 1 个 Python 字符，但"🤖 "前缀也算在内）。
+ACCOUNT_MSG_MAX_CHARS = 190
+
+
+def _split_for_account(text: str, limit: int = ACCOUNT_MSG_MAX_CHARS) -> list:
+    """把一条长消息切成多段，每段 ≤ `limit` 字（P12-AN）。
+
+    为什么要切：账号通道单条上限 **200 字**（实测 190 ✅ / 210 ❌），超限**静默失败**
+    —— 平台前端直接不收，Enter 无效，我们这边只看到"假成功检测"。
+    而官方 Bot API 那条路是 10000 字，于是"长回复"在 Bot 通道正常、**在账号通道全灭**。
+    2026-09-29 现场：顶层茶水间（没有 Bot，只走账号）的缺勤回顾 400+ 字，一条都发不出去。
+
+    切法（尽量不破坏可读性）：
+      · **优先在换行处切**（每段自成一块），单行本身超长时才按字数硬切；
+      · 按原顺序返回，不丢字符。
+    """
+    limit = max(1, int(limit))
+    if not text:
+        return [text]
+    parts, cur = [], ""
+    for raw_line in text.split("\n"):
+        chunks = [raw_line[i:i + limit] for i in range(0, len(raw_line), limit)] or [""]
+        for chunk in chunks:
+            candidate = chunk if not cur else cur + "\n" + chunk
+            if len(candidate) <= limit:
+                cur = candidate
+            else:
+                if cur:
+                    parts.append(cur)
+                cur = chunk
+    if cur:
+        parts.append(cur)
+    return parts or [text]
 
 
 def _strip_at(text: str, cid: str = None) -> str:
