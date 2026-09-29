@@ -3116,6 +3116,15 @@ async def main_loop(interval: float, dry: bool, once: bool, *,
                         if is_self(m.get("sent_by")):
                             continue  # 跳过 bot 自己的消息，避免 self-echo
                         t = (m.get("content") or {}).get("text", "").strip()
+                        # P12-AL：`at_only` 的群里，**只有 @ 到她的消息**才继续往下走
+                        # （指令、房间触发、定时播报一并免掉）。顶层茶水间（779 人、
+                        # 里面有别家 bot 的游戏）要的就是这个保证。
+                        if _feat_on(cid, "at_only"):
+                            _by_at = is_at_me(t, cid)
+                            _by_quote = (not _by_at) and _feat_on(cid, "quote_reply") \
+                                and _quotes_self(m)
+                            if not (_by_at or _by_quote):
+                                continue
                         if t.startswith("/"):
                             # P12-AK：这个群不接 `/` 指令（顶层茶水间那种群里跑着别家 bot 的
                             # 游戏，`/开始摸鱼躲藏`、`/记忆考核`、`/答案 xxx` 全是它的语法）。

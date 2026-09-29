@@ -30,7 +30,9 @@ from runtime import features as F                             # noqa: E402
 CID = "4fc4a2fd-465a-4436-9884-dbb5e60c6af2"
 AUTH = "bd7fe6a4-0065-4551-ad3d-94116dba8f9c"   # 认证群（recap 原本只有它）
 ALIAS = "顶层茶水间"
-KEEP = ("chat", "recap", "memory_remember", "memory_recall")
+KEEP = ("chat", "recap", "memory_remember", "memory_recall", "at_only")
+# ⚠️ `at_only`（P12-AL，屋主："只有 @ 小小糯 的时候才触发回复"）**只在这个群开**：
+#    认证群/上班群的骰子、发骚、排行、问候本来都靠非 @ 消息触发，那边一开等于全废。
 IGNORE_KW = "打卡,摸鱼,躲藏,躲猫猫,巡查,记忆考核,摸鱼币,机选号码"
 TUNING = {"recap.default_hours": 3, "recap.ignore_kw": IGNORE_KW}
 

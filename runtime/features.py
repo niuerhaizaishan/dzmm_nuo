@@ -1,4 +1,4 @@
-"""功能注册表（P12-A）：**67 个功能的声明式清单** + 唯一的开关判定点 + 状态复位。
+"""功能注册表（P12-A）：**68 个功能的声明式清单** + 唯一的开关判定点 + 状态复位。
 
 ### 为什么要有这个模块
 
@@ -199,6 +199,12 @@ _FEATURES_RAW = (
     # 关掉它 = 这个群**不接任何 `/` 指令**（只留 @ 问答那条路）。默认开＝今天的行为。
     Feature("slash_cmds", "接群内斜杠指令", "people",
             note="关＝这个群的 /xxx 一律不理（让给别家 bot）；开＝照旧处理"),
+    # P12-AL（2026-09-29 屋主："最后，只有 @ 小小糯 的时候才触发回复"）：
+    # 关掉之后，这个群里**任何没 @ 到她的消息都不处理**（连指令、房间触发、定时播报
+    # 一并免掉）。顶层茶水间那种 779 人的群要的就是这个保证。
+    # ⚠️ 别在认证群开：那边的骰子/发骚/排行/问候本来就靠非 @ 消息触发，开了等于全废。
+    Feature("at_only", "只 @ 才回复", "people", default=False,
+            note="开＝这个群只有被 @ 才说话；关＝照旧（今天的行为）"),
 
     # ---- B. 公演与内容生成（12）
     Feature("perf", "公演", "content", resets=("perf",),
@@ -338,7 +344,7 @@ _WIRED = (
     "scene_rewrite", "scene_end", "diaojiao", "help", "memory_remember",
     "memory_recall", "devil_roast", "intro", "sync", "register", "query",
     "trend", "rank_heat", "recap", "summary", "fortune", "poem", "insult", "chat",
-    "quote_reply", "slash_cmds",
+    "quote_reply", "slash_cmds", "at_only",
     # --- 第三批（房间玩法 / 入群筛查 / @消息子功能 / 告警 / 自动触发）---
     "room_welcome", "room_refuse", "room_order", "room_flower", "room_ghost",
     "room_lewd", "room_owner_cmd", "horoscope",

@@ -65,7 +65,7 @@ def _declared_tables():
 
 # ---------------------------------------------------------------- 1. 注册表自洽
 
-def test_registry_has_67_features():
+def test_registry_has_68_features():
     """65 → 64：`rewrite`（改写档案）经核实**没有真实触发**（`is_rewrite_cmd`
     只服务场景重写，已被 `scene_rewrite` 覆盖），按注册表自己的规矩删掉了。
 
@@ -81,9 +81,13 @@ def test_registry_has_67_features():
     有些群（如顶层茶水间）里跑着**别家 bot 的游戏**，群友的 `/开始摸鱼躲藏`
     会被我们当成指令、走到兜底回一句"这个我不会"。关掉它＝这个群不接 `/` 指令。
     默认开＝今天的行为，不违反下面那条"默认必须等于今天"。
+
+    67 → 68（P12-AL，2026-09-29）：新增 `at_only`（只 @ 才回复）——
+    屋主要"只有 @ 小小糯 的时候才触发回复"，是**新增的触发约束**（关掉一切非 @ 触发），
+    所以默认关（见 `_DELIBERATE_OFF`）。
     """
-    assert len(F.FEATURES) == 67
-    assert len(set(F.keys())) == 67, "key 必须唯一"
+    assert len(F.FEATURES) == 68
+    assert len(set(F.keys())) == 68, "key 必须唯一"
 
 
 def test_every_feature_is_well_formed():
@@ -101,10 +105,11 @@ def test_category_counts_match_the_plan():
 
     people 少 1 = 删掉 `rewrite`；people 多 1 = P12-AC 新增 `chat`（@ 问答回复）；
     people 再多 1 = P12-AE 新增 `quote_reply`（引用回复也接话）；
-    people 再多 1 = P12-AK 新增 `slash_cmds`（接群内斜杠指令的闸门）。
+    people 再多 1 = P12-AK 新增 `slash_cmds`（接群内斜杠指令的闸门）；
+    people 再多 1 = P12-AL 新增 `at_only`（只 @ 才回复）。
     """
     got = {c: len(v) for c, v in F.by_category().items()}
-    assert got == {"game": 15, "content": 12, "people": 13, "screen": 7,
+    assert got == {"game": 15, "content": 12, "people": 14, "screen": 7,
                    "schedule": 9, "room": 7, "alert": 4}
 
 
@@ -114,6 +119,9 @@ _DELIBERATE_OFF = {
     # "只有 @ 才答"，所以它默认必须是关的 —— 默认打开等于在所有群悄悄改了行为，
     # 玫瑰房那套"谁能触发管家"的房间策略也会被绕过。要用就在对应群按群打开。
     "quote_reply",
+    # P12-AL：同样是**新增的触发约束**（只 @ 才回）。默认打开会把所有群的非 @ 触发
+    # 全掐掉（认证群的骰子/发骚/排行/问候都靠非 @ 消息），那是灾难。
+    "at_only",
 }
 
 
