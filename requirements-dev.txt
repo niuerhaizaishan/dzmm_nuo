@@ -1,0 +1,5 @@
+# 测试依赖（运行依赖见 requirements.txt）。
+# 本机曾经 vendor pytest 在仓库外（D:\Deepseek\DDZM\.pylibs + PYTHONPATH），
+# 2026-10-02 起提供标准安装路径 —— GitHub CI 与新环境直接：
+#   pip install -r requirements-dev.txt
+pytest==9.1.1

@@ -1,0 +1,33 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run full test suite
+        # 与本地同一命令（pytest.ini: testpaths=tests, pythonpath=.）
+        run: python -m pytest tests/ -q -p no:cacheprovider --junitxml=results.xml
+      - name: Publish summary
+        if: always()
+        run: |
+          python - <<'EOF'
+          import xml.etree.ElementTree as ET
+          t = ET.parse("results.xml").getroot()
+          s = t.find("testsuite")
+          print(f"tests={s.get('tests')} failures={s.get('failures')} "
+                f"errors={s.get('errors')} skipped={s.get('skipped')}")
+          EOF
