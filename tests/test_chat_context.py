@@ -78,14 +78,16 @@ def test_at_branch_reads_the_tunings_and_uses_the_transcript():
 
     P12-AD 之后这里改成"用记录 + 排掉当前这条"：以前直接拿 `msgs[-N:]` 当上下文，
     可 `msgs` 里只有新消息、还包含**当前这条提问**，于是同一句话喂两遍。
+
+    P3-3-4 起 @ 闲聊分支在 runtime/at_chat.py。
     """
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    src = (ROOT / "runtime" / "at_chat.py").read_text(encoding="utf-8")
     i = src.index("普通问答：带上下文")
     j = src.index('reply = (reply or "").strip()', i)
     seg = src[i:j]
     assert '_feat_on(cid, "chat")' in seg, "要能被开关关掉"
-    assert "_recent_turns(cid, _ctxn, exclude_mid=_ask_mid)" in seg, \
-        "上下文要来自滚动记录，并排掉当前提问"
+    assert "_recent_turns(cid, _ctxn, exclude_mid=_ask_mid" in seg, \
+        "上下文要来自滚动记录，并排掉当前提问（P12-BE 起多传一个 only_uid=…）"
     assert "_seed_turns" in seg, "第一次@要从平台补一次历史"
     assert "_tune(\"reply.context_msgs\", cid)" in seg
     assert "_tune(\"reply.max_tokens\", cid)" in seg

@@ -88,7 +88,8 @@ def test_send_never_raises_without_channel():
 
 
 def test_bot_wires_both_ghost_paths():
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    # P3-3-3 起挂点在 runtime/room.py（房间消息处理块整体搬出）
+    src = (ROOT / "runtime" / "room.py").read_text(encoding="utf-8")
     assert "_ghost_photo.send(" in src, "摘花放鬼那条要发图"
     assert "_ghost_photo.maybe_send(" in src, "命令进入女鬼场景那条要发图"
     assert '_ghost_after = "摘花放鬼"' in src
@@ -98,8 +99,9 @@ def test_bot_wires_both_ghost_paths():
 def test_ghost_command_really_enters_the_state():
     """屋主 2026-09-27："要进状态啊" —— 命令必须真的把房间切进女鬼状态，
     而不是只演一段 + 发张图（否则链路不闭环：没人能"复原"这间屋子）。"""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    i = src.index("命令女鬼上场")
+    src = (ROOT / "runtime" / "room.py").read_text(encoding="utf-8")
+    # 从 handle_room 之后找（模块 docstring 的链路清单里也有这几个字）
+    i = src.index("命令女鬼上场", src.index("async def handle_room"))
     window = src[max(0, i - 700):i + 700]
     assert 'group_state["rose_ghost"] = {"active": True' in window
     assert "_personas.fill(ROOM_GHOST_TEXT, cid)" in window

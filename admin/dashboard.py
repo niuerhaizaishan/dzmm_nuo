@@ -98,7 +98,8 @@ DEFAULT_PORT = 8090
 BOT_LOG = ROOT / "bot.log"
 HEALTH_LOG = ROOT / "check_health.log"
 RENEW_LOG = ROOT / "renew_token.log"
-TOKEN_FILE = ROOT / ".dzmm_token.json"
+# S1：与 token_store 同一套 DZMM_TOKEN_FILE 口径，双写期面板读 secrets/ 下的新文件
+TOKEN_FILE = Path(os.environ.get("DZMM_TOKEN_FILE") or (ROOT / ".dzmm_token.json"))
 SESSION_VERSION_FILE = ROOT / ".session_version.json"
 OUTBOX_DB = ROOT / "data" / "outbox.db"
 STORE_DB = ROOT / "data" / "store.db"
@@ -345,6 +346,11 @@ def section_outbox():
             "select substr(text, 1, 30), last_error from outbound "
             "where last_error is not null and last_error != '' "
             "order by rowid desc limit 5").fetchall()
+        # §2.2.4：每群最近一次出站活动（发出优先，没发过就取入队时刻）。
+        # 有 (chatroom_id, created_at) 索引，group by 走得动；只读连接。
+        last_by_cid = {r[0]: r[1] for r in c.execute(
+            "select chatroom_id, max(coalesce(sent_at, created_at)) "
+            "from outbound group by chatroom_id")}
     return {
         "present": True,
         "by_status": by_status,
@@ -357,6 +363,7 @@ def section_outbox():
                     "last_error": r[4][:120]} for r in recent],
         "errors": [{"text": e[0], "error": (e[1] or "")[:160]} for e in errs],
         "size": _size_h(OUTBOX_DB)[1],
+        "last_activity": last_by_cid,
     }
 
 
@@ -570,14 +577,32 @@ def section_config():
     # 「这个群走哪个 Bot」从 bots 侧**派生**，不在群上重复存一份
     # （两个真源迟早不一致）
     cid2bot = {b.cid: b.key for b in cfg.bots}
+    # §2.2.4：每群**功能摘要**——启用计数 + 与代码默认不同的生效项。
+    # 生效值三级回退：本群覆盖 > 全局覆盖 > 注册表默认。
+    # runtime.features 是纯声明式注册表（os/time/dataclasses，无 playwright
+    # 无网络副作用），import 它不违反本函数"不 import bot"的纪律。
+    from runtime import features as _fm
+    _reg = {f.key: f for f in _fm.FEATURES}
+    _glob = cfg.features or {}
     # 列出**全部**配置项（含 enabled=false 的）：面板要能看到"我关掉了哪些群"，
     # 只列生效的会让被关掉的群在界面上凭空消失（配置界面踩过这个坑）。
-    out["groups"] = [
-        {"cid": s.cid, "alias": s.alias, "enabled": s.enabled,
-         "mute": s.mute, "screen": s.screen, "push": s.push,
-         "persona": s.persona, "active": s.cid in cfg.groups,
-         "bot": cid2bot.get(s.cid, "")}
-        for s in cfg.group_specs.values()]
+    out["groups"] = []
+    for s in cfg.group_specs.values():
+        n_on, diffs = 0, []
+        for k, f in _reg.items():
+            ov = (s.features or {}).get(k)
+            gv = _glob.get(k)
+            eff = ov if ov is not None else (gv if gv is not None else f.default)
+            if eff:
+                n_on += 1
+            if eff != f.default:
+                diffs.append({"key": k, "label": f.label, "on": bool(eff)})
+        out["groups"].append(
+            {"cid": s.cid, "alias": s.alias, "enabled": s.enabled,
+             "mute": s.mute, "screen": s.screen, "push": s.push,
+             "persona": s.persona, "active": s.cid in cfg.groups,
+             "bot": cid2bot.get(s.cid, ""),
+             "feat_on": n_on, "feat_total": len(_reg), "feat_diffs": diffs})
     out["bots"] = [
         {"key": b.key, "name": b.name, "short": b.short, "cid": b.cid,
          "enabled": b.enabled, "token_env": b.token_env,
@@ -670,29 +695,23 @@ def collect():
 
 # ---------------------------------------------------------------- 渲染
 
-_CSS = """
-body{font:13px/1.6 -apple-system,Segoe UI,Roboto,'Noto Sans CJK SC',sans-serif;
+# P4-4A：总览页样式已删（壳走 admin.shell.page，卡片走共享 .card/.section-grid，
+# 状态色走共享 badge--/text-* 变体）。登录页**不进壳**——/static 要登录才能
+# 拉到（do_GET 里会话检查在 static 之前），所以它必须自包含样式。
+_LOGIN_CSS = """
+body{font:14px/1.6 -apple-system,Segoe UI,Roboto,'Noto Sans CJK SC',sans-serif;
 margin:0;background:#12141a;color:#d8dee9}
-header{padding:10px 16px;background:#1b1f2a;border-bottom:1px solid #2b3140;
-display:flex;gap:14px;align-items:baseline;flex-wrap:wrap}
-h1{font-size:15px;margin:0;font-weight:600}
-.badge{padding:1px 7px;border-radius:9px;font-size:11px}
-.ok{background:#1f3d2b;color:#7ee2a8}.bad{background:#4a1f27;color:#ff8b9a}
-.warn{background:#463a1c;color:#ffd479}
-main{padding:12px 16px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(370px,1fr))}
-section{background:#181c25;border:1px solid #262c39;border-radius:7px;overflow:hidden}
-section>h2{font-size:13px;margin:0;padding:7px 11px;background:#1e2331;
-border-bottom:1px solid #262c39;display:flex;justify-content:space-between}
-section>h2 small{color:#6c7686;font-weight:400}
-.body{padding:9px 11px;overflow:auto;max-height:460px}
-table{border-collapse:collapse;width:100%}
-td,th{padding:2px 6px;text-align:left;vertical-align:top;border-bottom:1px solid #232935}
-th{color:#8b95a7;font-weight:500}
-code,.mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
-pre{margin:0;white-space:pre-wrap;word-break:break-all;font-size:12px;
-background:#0f1218;padding:6px;border-radius:5px;color:#a9b6c9}
-.err{color:#ff8b9a}.dim{color:#6c7686}.hi{color:#ffd479}
-footer{padding:8px 16px;color:#6c7686;font-size:11px}
+.box{max-width:330px;margin:12vh auto;background:#181c25;
+border:1px solid #262c39;border-radius:9px;padding:20px}
+h1{font-size:15px;margin:0 0 4px}.sub{color:#6c7686;font-size:12px}
+label{display:block;color:#8b95a7;margin:10px 0 4px}
+input{width:100%;box-sizing:border-box;background:#0f1218;color:#d8dee9;
+border:1px solid #2b3140;border-radius:6px;padding:8px;font-size:14px}
+button{width:100%;margin-top:16px;padding:9px;border:0;border-radius:6px;
+background:#2f6feb;color:#fff;font-size:14px;cursor:pointer}
+.msg{padding:8px 10px;border-radius:6px;margin-bottom:10px;font-size:12px}
+.msg--bad{background:#4a1f27;color:#ff8b9a}
+.msg--ok{background:#1f3d2b;color:#7ee2a8}
 """
 
 
@@ -708,92 +727,98 @@ def _kv_table(d, skip=()):
         if isinstance(v, (dict, list, tuple)):
             v = json.dumps(v, ensure_ascii=False)
         rows.append("<tr><th>{}</th><td>{}</td></tr>".format(_e(k), _e(v)))
-    return "<table>{}</table>".format("".join(rows))
+    return "<table class='table table--compact'>{}</table>".format("".join(rows))
 
 
 def _list_block(items, cls="mono"):
     if not items:
-        return '<span class="dim">（无）</span>'
+        return '<span class="text-dim">（无）</span>'
     return "<pre>{}</pre>".format(_e("\n".join(str(i) for i in items)))
 
 
 def render_html(data):
-    secs = data["sections"]
+    secs = data.get("sections") or {}
+
+    def sec(key):
+        """安全取段数据：段缺失 / 那段坏了都给 {}（一坏不白）。"""
+        s = secs.get(key) or {}
+        return (s.get("data") or {}) if s.get("ok", True) else {}
 
     def body(key):
         s = secs.get(key)
         if not s:
-            return '<span class="dim">（缺）</span>'
+            return '<span class="text-dim">（缺）</span>'
         if not s["ok"]:
-            return '<span class="err">{}</span>'.format(_e(s.get("error")))
+            return '<span class="text-bad">{}</span>'.format(_e(s.get("error")))
         d = s["data"]
         if key == "process":
             bad = not d["bot_running"]
             return ('<span class="badge {}">{}</span>'.format(
-                        "bad" if bad else "ok",
+                        "badge--bad" if bad else "badge--ok",
                         "bot.py 未在运行" if bad else "bot.py 运行中")
                     + _kv_table(d, skip=("bot_running",)))
         if key == "boot":
             badge = ('<span class="badge {}">{}/{} 自证行</span>'.format(
-                "ok" if d["all_present"] else "bad",
+                "badge--ok" if d["all_present"] else "badge--bad",
                 sum(1 for v in d["lines"].values() if v), len(d["lines"])))
             rows = "".join(
                 "<tr><th>{}</th><td class='mono {}'>{}</td></tr>".format(
-                    _e(k), "" if v else "err", _e(v or "（缺）"))
+                    _e(k), "" if v else "text-bad", _e(v or "（缺）"))
                 for k, v in d["lines"].items())
-            return badge + "<table>{}</table>".format(rows)
+            return badge + "<table class='table table--compact'>{}</table>".format(rows)
         if key == "auth":
             parts = []
             if d.get("bot_paused"):
-                parts.append('<span class="badge bad">bot.paused 存在（已暂停）</span>')
+                parts.append('<span class="badge badge--bad">bot.paused 存在（已暂停）</span>')
             rows = "".join(
                 "<tr><td class='mono'>{}</td><td>{}</td><td class='{}'>{}</td></tr>".format(
                     _e(c["name"]), _e(c["expires_at"]),
-                    "err" if c["expired"] else "", _e(c["remain"]))
+                    "text-bad" if c["expired"] else "", _e(c["remain"]))
                 for c in d.get("cookies") or [])
-            parts.append("<table><tr><th>cookie</th><th>到期</th><th>剩余</th></tr>{}</table>"
-                         .format(rows or "<tr><td colspan=3 class='dim'>没读到 token cookie</td></tr>"))
-            parts.append("<div class='dim'>session_version: <span class='mono'>{}</span></div>"
+            parts.append("<table class='table table--compact'>"
+                         "<tr><th>cookie</th><th>到期</th><th>剩余</th></tr>{}</table>"
+                         .format(rows or "<tr><td colspan=3 class='text-dim'>没读到 token cookie</td></tr>"))
+            parts.append("<div class='text-dim'>session_version: <span class='mono'>{}</span></div>"
                          .format(_e(json.dumps(d.get("session_version"), ensure_ascii=False))))
-            parts.append("<div class='dim'>续期日志尾部</div>" + _list_block(d.get("renew_tail")))
+            parts.append("<div class='text-dim'>续期日志尾部</div>" + _list_block(d.get("renew_tail")))
             return "".join(parts)
         if key == "outbox":
             if not d.get("present"):
-                return '<span class="warn">outbox.db 不存在</span>'
+                return '<span class="badge badge--warn">outbox.db 不存在</span>'
             head = ('<span class="badge {}">pending/leased {}</span>'
                     '<span class="badge {}">重试&gt;1 {}</span>'
                     '<span class="badge {}">有 last_error {}</span>'
-                    '<span class="dim"> 共 {} 条 / {} / 最老待发 {}</span>').format(
-                "warn" if d["pending_or_leased"] else "ok", d["pending_or_leased"],
-                "bad" if d["retried"] else "ok", d["retried"],
-                "bad" if d["with_error"] else "ok", d["with_error"],
+                    '<span class="text-dim"> 共 {} 条 / {} / 最老待发 {}</span>').format(
+                "badge--warn" if d["pending_or_leased"] else "badge--ok", d["pending_or_leased"],
+                "badge--bad" if d["retried"] else "badge--ok", d["retried"],
+                "badge--bad" if d["with_error"] else "badge--ok", d["with_error"],
                 d["total"], d["size"], d["oldest_pending_age"])
             rows = "".join(
-                "<tr><td>{}</td><td>{}</td><td class='mono'>{}</td><td class='err mono'>{}</td></tr>"
+                "<tr><td>{}</td><td>{}</td><td class='mono'>{}</td><td class='text-bad mono'>{}</td></tr>"
                 .format(_e(r["status"]), _e(r["attempts"]), _e(r["text"]),
                         _e(r["last_error"]))
                 for r in d["recent"])
             errs = ""
             if d.get("errors"):
-                errs = "<div class='dim'>发失败过的记录</div>" + _list_block(
+                errs = "<div class='text-dim'>发失败过的记录</div>" + _list_block(
                     ["{} ← {}".format(e["text"], e["error"]) for e in d["errors"]])
-            return (head + "<table><tr><th>status</th><th>次数</th><th>文本</th>"
+            return (head + "<table class='table table--compact'><tr><th>status</th><th>次数</th><th>文本</th>"
                     "<th>last_error</th></tr>{}</table>".format(rows) + errs
-                    + "<div class='dim'>{}</div>".format(_e(d["by_status"])))
+                    + "<div class='text-dim'>{}</div>".format(_e(d["by_status"])))
         if key == "errors":
             parts = []
             # 跳过 `_note` 这类以下划线开头的说明字段（不是日志名）
             files = {k: v for k, v in d.items() if not k.startswith("_")}
             for name, v in files.items():
-                cls = "warn" if v["count"] else "ok"
+                cls = "badge--warn" if v["count"] else "badge--ok"
                 parts.append('<span class="badge {}">{}: {}</span> '.format(
                     cls, _e(name), v["count"]))
             for name, v in files.items():
                 if v["recent"]:
-                    parts.append("<div class='dim'>{}</div>{}".format(
+                    parts.append("<div class='text-dim'>{}</div>{}".format(
                         _e(name), _list_block(v["recent"])))
             if d.get("_note"):
-                parts.append("<div class='dim'>{}</div>".format(_e(d["_note"])))
+                parts.append("<div class='text-dim'>{}</div>".format(_e(d["_note"])))
             return "".join(parts)
         if key in ("prompts", "storage", "config", "groups"):
             if key == "groups":
@@ -803,68 +828,262 @@ def render_html(data):
                             _e(",".join(g["playing"]) or "-"),
                             _e(", ".join("{}={}".format(u[:6], s) for u, s in g["heat_top"])))
                     for cid, g in sorted(d["groups"].items()))
-                return ("<div class='dim'>共 {} 个群；主群 {}</div>"
-                        "<table><tr><th>群</th><th>状态键</th><th>发情人数</th>"
+                return ("<div class='text-dim'>共 {} 个群；主群 {}</div>"
+                        "<table class='table table--compact'>"
+                        "<tr><th>群</th><th>状态键</th><th>发情人数</th>"
                         "<th>进行中</th><th>发情值 top3</th></tr>{}</table>"
-                        "<div class='dim'>骰子局: {}</div>"
+                        "<div class='text-dim'>骰子局: {}</div>"
                         .format(d["group_count"], _e((d.get("primary") or "")[:8]),
                                 rows, _e(json.dumps(d.get("dice"), ensure_ascii=False))))
             return _kv_table(d)
         return _kv_table(d)
 
-    cards = []
+    # ---------------------------------------------------------------
+    # §2.2 信息层级（P4-4B）：告警条 → 状态卡格 → 快捷操作+启动自证 →
+    # 群状态表 → 详细监控（折叠）。原 9 段的逐段渲染 body(key) 原样保留，
+    # 收进折叠区，细节不丢。
+    # ---------------------------------------------------------------
+
+    process = sec("process")
+    auth = sec("auth")
+    outbox = sec("outbox")
+    config = sec("config")
+    boot = sec("boot")
+    hot = data.get("hotload") or {}
+
+    # ---- 1) 告警条：只有异常时才出现（设计文档 §2.2.1）----
+    alerts = []
+    if process and not process.get("bot_running", True):
+        alerts.append(("bad", "bot.py 未在运行 —— 群里已经没有人在回消息"))
+    if hot.get("invalid"):
+        alerts.append(("bad", "热加载：磁盘上的配置不合法（运行期保持上一次成功的）"))
+    if auth.get("bot_paused"):
+        alerts.append(("warn", "bot.paused 存在 —— 机器人已暂停"))
+    exp_cookies = [c.get("name") or "?" for c in (auth.get("cookies") or [])
+                   if c.get("expired")]
+    if exp_cookies:
+        alerts.append(("bad", "token 已过期：{}".format("、".join(exp_cookies))))
+    if config.get("warnings"):
+        for w in config["warnings"]:
+            alerts.append(("warn", w))
+    if boot and boot.get("lines") and not boot.get("all_present"):
+        missing = [k for k, v in (boot.get("lines") or {}).items() if not v]
+        alerts.append(("warn", "启动自证行不全：缺 {}".format("、".join(missing))))
+    if outbox.get("present") and outbox.get("with_error"):
+        alerts.append(("warn", "出站队列有 {} 条发失败过的记录".format(
+            outbox["with_error"])))
+    alert_html = "".join(
+        "<div class='alert-banner alert-banner--{lv}'>"
+        "<span class='alert-banner__icon'>{ic}</span><span>{tx}</span></div>".format(
+            lv=lv, ic="⛔" if lv == "bad" else "⚠️", tx=_e(tx))
+        for lv, tx in alerts)
+
+    # ---- 2) 状态卡格（4 张 stat-card）----
+    def stat(label, value, sub, cls=""):
+        return ("<div class='card stat-card {cls}'>"
+                "<span class='stat-card__label'>{l}</span>"
+                "<span class='stat-card__value'>{v}</span>"
+                "<span class='stat-card__sub'>{s}</span></div>").format(
+            cls=cls, l=_e(label), v=value, s=_e(sub))
+
+    bot_running = process.get("bot_running")
+    if bot_running is None:
+        stat_process = stat("容器 / 进程", "—", "读不到进程信息")
+    else:
+        stat_process = stat(
+            "容器 / 进程", "运行中" if bot_running else "未运行",
+            "PID {pid} · 内存 {rss} · 已运行 {up}".format(
+                pid=process.get("bot_pid") or "-",
+                rss=process.get("bot_rss") or "-",
+                up=process.get("bot_uptime") or "-"),
+            "" if bot_running else "stat-card--bad")
+
+    cookies = auth.get("cookies") or []
+    n_ok = sum(1 for c in cookies if not c.get("expired"))
+    if not cookies:
+        stat_auth = stat("登录态", "—", "没读到 token cookie", "stat-card--warn")
+    else:
+        stat_auth = stat(
+            "登录态", "{}/{} 有效".format(n_ok, len(cookies)),
+            "续期失败 {}".format(
+                "是" if auth.get("renew_fail") else "无")
+            if auth.get("renew_fail") is not None else "—",
+            "" if n_ok == len(cookies) else "stat-card--bad")
+
+    bots = config.get("bots") or []
+    token_missing = [b.get("key") for b in bots if not b.get("token_set")]
+    stat_groups = stat(
+        "群与 Bot", "{} 群 / {} Bot".format(
+            config.get("group_count", "-"), len(bots)),
+        "配置来源 {src} · 覆盖：功能 {f} 参数 {p}{tok}".format(
+            src=config.get("source") or "-",
+            f=config.get("feature_overrides", 0),
+            p=config.get("param_overrides", 0),
+            tok="" if not token_missing else
+            " · ⚠️ token 未设：{}".format("、".join(token_missing))),
+        "stat-card--warn" if (config.get("source") == "defaults"
+                              or token_missing) else "")
+
+    pending = outbox.get("pending_or_leased")
+    stat_outbox = stat(
+        "出站队列", str(pending) if pending is not None else "—",
+        "重试>1 {r} · 有错误 {e} · 共 {t} 条".format(
+            r=outbox.get("retried", "-"), e=outbox.get("with_error", "-"),
+            t=outbox.get("total", "-")),
+        "stat-card--bad" if (outbox.get("with_error") or 0) else
+        ("stat-card--warn" if (pending or 0) else ""))
+    stat_cards = ("<div class='status-grid'>{}</div>").format(
+        stat_process + stat_auth + stat_groups + stat_outbox)
+
+    # ---- 3) 快捷操作 + 启动自证（双列）----
+    # 本面板**只读**：唯一的写操作（热加载）在配置页，这里不放假按钮。
+    shortcuts = (
+        "<div class='card'><div class='card__header'>"
+        "<span class='card__title'>快捷操作</span>"
+        "<span class='card__meta'>全部写入操作在配置页</span></div>"
+        "<div class='card__body'><div class='flex flex-col' style='gap:8px'>"
+        "<a class='btn btn--primary' href='/features'>🎚️ 功能与参数（保存即热加载）</a>"
+        "<a class='btn btn--ghost' href='/edit'>👥 群与 Bot · 备份回滚</a>"
+        "<a class='btn btn--ghost' href='/personas'>🎭 人设与话术</a>"
+        "<a class='btn btn--ghost' href='/prompts'>📝 文案模板</a>"
+        "<a href='/api/summary'>JSON（/api/summary）</a> · "
+        "<a href='/healthz'>healthz</a>"
+        "</div></div></div>")
+    proof = (
+        "<div class='card'><div class='card__header'>"
+        "<span class='card__title'>启动自证</span>"
+        "<span class='card__meta'>{done}</span></div>"
+        "<div class='card__body card__body--compact'>{table}</div></div>").format(
+        done="{} / {} 行".format(
+            sum(1 for v in (boot.get("lines") or {}).values() if v),
+            len(boot.get("lines") or {})) if boot else "—",
+        table=body("boot"))
+    duo = ("<div class='section-grid'>{}</div>").format(shortcuts + proof)
+
+    # ---- 4) 群状态表（以群为主视图，§2.2.4：功能摘要 + 最近活动）----
+    gstate = sec("groups")
+    outbox_sec = secs.get("outbox") or {}
+    last_act = (outbox_sec.get("data") or {}).get("last_activity") or {}
+    g_rows = []
+    for g in (config.get("groups") or []):
+        cid = g.get("cid") or ""
+        st = (gstate.get("groups") or {}).get(cid) or {}
+        playing = _e("、".join(st.get("playing") or []) or "—")
+        # 功能摘要：启用计数 + 与默认不同的项（超出 4 个折叠成 "+n"）
+        diffs = g.get("feat_diffs") or []
+        summary = ("<span class='badge badge--{}'>{}/{} 启用</span> ".format(
+            "ok" if g.get("feat_on") else "bad",
+            g.get("feat_on", "-"), g.get("feat_total", "-")))
+        summary += "".join(
+            "<span class='badge badge--{cls}' title='{k}'>{l} {s}</span> ".format(
+                cls="bad" if not d["on"] else "ok",
+                k=_e(d["key"]), l=_e(d["label"]), s="开" if d["on"] else "关")
+            for d in diffs[:4])
+        if len(diffs) > 4:
+            summary += "<span class='text-dim'>+{} 项</span>".format(len(diffs) - 4)
+        if not diffs:
+            summary += "<span class='text-dim'>全部跟随默认</span>"
+        # 最近活动：最近一次出站（发出优先，入队兜底）；没有出站记录就是"—"
+        la = last_act.get(cid)
+        last_txt = _ago(time.time() - la) if la else "—"
+        g_rows.append(
+            ("<tr class='{rowcls}'>"
+             "<td class='feat'>{a}<br><span class='mono text-dim'>{c8}</span></td>"
+             "<td>{active}</td>"
+             "<td class='mono'>{persona}</td>"
+             "<td class='mono'>{bot}</td>"
+             "<td>{summary}</td>"
+             "<td>{flags}</td>"
+             "<td>{playing}</td>"
+             "<td>{heat}</td>"
+             "<td class='text-dim'>{last}</td>"
+             "<td class='text-dim'>{nkeys} 键</td></tr>").format(
+                rowcls="group-row" if g.get("active") else "",
+                a=_e(g.get("alias") or cid[:8]), c8=_e(cid[:8]),
+                active=("<span class='badge badge--ok'>生效</span>"
+                        if g.get("active") else
+                        "<span class='badge badge--bad'>停用</span>"),
+                persona=_e(g.get("persona") or "（默认）"),
+                bot=_e(g.get("bot") or "—"),
+                summary=summary,
+                flags="".join(
+                    "<span class='badge badge--neutral'>{}</span> ".format(t)
+                    for t, on_ in (("静默", g.get("mute")),
+                                   ("筛查", g.get("screen")),
+                                   ("推送", g.get("push"))) if on_)
+                or "—",
+                playing=playing,
+                heat=_e(st.get("heat_people", "-") if st else "-"),
+                last=_e(last_txt),
+                nkeys=len(st.get("buckets") or []) if st else "-"))
+    groups_table = (
+        "<div class='card'><div class='card__header'>"
+        "<span class='card__title'>群状态</span>"
+        "<span class='card__meta'>配置 × 运行状态，以群为主视图</span></div>"
+        "<div class='card__body'>"
+        "<div class='table-wrap'><table class='table table--compact'>"
+        "<tr><th>群</th><th>状态</th><th>人设</th><th>Bot 通道</th>"
+        "<th>功能摘要</th><th>特殊开关</th><th>进行中玩法</th>"
+        "<th>发情人数</th><th>最近活动</th><th>状态键</th></tr>"
+        "{rows}</table></div>"
+        "<div class='text-dim' style='margin-top:8px'>功能摘要 = 与代码默认不同的"
+        "生效项（本群覆盖 / 全局覆盖都已折算）；最近活动 = 最近一次出站发送"
+        "（不含入站消息）。玩法状态每轮变化，这里是只读快照。</div>"
+        "</div></div>").format(
+        rows="".join(g_rows) or "<tr><td colspan=10 class='text-dim'>（没读到配置）</td></tr>")
+
+    # ---- 5) 详细监控（原 9 段收进折叠区）----
+    detail_cards = []
     for key, title, _ in SECTIONS:
         s = secs.get(key, {})
-        cards.append(
-            "<section><h2>{}<small>{} ms{}</small></h2><div class='body'>{}</div></section>"
-            .format(_e(title), s.get("ms", "-"),
-                    "" if s.get("ok", True) else " · 失败", body(key)))
-    return ("<!doctype html><html lang='zh'><head><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<title>小小糯 运维后台</title><style>{}</style></head><body>"
-            "<header><h1>小小糯 运维后台</h1>"
-            "<span class='dim'>{}</span>"
-            "<span class='dim'>只读</span>"
-            "<span style='margin-left:auto'>"
-            "<a href='/edit' style='color:#7aa2f7'>⚙ 配置</a> · "
-            "<a href='/features' style='color:#7aa2f7'>🧩 功能与参数</a> · "
-            "<a href='/personas' style='color:#7aa2f7'>🎭 人设与话术</a> · "
-            "<a href='/prompts' style='color:#7aa2f7'>📝 文案模板</a> · "
-            "<a href='/api/summary' style='color:#7aa2f7'>JSON</a> · "
-            "<a href='/' style='color:#7aa2f7'>刷新</a> · "
-            "<a href='/logout' style='color:#7aa2f7'>退出</a>"
-            "</span></header><main>{}</main>"
-            "<footer>{} · 只读面板 · 所有数据均来自本机文件，页面不接受任何写入</footer>"
-            "</body></html>").format(_CSS, _e(data["generated_at"]), "".join(cards),
-                                     _e(VERSION))
+        detail_cards.append(
+            "<div class='card'><div class='card__header'>"
+            "<span class='card__title'>{t}</span>"
+            "<span class='card__meta'>{ms} ms{fail}</span></div>"
+            "<div class='card__body card__body--scroll'>{b}</div></div>"
+            .format(t=_e(title), ms=s.get("ms", "-"), b=body(key),
+                    fail="" if s.get("ok", True) else " · 失败"))
+    details = ("<details><summary>详细监控（原始各段：进程 / 自证 / 登录态 / "
+               "队列 / 错误 / prompt / 存储 / 群玩法 / 配置 / 热加载）</summary>"
+               "<div class='section-grid'>{}</div></details>").format(
+        "".join(detail_cards))
+
+    # P4-4A：页面外壳（侧边栏/header/主题切换/CSS）由 admin.shell 统一提供，
+    # 这里只产出 content 片段。
+    from admin import shell
+    content = ("{alert_html}"
+               "<div class='text-dim mb-2'>生成于 {at} · 只读面板 · "
+               "<a href='/api/summary'>JSON</a> · <a href='/'>刷新</a></div>"
+               "{stat_cards}{duo}{groups_table}{details}"
+               "<footer class='footer'>{ver} · 只读面板 · "
+               "所有数据均来自本机文件，页面不接受任何写入</footer>").format(
+        alert_html=alert_html, at=_e(data.get("generated_at") or "-"),
+        stat_cards=stat_cards, duo=duo, groups_table=groups_table,
+        details=details, ver=_e(data.get("version") or VERSION))
+    return shell.page(active="/", title="总览",
+                      breadcrumb="监控 / 总览",
+                      content=content)
 
 
 def render_login(error="", notice="", locked_for=0, user=""):
-    """登录页。**不带任何数据** —— 没登录的人不该看到一个字节的面板内容。"""
+    """登录页。**不带任何数据** —— 没登录的人不该看到一个字节的面板内容。
+
+    P4-4A：唯一**不进壳**的页面——/static 要登录才能拉到（会话检查在
+    static 路由之前），共享 CSS 帮不上它，样式必须自包含（_LOGIN_CSS）。
+    """
     if locked_for > 0:
-        msg = ('<div class="msg bad">尝试次数过多，请 {} 后再试。</div>'
+        msg = ('<div class="msg msg--bad">尝试次数过多，请 {} 后再试。</div>'
                .format(_ago(locked_for)))
     elif error:
-        msg = '<div class="msg bad">{}</div>'.format(_e(error))
+        msg = '<div class="msg msg--bad">{}</div>'.format(_e(error))
     elif notice:
-        msg = '<div class="msg ok">{}</div>'.format(_e(notice))
+        msg = '<div class="msg msg--ok">{}</div>'.format(_e(notice))
     else:
         msg = ""
     return ("<!doctype html><html lang='zh'><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<title>登录 · 小小糯 运维后台</title><style>{css}"
-            ".box{{max-width:330px;margin:12vh auto;background:#181c25;"
-            "border:1px solid #262c39;border-radius:9px;padding:20px}}"
-            "label{{display:block;color:#8b95a7;margin:10px 0 4px}}"
-            "input{{width:100%;box-sizing:border-box;background:#0f1218;color:#d8dee9;"
-            "border:1px solid #2b3140;border-radius:6px;padding:8px;font-size:14px}}"
-            "button{{width:100%;margin-top:16px;padding:9px;border:0;border-radius:6px;"
-            "background:#2f6feb;color:#fff;font-size:14px;cursor:pointer}}"
-            ".msg{{padding:8px 10px;border-radius:6px;margin-bottom:10px;font-size:12px}}"
-            ".msg.bad{{background:#4a1f27;color:#ff8b9a}}"
-            ".msg.ok{{background:#1f3d2b;color:#7ee2a8}}"
-            "h1{{font-size:15px;margin:0 0 4px}}.sub{{color:#6c7686;font-size:12px}}"
-            "</style></head><body><div class='box'>"
+            "<title>登录 · 小小糯 运维后台</title><style>{css}</style></head>"
+            "<body><div class='box'>"
             "<h1>小小糯 运维后台</h1>"
             "<div class='sub'>只读面板 · 请登录</div>"
             "{msg}"
@@ -874,7 +1093,7 @@ def render_login(error="", notice="", locked_for=0, user=""):
             "<label for='p'>密码</label>"
             "<input id='p' name='password' type='password' autocomplete='current-password'>"
             "<button type='submit'>登录</button>"
-            "</form></div></body></html>").format(css=_CSS, msg=msg, user=_e(user))
+            "</form></div></body></html>").format(css=_LOGIN_CSS, msg=msg, user=_e(user))
 
 
 # ---------------------------------------------------------------- HTTP
@@ -1130,13 +1349,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        # 没有外链资源；顺手把 Referer 掐掉
+        # P4-4A 起有同源外链资源（/static/*.css + app.js）；顺手把 Referer 掐掉
         self.send_header("Referrer-Policy", "no-referrer")
         # 自包含页面：无 CDN、无内联脚本；脚本只允许**同源文件**（P12-D 起）。
         # script-src 'self' 是 P12-D 放开的（矩阵页没有 JS 会很难用），
         # 但内联脚本、CDN、eval 仍然全禁 —— 这是 XSS 的主要入口。
+        # ⚠️ style-src 必须带 'self'（2026-10-02 线上事故）：P4-4A 起 CSS 从
+        # 内联 <style> 改为外链 /static/*.css —— 'unsafe-inline' 只放行内联，
+        # 外链样式表按源匹配，没有 'self' 就被浏览器 CSP 静默拒载（整站裸 HTML，
+        # 服务器侧 200 完全看不出来）。'unsafe-inline' 保留：页面的 extra_head
+        # 仍是内联 <style>。
         self.send_header("Content-Security-Policy",
-                         "default-src 'none'; style-src 'unsafe-inline'; "
+                         "default-src 'none'; "
+                         "style-src 'self' 'unsafe-inline'; "
                          "script-src 'self'; form-action 'self'; "
                          "frame-ancestors 'none'; base-uri 'none'")
         # 老浏览器兜底（CSP 的 frame-ancestors 已经覆盖现代浏览器）
@@ -1145,7 +1370,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
-            self.wfile.write(raw)
+            # P12-BO 杂项：客户端（多半是扫描器）在响应写完前断开 ⇒ wfile.write 抛
+            # ConnectionResetError/BrokenPipeError，之前会把整段 traceback 打进日志
+            # （线上 6 小时 1 条，纯噪声）。这里吞掉它 —— 它对功能没有任何影响。
+            try:
+                self.wfile.write(raw)
+            except (ConnectionResetError, BrokenPipeError):
+                pass
 
     def _redirect(self, location, extra_headers=()):
         self.send_response(303)
@@ -1161,8 +1392,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     # 静态资源**白名单**：只服务这几个文件，不做目录遍历。
+    # ⚠️ shell.page 引用的每一个 /static/ 路径都必须在这里登记，否则线上
+    # 404、页面裸 HTML（2026-10-02 踩过：4A 新增三个 CSS 忘登记，本地目检走
+    # http.server 直读文件系统没经过这个路由，漏到了线上）。防漂移钉点：
+    # test_every_referenced_static_asset_is_served 从 shell.py 提取全部引用逐个 GET。
     _STATIC = {
         "/static/app.js": ("application/javascript; charset=utf-8", "app.js"),
+        "/static/base.css": ("text/css; charset=utf-8", "base.css"),
+        "/static/components.css": ("text/css; charset=utf-8", "components.css"),
+        "/static/dashboard.css": ("text/css; charset=utf-8", "dashboard.css"),
     }
 
     def _send_static(self, path):
@@ -1324,19 +1562,17 @@ class Handler(BaseHTTPRequestHandler):
         还在正常跑、只是这次改坏了"（P12-F 之后尤其重要：热加载会拒绝坏配置，
         bot 一点都不受影响）。所以做成一页带红色横幅的说明 + 去备份页的链接。
         """
-        from admin import config_ui
+        from admin import config_ui, shell
         body = config_ui.status_block(
             {"invalid": True, "error": str(err)}, csrf=self._csrf())
-        return ("<!doctype html><html lang='zh'><head><meta charset='utf-8'>"
-                "<title>配置读不了 · 小小糯 运维后台</title><style>{css}</style>"
-                "</head><body><header><h1>小小糯 · 配置读不了</h1>"
-                "<span style='margin-left:auto'><a href='/'>← 只读面板</a> · "
-                "<a href='/edit/backup'>备份与回滚</a> · "
-                "<a href='/logout'>退出</a></span></header><main>{body}"
-                "<p class='dim'>机器人<b>没有受影响</b>：热加载遇到不合法的配置会"
-                "拒绝应用，运行期继续用上一次成功的配置。改回去（或从备份回滚）"
-                "就会自动恢复。</p></main></body></html>").format(
-                    css=config_ui._CSS, body=body)
+        content = (body
+                   + "<p class='text-dim'>机器人<b>没有受影响</b>：热加载遇到不合法的配置会"
+                   "拒绝应用，运行期继续用上一次成功的配置。改回去（或从备份回滚）"
+                   "就会自动恢复。</p>"
+                   "<p><a class='btn btn--ghost btn--sm' href='/edit/backup'>备份与回滚</a></p>")
+        return shell.page(active="/", title="配置读不了",
+                          breadcrumb="监控 / 配置读不了",
+                          content=content)
 
     def _render_features_page(self, error="", notice="", changes=(), reset_note=""):
         """功能与参数页（P12-D）。"""

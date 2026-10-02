@@ -1,82 +1,417 @@
-/* 小小糯运维后台的前端脚本（P12-D）。
- *
- * 规则（CSP 只放开了 script-src 'self'，这些是硬约束）：
- *   1. 没有内联脚本、没有 onclick、没有 eval —— 全部在这里挂监听；
- *   2. 所有文字一律用 textContent 写进 DOM，**不用 innerHTML**；
- *   3. 只做"体验"，不做业务：没有它，纯 HTML 表单也能完成全部操作。
- *
- * 它做四件事：
- *   a. 改动计数（顶部提示"有 N 项未保存"，离开页面前提醒）
- *   b. 功能矩阵里"关掉一个带状态的功能"时提醒一句（该功能有进行中状态的话）
- *   c. 参数框超出允许范围时**就地标红**（真正的拦截在服务端，这里只是提醒）
- *   d. 危险值二次确认（提交时如果改了冷却/概率之类的极端值）
- */
+/* ============================================================
+   DDZM Admin — Frontend Script (v2)
+   
+   原则：渐进增强。无JS时纯HTML表单仍可完成全部操作。
+   JS 只做体验增强：侧边栏、主题切换、自动刷新、dirty计数、
+   范围校验、保存确认、Toast通知、表格排序/搜索。
+   ============================================================ */
 (function () {
   "use strict";
 
-  function qsa(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+  /* ---- Helpers ---- */
+  var qs = function (sel, root) { return (root || document).querySelector(sel); };
+  var qsa = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
 
-  var dirty = 0;
-  var dirtyBox = null;
+  /* ============================================================
+     1. Theme Toggle
+     ============================================================ */
+  function initTheme() {
+    var saved = localStorage.getItem("dzmm-theme");
+    if (saved) {
+      document.documentElement.setAttribute("data-theme", saved);
+    } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
+      document.documentElement.setAttribute("data-theme", "light");
+    }
 
-  function ensureBox() {
-    if (dirtyBox) { return dirtyBox; }
-    dirtyBox = document.createElement("div");
-    dirtyBox.className = "msg warn";
-    dirtyBox.id = "js-dirty";
-    var main = document.querySelector("main");
-    if (main) { main.insertBefore(dirtyBox, main.firstChild); }
-    return dirtyBox;
+    var btn = qs(".theme-toggle");
+    if (!btn) return;
+
+    function updateIcon() {
+      var isLight = document.documentElement.getAttribute("data-theme") === "light";
+      btn.textContent = isLight ? "🌙" : "☀️";
+      btn.setAttribute("aria-label", isLight ? "切换到暗色主题" : "切换到亮色主题");
+    }
+    updateIcon();
+
+    btn.addEventListener("click", function () {
+      var current = document.documentElement.getAttribute("data-theme") || "dark";
+      var next = current === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      localStorage.setItem("dzmm-theme", next);
+      updateIcon();
+    });
   }
 
-  function bump() {
-    dirty += 1;
-    var b = ensureBox();
-    b.textContent = "有 " + dirty + " 项改动还没保存（点最下面的「保存」才会写入）。";
+  /* ============================================================
+     2. Sidebar (Mobile)
+     ============================================================ */
+  function initSidebar() {
+    var toggle = qs(".sidebar-toggle");
+    var sidebar = qs(".sidebar");
+    var overlay = qs(".sidebar-overlay");
+    if (!toggle || !sidebar) return;
+
+    function open() {
+      sidebar.classList.add("open");
+      if (overlay) overlay.classList.add("visible");
+      toggle.setAttribute("aria-expanded", "true");
+    }
+
+    function close() {
+      sidebar.classList.remove("open");
+      if (overlay) overlay.classList.remove("visible");
+      toggle.setAttribute("aria-expanded", "false");
+    }
+
+    toggle.addEventListener("click", function () {
+      sidebar.classList.contains("open") ? close() : open();
+    });
+
+    if (overlay) {
+      overlay.addEventListener("click", close);
+    }
+
+    // Close on Escape
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && sidebar.classList.contains("open")) close();
+    });
   }
 
-  function markRange(input) {
-    var lo = input.getAttribute("data-lo");
-    var hi = input.getAttribute("data-hi");
-    var v = input.value.trim();
-    if (v === "") { input.style.borderColor = ""; return; }
-    var n = Number(v);
-    var bad = isNaN(n);
-    if (!bad && lo !== null && lo !== "" && n < Number(lo)) { bad = true; }
-    if (!bad && hi !== null && hi !== "" && n > Number(hi)) { bad = true; }
-    input.style.borderColor = bad ? "#ff8b9a" : "";
-    input.title = bad ? ("超出允许范围（" + (lo || "") + "~" + (hi || "") + "）") : "";
+  /* ============================================================
+     3. Dirty Tracking (Form Changes)
+     ============================================================ */
+  var dirtyCount = 0;
+  var toastContainer = null;
+
+  function ensureToastContainer() {
+    if (toastContainer) return toastContainer;
+    toastContainer = document.createElement("div");
+    toastContainer.className = "toast-container";
+    document.body.appendChild(toastContainer);
+    return toastContainer;
   }
 
-  function init() {
-    // a. 任何输入变化都计数
-    qsa("input[type=radio],input[type=checkbox],input[type=text]").forEach(function (el) {
-      el.addEventListener("change", function () {
-        bump();
-        if (el.type === "text") { markRange(el); }
-      });
-      if (el.type === "text") {
-        el.addEventListener("input", function () { markRange(el); });
-        markRange(el);
+  function showToast(message, level) {
+    var container = ensureToastContainer();
+    var el = document.createElement("div");
+    el.className = "toast toast--" + (level || "info");
+    el.textContent = message;
+    container.appendChild(el);
+    setTimeout(function () {
+      el.style.opacity = "0";
+      el.style.transform = "translateX(20px)";
+      setTimeout(function () { el.remove(); }, 300);
+    }, 3000);
+  }
+
+  function initDirtyTracking() {
+    var inputs = qsa("input[type=text], input[type=number], input[type=radio], input[type=checkbox], textarea, select")
+      .filter(function (el) { return !el.hasAttribute("data-no-dirty"); });
+    if (!inputs.length) return;
+
+    // Snapshot initial values
+    var initials = new Map();
+    inputs.forEach(function (el) {
+      if (el.type === "checkbox" || el.type === "radio") {
+        initials.set(el, el.checked);
+      } else {
+        initials.set(el, el.value);
       }
     });
 
-    // d. 提交前确认（只提醒一次，避免打断正常流程）
-    //    只挂 /features 这一张表单：它整表提交、爆炸半径最大。
-    var form = document.querySelector("form[action='/features']");
-    if (form) {
-      form.addEventListener("submit", function (ev) {
-        if (dirty === 0) { return; }
-        var ok = window.confirm("要保存这 " + dirty + " 项改动吗？" +
-                                "（写入前会自动备份；保存后约 1 秒自动生效，不用重启）");
-        if (!ok) { ev.preventDefault(); }
+    function recount() {
+      var count = 0;
+      var radioGroups = {};  // 同 name 的 radio 是一组：变没变只算 1 项
+      inputs.forEach(function (el) {
+        var init = initials.get(el);
+        if (el.type === "radio") {
+          if (el.checked !== init && !radioGroups[el.name]) {
+            radioGroups[el.name] = 1;
+            count++;
+          }
+        } else if (el.type === "checkbox") {
+          if (el.checked !== init) count++;
+        } else {
+          if (el.value !== init) count++;
+        }
       });
+      dirtyCount = count;
+      updateDirtyUI();
     }
 
-    // a2. 有未保存改动时离开页面提醒
-    window.addEventListener("beforeunload", function (ev) {
-      if (dirty > 0) { ev.preventDefault(); ev.returnValue = ""; }
+    function updateDirtyUI() {
+      var box = qs("#js-dirty");
+      if (dirtyCount > 0) {
+        if (!box) {
+          box = document.createElement("div");
+          box.id = "js-dirty";
+          box.className = "msg msg--warn";
+          box.style.cssText = "margin:var(--sp-4) var(--sp-6);position:sticky;top:var(--header-height);z-index:40;";
+          var main = qs(".content") || qs("main");
+          if (main) main.insertBefore(box, main.firstChild);
+        }
+        // CSP/测试要求：**不许注入 HTML 字符串**（XSS 面），全部走 DOM API + textContent。
+        // 先清空再重建（这条提示每次计数变化都要刷新数字）。
+        while (box.firstChild) { box.removeChild(box.firstChild); }
+        var icon = document.createElement("span");
+        icon.className = "msg__icon";
+        icon.textContent = "⚠️";
+        var content = document.createElement("span");
+        content.className = "msg__content";
+        content.textContent = "有 " + dirtyCount + " 项改动还没保存";
+        box.appendChild(icon);
+        box.appendChild(content);
+      } else if (box) {
+        box.remove();
+      }
+    }
+
+    inputs.forEach(function (el) {
+      el.addEventListener("change", recount);
+      if (el.type === "text" || el.type === "number" || el.tagName === "TEXTAREA") {
+        el.addEventListener("input", recount);
+      }
     });
+
+    // Warn before leaving with unsaved changes
+    window.addEventListener("beforeunload", function (e) {
+      if (dirtyCount > 0) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    });
+
+    // Confirm on form submit
+    qsa("form").forEach(function (form) {
+      form.addEventListener("submit", function (e) {
+        if (dirtyCount > 0) {
+          var ok = window.confirm("要保存这 " + dirtyCount + " 项改动吗？\n（写入前会自动备份；保存后约 1 秒自动生效）");
+          if (!ok) { e.preventDefault(); return; }
+        }
+        // Show saving toast
+        showToast("正在保存…", "info");
+      });
+    });
+  }
+
+  /* ============================================================
+     4. Range Validation (Real-time)
+     ============================================================ */
+  function initRangeValidation() {
+    qsa("input[data-lo], input[data-hi]").forEach(function (el) {
+      function check() {
+        var lo = el.getAttribute("data-lo");
+        var hi = el.getAttribute("data-hi");
+        var v = el.value.trim();
+        if (v === "") { el.classList.remove("input--error"); el.title = ""; return; }
+        var n = Number(v);
+        var bad = isNaN(n);
+        if (!bad && lo !== null && lo !== "" && n < Number(lo)) bad = true;
+        if (!bad && hi !== null && hi !== "" && n > Number(hi)) bad = true;
+        el.classList.toggle("input--error", bad);
+        el.title = bad ? ("超出允许范围（" + (lo || "") + "~" + (hi || "") + "）") : "";
+      }
+      el.addEventListener("input", check);
+      el.addEventListener("change", check);
+      check();
+    });
+  }
+
+  /* ============================================================
+     5. Auto-refresh Status (Dashboard only)
+     ============================================================ */
+  function initAutoRefresh() {
+    var indicator = qs(".refresh-indicator");
+    if (!indicator) return; // Not on dashboard
+
+    var REFRESH_INTERVAL = 30000; // 30s
+
+    async function refresh() {
+      try {
+        var res = await fetch("/api/summary", { credentials: "same-origin" });
+        if (!res.ok) return;
+        var data = await res.json();
+        updateDashboard(data);
+        var dot = qs(".refresh-dot");
+        if (dot) { dot.classList.remove("refresh-dot--stale"); }
+      } catch (e) {
+        var dot = qs(".refresh-dot");
+        if (dot) { dot.classList.add("refresh-dot--stale"); }
+      }
+    }
+
+    function updateDashboard(data) {
+      // Update stat cards by data attribute
+      qsa("[data-stat]").forEach(function (el) {
+        var key = el.getAttribute("data-stat");
+        var val = resolveStatValue(data, key);
+        if (val !== undefined) el.textContent = val;
+      });
+
+      // Update badges by data-badge
+      qsa("[data-badge]").forEach(function (el) {
+        var key = el.getAttribute("data-badge");
+        var val = resolveStatValue(data, key);
+        if (val !== undefined) {
+          el.textContent = val;
+          // Update color based on value
+          if (typeof val === "number" || !isNaN(Number(val))) {
+            var n = Number(val);
+            el.className = "badge " + (n > 0 ? "badge--bad" : "badge--ok");
+          }
+        }
+      });
+
+      // Update timestamp
+      var ts = qs("[data-generated-at]");
+      if (ts && data.generated_at) ts.textContent = data.generated_at;
+    }
+
+    function resolveStatValue(data, key) {
+      // Simple dot-path resolver: "sections.auth.data.cookies.0.remain"
+      var parts = key.split(".");
+      var obj = data;
+      for (var i = 0; i < parts.length; i++) {
+        if (obj == null) return undefined;
+        obj = obj[parts[i]];
+      }
+      return obj;
+    }
+
+    setInterval(refresh, REFRESH_INTERVAL);
+  }
+
+  /* ============================================================
+     6. Table Sort & Filter
+     ============================================================ */
+  function initTableSort() {
+    qsa(".table[data-sortable]").forEach(function (table) {
+      var headers = qsa("th[data-sort]", table);
+      headers.forEach(function (th) {
+        th.style.cursor = "pointer";
+        th.title = "点击排序";
+        th.addEventListener("click", function () {
+          var col = th.cellIndex;
+          var tbody = qs("tbody", table);
+          if (!tbody) return;
+          var rows = Array.prototype.slice.call(tbody.querySelectorAll("tr"));
+          var asc = th.getAttribute("data-sort-dir") !== "asc";
+          th.setAttribute("data-sort-dir", asc ? "asc" : "desc");
+
+          // Reset other headers
+          headers.forEach(function (h) {
+            if (h !== th) h.removeAttribute("data-sort-dir");
+          });
+
+          rows.sort(function (a, b) {
+            var av = (a.cells[col] || {}).textContent || "";
+            var bv = (b.cells[col] || {}).textContent || "";
+            var an = parseFloat(av.replace(/[^0-9.\-]/g, ""));
+            var bn = parseFloat(bv.replace(/[^0-9.\-]/g, ""));
+            if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
+            return asc ? av.localeCompare(bv, "zh") : bv.localeCompare(av, "zh");
+          });
+
+          rows.forEach(function (r) { tbody.appendChild(r); });
+        });
+      });
+    });
+  }
+
+  /* ============================================================
+     7. Collapsible Sections
+     ============================================================ */
+  function initCollapsible() {
+    qsa("[data-collapse-toggle]").forEach(function (toggle) {
+      toggle.addEventListener("click", function () {
+        var target = qs(toggle.getAttribute("data-collapse-toggle"));
+        if (!target) return;
+        var isVisible = target.style.display !== "none";
+        target.style.display = isVisible ? "none" : "block";
+        toggle.setAttribute("aria-expanded", String(!isVisible));
+        toggle.classList.toggle("expanded", !isVisible);
+      });
+    });
+  }
+
+  /* ============================================================
+     8. Tabs
+     ============================================================ */
+  function initTabs() {
+    qsa(".tabs").forEach(function (tabBar) {
+      var tabs = qsa(".tab", tabBar);
+      tabs.forEach(function (tab) {
+        tab.addEventListener("click", function () {
+          var panelId = tab.getAttribute("data-tab");
+          if (!panelId) return;
+
+          // Deactivate all
+          tabs.forEach(function (t) { t.classList.remove("active"); });
+          qsa(".tab-panel", tab.parentElement.parentElement).forEach(function (p) { p.classList.remove("active"); });
+
+          // Activate clicked
+          tab.classList.add("active");
+          var panel = qs("#" + panelId);
+          if (panel) panel.classList.add("active");
+        });
+      });
+    });
+  }
+
+  /* ============================================================
+     8. Table Search (渐进增强)
+     无 JS 时 .js-search 控件整体隐藏（html.js 类由这里添加），
+     表格原样可读可操作 —— 搜索只是查找辅助，不是操作路径。
+     用法：<input class='input js-search' data-table-search='#表格id'>
+     表内 <tr> 含 <h3> 的行视为分类头：只在组内有命中行时显示。
+     ============================================================ */
+  function initTableSearch() {
+    qsa("input[data-table-search]").forEach(function (input) {
+      var table = qs(input.getAttribute("data-table-search"));
+      if (!table) return;
+      var groups = [];
+      var cur = null;
+      qsa("tr", table).forEach(function (tr) {
+        if (qs("h3", tr)) {
+          cur = { head: tr, rows: [] };
+          groups.push(cur);
+        } else {
+          if (!cur) { cur = { head: null, rows: [] }; groups.push(cur); }
+          cur.rows.push(tr);
+        }
+      });
+      if (!groups.length) return;
+      input.addEventListener("input", function () {
+        var qv = (input.value || "").trim().toLowerCase();
+        groups.forEach(function (g) {
+          var any = false;
+          g.rows.forEach(function (tr) {
+            var hit = !qv || tr.textContent.toLowerCase().indexOf(qv) >= 0;
+            tr.style.display = hit ? "" : "none";
+            if (hit) any = true;
+          });
+          if (g.head) {
+            g.head.style.display = (!qv || any) ? "" : "none";
+          }
+        });
+      });
+    });
+  }
+
+  /* ============================================================
+     Init All
+     ============================================================ */
+  function init() {
+    document.documentElement.classList.add("js");
+    initTheme();
+    initSidebar();
+    initDirtyTracking();
+    initRangeValidation();
+    initAutoRefresh();
+    initTableSort();
+    initCollapsible();
+    initTabs();
+    initTableSearch();
   }
 
   if (document.readyState === "loading") {

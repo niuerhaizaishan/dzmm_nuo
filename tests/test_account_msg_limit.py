@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT))
 import pytest                                                  # noqa: E402
 
 import bot                                                     # noqa: E402
+from runtime import sender as S                                # noqa: E402  P3-7：Sender 真身
 
 
 # ---------------------------------------------------------------- ① 切分
@@ -104,7 +105,8 @@ def test_the_real_recap_shape_gets_split():
 # ---------------------------------------------------------------- ② 接线
 
 def test_send_path_splits_before_typing():
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    # P3-7 起 _send_locked（发送主路径）住 runtime/sender.py
+    src = (ROOT / "runtime" / "sender.py").read_text(encoding="utf-8")
     i = src.index("P12-AN：**账号通道单条上限 200 字**")
     seg = src[i:i + 2600]
     assert "_split_for_account(text, ACCOUNT_MSG_MAX_CHARS)" in seg
@@ -113,8 +115,11 @@ def test_send_path_splits_before_typing():
 
 
 def test_socket_fallback_must_verify_readback():
-    """兜底那条路原来只看 HTTP 状态码 → 出站队列里的"sent"是假的。"""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    """兜底那条路原来只看 HTTP 状态码 → 出站队列里的"sent"是假的。
+
+    P3-7 起 `_fallback_send` 住 runtime/sender.py。
+    """
+    src = (ROOT / "runtime" / "sender.py").read_text(encoding="utf-8")
     i = src.index("P12-AN：Socket.IO 那条路只看 HTTP 状态码")
     seg = src[i:i + 700]
     assert "_verify_sent(cid, text)" in seg
@@ -146,7 +151,7 @@ def test_fallback_returns_false_when_readback_fails(monkeypatch):
             return True                            # 假的"HTTP 成功"
 
     fake_mod = types.SimpleNamespace(DZMMSocket=FakeSock)
-    monkeypatch.setattr(bot, "get_cached_cookie", lambda: "c", raising=False)
+    monkeypatch.setattr(S, "get_cached_cookie", lambda: "c", raising=False)  # P3-7
 
     import importlib.util
     real_spec = importlib.util.spec_from_file_location

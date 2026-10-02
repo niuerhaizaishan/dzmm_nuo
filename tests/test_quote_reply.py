@@ -84,17 +84,37 @@ def test_feature_registered_and_off_by_default():
 
 
 def test_scan_loop_consults_the_switch():
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    # P3-19 起主循环体在 runtime/mainloop.py（bot 模块桥 B 前缀，子串兼容）
+    src = (ROOT / "runtime" / "mainloop.py").read_text(encoding="utf-8")
     i = src.index("for m in pending:")
     j = src.index("_pick_leftover(", i)
     seg = src[i:j]
-    assert '_feat_on(cid, "quote_reply")' in seg, "要能按群关掉"
+    # P12-BM B：判据统一走 `_quote_reply_on(cid)`（= quote_reply 开关 **或** 本群 at_only）
+    assert "_quote_reply_on(cid)" in seg, "要能按群关掉／at_only 群天然放行"
     assert "_quotes_self(m)" in seg
     assert "_via_quote" in seg, "要记住这条是引用触发（上下文里要摆出被引用的原文）"
 
 
+def test_quote_trigger_helper_covers_at_only_groups():
+    """P12-BM B：`at_only` 群里"引用她"天然算触发。
+
+    为什么：`at_only` 的语义就是"只接对她说的话"，而引用她的消息明显是对她说的；
+    不这样的话每开一个新群都要记得单独开 `quote_reply` —— 茶水间 2026-09-30 就是
+    这么静默不应的（屋主："我回复她发的消息不能触发她啊？"）。
+    """
+    src = (ROOT / "runtime" / "reply_gate.py").read_text(encoding="utf-8")
+    i = src.index("def quote_reply_on(")
+    seg = src[i:i + 900]
+    assert '_feat_on(cid, "quote_reply")' in seg
+    assert '_feat_on(cid, "at_only")' in seg, "at_only 群要天然放行"
+    # 非 at_only 群（玫瑰房那套房间策略）仍然只看 quote_reply ⇒ 这里必须是 or 关系
+    # （在本函数段内取最后一个 return —— 窗口会越过短函数，不能直接对 seg 取尾）
+    assert " or " in seg[:seg.find("\n\n\n")].split("return")[-1]
+
+
 def test_quoted_original_is_put_into_context_without_duplicating():
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    # P3-3-4 起 @ 闲聊分支在 runtime/at_chat.py
+    src = (ROOT / "runtime" / "at_chat.py").read_text(encoding="utf-8")
     i = src.index("P12-AE：右键回复我的那条")
     seg = src[i:i + 900]
     assert "_ref_of(_at_msg_obj" in seg

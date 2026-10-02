@@ -190,6 +190,15 @@ def scene(cmd: str) -> str:
         ai_input += "\n主角XP：" + "、".join(xp)
     if profile_ctx and not custom:
         ai_input += "\n主角资料（贴合人设描写，只描写主角本人，不增加其他人物）：\n" + "\n".join(profile_ctx)
+    # P12-AX：**按群的正文长度要求**。认证群屋主要"一半"（线上实测 1325/2201 字），
+    # 而上班群 09-27 提过"内容太少" ⇒ 不能一刀切改提示词默认档，
+    # 用参数 `scene.length` 只在配了的群里注入（空 = 用提示词默认 700-1100 字）。
+    try:
+        _want_len = str(_tune("scene.length", ctx.get_active_cid()) or "").strip()
+    except Exception:                                          # noqa: BLE001
+        _want_len = ""
+    if _want_len:
+        ai_input += "\n【长度要求】" + _want_len + "（写够就收尾，不要为了凑长度继续往下写）"
     try:
         text = generate_scene(ai_input,
                               max_tokens=int(_tune("scene.max_tokens",

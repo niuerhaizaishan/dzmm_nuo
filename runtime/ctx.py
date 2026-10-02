@@ -44,4 +44,21 @@ def reset_active_cid(cid: str = None) -> None:
     _active_cid.set(cid or PRIMARY_CID)
 
 
-__all__ = ["PRIMARY_CID", "get_active_cid", "set_active_cid", "reset_active_cid"]
+# P3-7：撞验证码旗标的**唯一真源**（进程级，非任务局部 —— 风控挡的是整个账号的发送）。
+# 写点：main_loop 三处（恢复×2、触发×1）；读点：runtime/sender.py（发送前/重试前判断）。
+_captcha_active = False
+
+
+def captcha_active() -> bool:
+    """现在是否处于「撞验证码」状态（发送路径要放宽/收紧的依据）。"""
+    return _captcha_active
+
+
+def set_captcha_active(v: bool) -> None:
+    """更新撞验证码旗标（main_loop 专用）。"""
+    global _captcha_active
+    _captcha_active = bool(v)
+
+
+__all__ = ["PRIMARY_CID", "get_active_cid", "set_active_cid", "reset_active_cid",
+           "captcha_active", "set_captcha_active"]

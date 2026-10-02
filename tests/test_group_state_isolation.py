@@ -68,4 +68,19 @@ def test_bot_never_saves_the_whole_scope_from_the_loop():
             continue                              # 注释/文档里的说明
         hits.append("{}: {}".format(i, ln.strip()))
     assert not hits, "主循环里又出现整 scope 落盘：{}".format(hits)
-    assert src.count("_save_group(cid,") >= 20, "本群落盘的调用点不该少"
+    # P3-3-3 起房间块（含其 5 处本群落盘）在 runtime/room.py，两边合起来数；
+    # P3-8/P3-9 起 roast/climax 也持有本群落盘调用点，一并计入；
+    # P3-10 起补筛在 runtime/roster.py、P3-14 起 inflight 族在 runtime/inflight.py
+    # —— 注入参数无下划线，按 "save_group(cid," 计
+    src_r = (ROOT / "runtime" / "room.py").read_text(encoding="utf-8")
+    extra = sum(
+        (ROOT / "runtime" / m).read_text(encoding="utf-8").count("_save_group(cid,")
+        for m in ("roast.py", "climax.py"))
+    injected = sum(
+        (ROOT / "runtime" / m).read_text(encoding="utf-8").count("save_group(cid,")
+        for m in ("roster.py", "inflight.py"))
+    # P3-19 起主循环体在 runtime/mainloop.py（bot 桥 B 前缀，_save_group(cid, 原样）
+    mainloop_n = (ROOT / "runtime" / "mainloop.py").read_text(
+        encoding="utf-8").count("_save_group(cid,")
+    assert src.count("_save_group(cid,") + src_r.count("_save_group(cid,") \
+        + extra + injected + mainloop_n >= 20, "本群落盘的调用点不该少"

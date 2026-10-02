@@ -150,7 +150,7 @@ def test_page_requires_login(srv):
     assert st == 200 and "请登录" in body
 
 
-def test_page_lists_all_forty_by_tier(srv):
+def test_page_lists_all_prompts_by_tier(srv):
     base, _ = srv
     op = _opener_login(base)
     st, page = _get(op, base, "/prompts")
@@ -159,7 +159,7 @@ def test_page_lists_all_forty_by_tier(srv):
         assert "name={}".format(s.key) in page, s.key
     assert "C1 · 自由文案" in page and "C2 · 形状敏感" in page
     assert "C3 · 结构化输出" in page
-    assert "（23 个）" in page and "（11 个）" in page and "（6 个）" in page
+    assert "（23 个）" in page and "（12 个）" in page and "（6 个）" in page
 
 
 def test_editor_shows_constraints_and_contract(srv):

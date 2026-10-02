@@ -166,10 +166,13 @@ def test_recap_accepts_exclude_mid():
     import inspect
     sig = inspect.signature(RC.recap_absent)
     assert "exclude_mid" in sig.parameters
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    assert 'recap_absent(\n                                    cid, at_sender, q,' in src, \
+    # P3-3-4 起 @ 问答那条路在 runtime/at_chat.py
+    src = (ROOT / "runtime" / "at_chat.py").read_text(encoding="utf-8")
+    assert 'recap_absent(\n                cid, at_sender, q,' in src, \
         "@ 问答那条路要把当前消息 id 传进去"
-    assert "(_cmd_msg or {}).get(\"message_id\")" in src, "指令那条路也要传"
+    assert "(_cmd_msg or {}).get(\"message_id\")" in (
+        ROOT / "runtime" / "dispatch.py").read_text(encoding="utf-8"), \
+        "指令那条路也要传（P3-3-2 起分派链在 runtime/dispatch.py）"
 
 
 def test_explicit_window_still_wins(tea, monkeypatch):
@@ -322,7 +325,8 @@ def test_slash_cmds_is_registered_and_defaults_on():
 
 
 def test_scan_loop_consults_the_slash_switch():
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    # P3-19 起主循环体在 runtime/mainloop.py（bot 桥 B 前缀，子串兼容）
+    src = (ROOT / "runtime" / "mainloop.py").read_text(encoding="utf-8")
     i = src.index("P12-AK：这个群不接")
     seg = src[i:i + 500]
     assert '_feat_on(cid, "slash_cmds")' in seg, "关掉的群里 /xxx 必须完全不理"

@@ -33,47 +33,16 @@ __all__ = ["render_prompts", "prompt_file", "backup_dir", "list_backups",
 
 KEEP_BACKUPS = 20
 
+# P4-4A：`_CSS` 大头已删（样式走 /static/base.css + components.css，外壳走
+# admin.shell.page；badge/msg 等状态色用共享的 --ok/--warn/--bad 变体）。
+# 下面只剩本页特有的 3 条：
+#   · pre.reply —— 模型返回很长时限高滚动（共享 pre 没有高度上限）
+#   · pre.diff  —— 逐行差异不能折行（共享 pre 是 pre-wrap）
+#   · .changed  —— 「已改」行的左边框标记
 _CSS = """
-body{font:13px/1.6 -apple-system,Segoe UI,Roboto,'Noto Sans CJK SC',sans-serif;
-margin:0;background:#12141a;color:#d8dee9}
-header{padding:10px 16px;background:#1b1f2a;border-bottom:1px solid #2b3140;
-display:flex;gap:14px;align-items:baseline;flex-wrap:wrap}
-h1{font-size:15px;margin:0;font-weight:600}
-h2{font-size:14px;margin:20px 0 6px;border-bottom:1px solid #232935;padding-bottom:4px}
-h3{font-size:12px;margin:12px 0 4px;color:#8b95a7;font-weight:500}
-a{color:#7aa2f7}
-.badge{padding:1px 7px;border-radius:9px;font-size:11px;margin-left:6px}
-.c1{background:#1f3d2b;color:#7ee2a8}.c2{background:#463a1c;color:#ffd479}
-.c3{background:#4a1f27;color:#ff8b9a}.dim{color:#6c7686;white-space:pre-wrap}
-.mono{font-family:ui-monospace,Consolas,monospace}
-main{padding:14px 16px;max-width:1200px}
-table{border-collapse:collapse;width:100%;margin-bottom:8px}
-th,td{padding:4px 6px;text-align:left;border-bottom:1px solid #232935;
-vertical-align:top}
-th{color:#8b95a7;font-weight:500;font-size:12px}
-textarea{background:#0f1218;color:#d8dee9;border:1px solid #2b3140;border-radius:5px;
-padding:6px;font-size:12px;width:100%;box-sizing:border-box;line-height:1.5;
-font-family:ui-monospace,Consolas,monospace}
-input[type=text]{background:#0f1218;color:#d8dee9;border:1px solid #2b3140;
-border-radius:5px;padding:4px 6px;font-size:12px;width:100%;box-sizing:border-box}
-button{padding:6px 14px;border:0;border-radius:6px;background:#2f6feb;color:#fff;
-font-size:13px;cursor:pointer}
-button.ghost{background:#2b3140}
-button.tiny{padding:2px 8px;font-size:11px}
-.msg{padding:8px 11px;border-radius:6px;margin:10px 0}
-.msg.bad{background:#4a1f27;color:#ff8b9a}
-.msg.ok{background:#1f3d2b;color:#7ee2a8}
-.msg.warn{background:#463a1c;color:#ffd479}
-.msg.chg{background:#243044;color:#c8d6f0;border-left:3px solid #2f6feb}
-.msg ul{margin:4px 0 0 18px;padding:0}
-pre{background:#0f1218;border:1px solid #2b3140;border-radius:6px;padding:9px;
-white-space:pre-wrap;word-break:break-word;margin:4px 0 10px;font-size:12px;
-max-height:340px;overflow:auto}
-pre.diff{white-space:pre;overflow:auto}
-details{margin:6px 0}
-summary{cursor:pointer;color:#c8d6f0}
-footer{padding:10px 16px;color:#6c7686;font-size:11px}
-.changed{border-left:3px solid #2f6feb;padding-left:6px}
+pre.reply{max-height:340px;overflow:auto}
+pre.diff{white-space:pre;word-break:normal}
+.changed{border-left:3px solid var(--c-accent);padding-left:6px}
 """
 
 
@@ -207,9 +176,14 @@ def rollback_prompt(key, version):
 
 # ---------------------------------------------------------------- 渲染
 
+# C1（自由文案，绿）/ C2（形状敏感，黄）/ C3（结构化输出，改坏即报错，红）
+# —— 颜色语义沿用旧 _CSS 的 .c1/.c2/.c3，色值走共享 badge 变体。
+_TIER_BADGE = {"C1": "badge--ok", "C2": "badge--warn", "C3": "badge--bad"}
+
+
 def _tier_badge(tier):
     return "<span class='badge {}'>{}</span>".format(
-        tier.lower(), _e(tier))
+        _TIER_BADGE.get(tier, "badge--neutral"), _e(tier))
 
 
 def render_prompts(rows, selected=None, error="", notice="", changes=(),
@@ -227,33 +201,18 @@ def render_prompts(rows, selected=None, error="", notice="", changes=(),
 
     def _row(r):
         return ("<tr><td>{badge}<a href='/prompts?name={k}'>{t}</a>"
-                "<br><span class='dim mono'>{k}</span></td>"
-                "<td class='dim'>{note}</td>"
-                "<td>{src}<br><span class='dim'>{n} 字 / {lines} 行</span>"
+                "<br><span class='mono text-dim'>{k}</span></td>"
+                "<td class='text-dim'>{note}</td>"
+                "<td>{src}<br><span class='text-dim'>{n} 字 / {lines} 行</span>"
                 "{chg}</td></tr>").format(
                     badge=_tier_badge(r["tier"]), k=_e(r["key"]), t=_e(r["title"]),
                     note=_e(r["note"] or ""),
-                    src=("<span class='badge c2'>有覆盖文件</span>"
+                    src=("<span class='badge badge--warn'>有覆盖文件</span>"
                          if r["source"] == "file"
-                         else "<span class='badge c1'>代码默认</span>"),
+                         else "<span class='badge badge--ok'>代码默认</span>"),
                     n=r["chars"], lines=r["lines"],
-                    chg=("<br><span class='badge c3'>已改（与默认 {} 字不同）</span>"
+                    chg=("<br><span class='badge badge--bad'>已改（与默认 {} 字不同）</span>"
                          if r.get("edited") else ""))
-
-    blocks = []
-    for tier in PT.TIERS:
-        items = groups.get(tier) or []
-        if not items:
-            continue
-        blocks.append(
-            "<h2>{label} <span class='dim'>（{n} 个）</span></h2>"
-            "<div class='dim'>{note}</div>"
-            "<table><tr><th style='width:280px'>提示词</th>"
-            "<th>改坏的后果 / 用途</th><th style='width:190px'>状态</th></tr>"
-            "{rows}</table>".format(
-                label=_e(PT.TIER_LABEL[tier]), n=len(items),
-                note=_e(PT.TIER_NOTE[tier]),
-                rows="".join(_row(r) for r in items)))
 
     ed = ""
     if selected:
@@ -269,10 +228,10 @@ def render_prompts(rows, selected=None, error="", notice="", changes=(),
             "lines": "逐行输出原文（程序按行比对）",
         }.get(s.contract, "无（自由文本）")
         hint = ("" if s.sample_user else
-                "<div class='dim'>这一条没有自带样例：填一句你自己的输入就能试。</div>")
+                "<div class='text-dim'>这一条没有自带样例：填一句你自己的输入就能试。</div>")
         ed = (
-            "<h2>编辑：{t} <span class='mono dim'>{k}</span>{badge}</h2>"
-            "<div class='dim'>{note}</div>"
+            "<h2>编辑：{t} <span class='mono text-dim'>{k}</span>{badge}</h2>"
+            "<div class='text-dim'>{note}</div>"
             "<h3>这一条不能丢的东西</h3>"
             "<div class='mono'>{mk}</div>"
             "<h3>输出契约</h3><div>{contract}</div>"
@@ -286,17 +245,17 @@ def render_prompts(rows, selected=None, error="", notice="", changes=(),
             "<div><input type=text name='user' value='{user}' maxlength=300 "
             "placeholder='{ph}'></div>"
             "<div style='margin-top:10px'>"
-            "<button type=submit name='action' value='save'>保存</button> "
-            "<button class='ghost' type=submit name='action' value='preview'>"
+            "<button class='btn btn--primary' type=submit name='action' value='save'>保存</button> "
+            "<button class='btn btn--ghost' type=submit name='action' value='preview'>"
             "预览（不保存）</button> "
-            "<button class='ghost' type=submit name='action' value='savetest'>"
+            "<button class='btn btn--ghost' type=submit name='action' value='savetest'>"
             "保存并自测（调模型，几秒）</button> "
             "<a href='/prompts' style='margin-left:10px'>取消</a></div>"
             "</form>"
             "<form method=post action='/prompts/reset' style='display:inline'>"
             "<input type=hidden name='csrf' value='{csrf}'>"
             "<input type=hidden name='key' value='{k}'>"
-            "<button class='ghost tiny' type=submit>恢复代码默认（把默认文本写回去）"
+            "<button class='btn btn--ghost btn--sm' type=submit>恢复代码默认（把默认文本写回去）"
             "</button></form>".format(
                 t=_e(s.title), k=_e(s.key), badge=_tier_badge(s.tier),
                 note=_e(s.note or ""), mk=_e(mk), contract=_e(contract),
@@ -312,15 +271,15 @@ def render_prompts(rows, selected=None, error="", notice="", changes=(),
         s = selected["spec"] if selected else None
         head = "自测 / 预览 · {}".format(_e(s.title) if s else "")
         if preview.get("skipped"):
-            body = "<div class='msg warn'>{}（这一条没有自测样例）</div>".format(
+            body = "<div class='msg msg--warn'>{}（这一条没有自测样例）</div>".format(
                 _e(preview.get("note") or ""))
         else:
             st = preview.get("shape") or {}
             body = (
                 "<div class='msg {cls}'><b>{verdict}</b>"
-                "　<span class='dim'>返回 {n} 字 / 换行 {nl}</span>{issues}</div>"
-                "<h3>模型返回</h3><pre>{reply}</pre>").format(
-                    cls="ok" if preview.get("ok") else "bad",
+                "　<span class='text-dim'>返回 {n} 字 / 换行 {nl}</span>{issues}</div>"
+                "<h3>模型返回</h3><pre class='reply'>{reply}</pre>").format(
+                    cls="msg--ok" if preview.get("ok") else "msg--bad",
                     verdict="契约通过 ✓" if preview.get("ok") else "**没通过** ✗",
                     n=st.get("chars"), nl=st.get("newlines"),
                     issues=("" if not preview.get("issues") else
@@ -328,7 +287,7 @@ def render_prompts(rows, selected=None, error="", notice="", changes=(),
                                 "<li>{}</li>".format(_e(x))
                                 for x in preview["issues"]))),
                     reply=_e(preview.get("reply") or "（没有返回内容）"))
-        pv = "<div class='msg chg'>{head}<div class='dim'>{note}</div></div>{body}".format(
+        pv = "<div class='msg msg--info'>{head}<div class='text-dim'>{note}</div></div>{body}".format(
             head=head,
             note="这是**草稿**的效果，还没有保存。" if not preview.get("saved")
             else "已保存并自测。",
@@ -346,60 +305,101 @@ def render_prompts(rows, selected=None, error="", notice="", changes=(),
                 "<input type=hidden name='csrf' value='{c}'>"
                 "<input type=hidden name='key' value='{k}'>"
                 "<input type=hidden name='version' value='{v}'>"
-                "<button class='ghost tiny' type=submit>回滚到这一版</button>"
+                "<button class='btn btn--ghost btn--sm' type=submit>回滚到这一版</button>"
                 "</form></td></tr>".format(
                     at=_e(h["at"]), size=h["size"], k=_e(selected["spec"].key),
                     v=_e(h["name"]), c=_e(csrf)))
         hist = ("<h3>历史版本（每份保留最近 {} 版）</h3>"
-                "<table><tr><th>时间</th><th>大小</th><th>操作</th></tr>{}</table>"
+                "<table class='table table--compact'>"
+                "<tr><th>时间</th><th>大小</th><th>操作</th></tr>{}</table>"
                 ).format(KEEP_BACKUPS, "".join(rows_h))
 
     msg = ""
     if error:
-        msg += "<div class='msg bad'>{}</div>".format(_e(error))
+        msg += "<div class='msg msg--bad'>{}</div>".format(_e(error))
     if notice:
-        msg += "<div class='msg ok'>{}</div>".format(_e(notice))
+        msg += "<div class='msg msg--ok'>{}</div>".format(_e(notice))
     if changes:
-        msg += ("<div class='msg chg'><b>本次改动</b><ul>{}</ul></div>").format(
+        msg += ("<div class='msg msg--info'><b>本次改动</b><ul>{}</ul></div>").format(
             "".join("<li>{}</li>".format(_e(x)) for x in changes))
     if status_line:
-        msg += "<div class='msg ok'>{}</div>".format(_e(status_line))
+        msg += "<div class='msg msg--ok'>{}</div>".format(_e(status_line))
 
-    return ("<!doctype html><html lang='zh'><head><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<title>文案模板 · 小小糯 运维后台</title><style>{css}</style>"
-            "</head><body><header><h1>小小糯 · 文案模板</h1>"
-            "<span class='dim'>40 个提示词 · 只写 prompts/*.md（永不改代码）· "
-            "校验不过一个字都不写</span>"
-            "<span style='margin-left:auto'><a href='/'>← 只读面板</a> · "
-            "<a href='/edit'>群与 Bot</a> · <a href='/features'>功能与参数</a> · "
-            "<a href='/personas'>人设与话术</a> · "
-            "<a href='/logout'>退出</a></span></header><main>"
-            "{msg}{pv}{ed}{hist}{blocks}"
-            "</main><footer>保存后约 1 秒自动生效（热加载，不用重启）· "
-            "改动前自动留历史版本 · 校验/自测不过不落盘 · "
-            "没有 JavaScript 也能完成全部操作</footer>"
-            "</body></html>").format(
-        css=_CSS, msg=msg, pv=pv, ed=ed, hist=hist, blocks="".join(blocks))
+    # P4-4B（屋主）：按 tier 收进页签，不平铺。selected 的编辑器/预览/历史
+    # 放进它所属 tier 的 pane，并让那个页签默认激活（服务端渲染 checked，
+    # 纯 CSS 切换、无 JS 可用——同功能页/人设页的机制）。
+    sel_tier = selected["spec"].tier if selected else None
+    tier_labels, tpanes, tpane_css = [], [], []
+    for i, tier in enumerate(PT.TIERS):
+        items = groups.get(tier) or []
+        if not items:
+            continue
+        listing = (
+            "<h2>{label} <span class='text-dim'>（{n} 个）</span></h2>"
+            "<div class='text-dim'>{note}</div>"
+            "<table class='table table--compact'>"
+            "<tr><th style='width:280px'>提示词</th>"
+            "<th>改坏的后果 / 用途</th><th style='width:190px'>状态</th></tr>"
+            "{rows}</table>".format(
+                label=_e(PT.TIER_LABEL[tier]), n=len(items),
+                note=_e(PT.TIER_NOTE[tier]),
+                rows="".join(_row(r) for r in items)))
+        # 编辑器/预览/历史只属于 selected 所在的 tier；其余页签只有清单
+        inner = (pv + ed + hist + listing) if (selected and sel_tier == tier) \
+            else listing
+        tpanes.append(
+            "<div class='tab-panel tierpane' id='tierpane-{i}'>{inner}</div>".format(
+                i=i, inner=inner))
+        tier_labels.append(
+            "<input type='radio' name='tiertab' id='tiertab-{i}' data-no-dirty{chk}>"
+            "<label for='tiertab-{i}' class='tab'>{label}（{n}）</label>".format(
+                i=i,
+                chk=" checked" if (sel_tier == tier or (not sel_tier and i == 0))
+                else "",
+                label=_e(PT.TIER_LABEL[tier]), n=len(items)))
+        tpane_css.append(
+            "#tiertab-%d:checked ~ #tierpane-%d{display:block}" % (i, i))
+        tpane_css.append(
+            ("#tiertab-%d:checked ~ label[for='tiertab-%d']" % (i, i))
+            + "{color:var(--c-accent);border-bottom-color:var(--c-accent)}")
+    tier_tabs = "<div class='tabs tier-tabs'>{labels}{panes}</div>".format(
+        labels="".join(tier_labels), panes="".join(tpanes))
+
+    # P4-4A：页面外壳（侧边栏/header/主题切换/CSS）由 admin.shell 统一提供，
+    # 这里只产出 content 片段。
+    from admin import shell
+    extra_head = "<style>{}</style>".format(
+        _CSS + ".tier-tabs{flex-wrap:wrap}.tier-tabs .tierpane"
+        "{display:none;width:100%}" + "".join(tpane_css))
+    content = ("{msg}{tier_tabs}"
+               "<footer class='footer'>40 个提示词 · 只写 prompts/*.md（永不改代码）· "
+               "保存后约 1 秒自动生效（热加载，不用重启）· 改动前自动留历史版本 · "
+               "校验/自测不过不落盘 · 没有 JavaScript 也能完成全部操作</footer>"
+               ).format(msg=msg, tier_tabs=tier_tabs)
+    return shell.page(active="/prompts", title="提示词",
+                      breadcrumb="运行时配置 / 提示词",
+                      content=content,
+                      extra_head=extra_head)
 
 
 def render_history(key, title, version, old_text, cur_text, csrf=""):
     """一个历史版本与当前内容的逐行差异（+ 回滚按钮）。"""
     from admin import config_ui
+    from admin import shell
     diff = config_ui.unified_diff(old_text, cur_text,
                                   "历史版本 " + version, "当前 prompts/{}.md".format(key))
-    return ("<!doctype html><html lang='zh'><head><meta charset='utf-8'>"
-            "<title>{title} 差异 · 小小糯 运维后台</title><style>{css}</style>"
-            "</head><body><header><h1>{title} · 差异</h1>"
-            "<span style='margin-left:auto'><a href='/prompts?name={k}'>← 回到编辑</a>"
-            "</span></header><main>"
-            "<div class='dim'>上：历史版本 {v}　下：当前 prompts/{k}.md</div>"
-            "<pre class='diff'>{diff}</pre>"
-            "<form method=post action='/prompts/rollback'>"
-            "<input type=hidden name='csrf' value='{c}'>"
-            "<input type=hidden name='key' value='{k}'>"
-            "<input type=hidden name='version' value='{v}'>"
-            "<button type=submit>回滚到这个版本</button></form>"
-            "</main></body></html>").format(
-        title=_e(title), css=_CSS, k=_e(key), v=_e(version),
-        diff=_e(diff), c=_e(csrf))
+    content = (
+        "<p><a class='btn btn--ghost btn--sm' "
+        "href='/prompts?name={k}'>← 回到编辑</a></p>"
+        "<div class='text-dim'>上：历史版本 {v}　下：当前 prompts/{k}.md</div>"
+        "<pre class='diff'>{diff}</pre>"
+        "<form method=post action='/prompts/rollback'>"
+        "<input type=hidden name='csrf' value='{c}'>"
+        "<input type=hidden name='key' value='{k}'>"
+        "<input type=hidden name='version' value='{v}'>"
+        "<button class='btn btn--primary' type=submit>回滚到这个版本</button></form>"
+        ).format(k=_e(key), v=_e(version), diff=_e(diff), c=_e(csrf))
+    return shell.page(active="/prompts", title="{} · 差异".format(title),
+                      breadcrumb="运行时配置 / 提示词 / 差异",
+                      content=content,
+                      extra_head="<style>{}</style>".format(_CSS))

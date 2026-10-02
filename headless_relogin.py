@@ -17,6 +17,7 @@
 
 import base64
 import json
+import os
 import subprocess
 import sys
 import time
@@ -24,7 +25,8 @@ from pathlib import Path
 import env_config
 
 ROOT = Path(__file__).parent
-CONFIG = ROOT / ".dzmm_login.json"
+# S1：登录配置路径可用 DZMM_LOGIN_FILE 覆盖 —— Step 2-5 撤老挂载后重登链不能断
+CONFIG = Path(os.environ.get("DZMM_LOGIN_FILE") or (ROOT / ".dzmm_login.json"))
 PW_PROFILE = "pw_login"  # Playwright 持久化 profile（登录态缓存）
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -197,15 +199,33 @@ def _do_login() -> int:
 
 
 def main():
+    from contextlib import nullcontext
+
     from session_guard import guard
 
     if "--check" in sys.argv:
         return 0 if check_logged_in() else 1
 
+    # ⚠️ P0（2026-10-01 生产实锤）：`guard()` 只有**一把锁**
+    # （runtime/session.py 的 LOCK_FILE = .session.lock），`reason` 参数只是写进锁
+    # 文件里的一句备注，**不是两把锁**。而 renew_token.py 是**在持有该锁的情况下**
+    # 用 subprocess.run 同步 spawn 本脚本的：父进程握着锁不放，子进程在这里再抢
+    # 同一把锁 ⇒ 永远拿不到 ⇒ 等满 timeout=180 后打印 "SKIP: 另一个进程正在
+    # 续期/重登" 并 rc=1 ⇒ 自动恢复整条链 100% 失效。
+    # 代价：2026-09-30 掉线 8.8 小时、2026-10-01 21:29 再次掉线，两次都只能人工救。
+    # 父进程用这个环境变量显式声明"锁已由我持有"，此时子进程直接视为持锁。
+    # ⚠️ 只认**显式声明**，绝不能默认放开 —— 真并发的两个登录会互相作废 refresh_token。
+    _under_parent = (os.environ.get("DZMM_RELOGIN_UNDER_PARENT_LOCK") or "").strip() == "1"
+
+    def _guard(reason: str, timeout: float = 30.0):
+        if _under_parent:
+            return nullcontext(True)
+        return guard(reason, timeout)
+
     # 后台人工辅助登录模式：由主流程在撞验证码时 Popen 拉起，noVNC 窗口供人工过滑块。
     # 这条路径可能持续 10 分钟（等人），但仍必须持锁 —— 否则会和续期/重登并发。
     if "--manual-captcha" in sys.argv:
-        with guard("headless_relogin.manual_captcha", timeout=600) as got:
+        with _guard("headless_relogin.manual_captcha", timeout=600) as got:
             if not got:
                 print("SKIP: 另一个进程正在续期/重登，放弃本次人工辅助登录")
                 return 1
@@ -217,7 +237,7 @@ def main():
             print("FAIL: 人工辅助登录失败/超时")
             return 1
 
-    with guard("headless_relogin", timeout=180) as got:
+    with _guard("headless_relogin", timeout=180) as got:
         if not got:
             print("SKIP: 另一个进程正在续期/重登，放弃本次登录（避免并发登录互相作废）")
             return 1

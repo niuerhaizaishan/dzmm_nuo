@@ -85,8 +85,11 @@ def test_spice_set_is_per_persona_phrase():
 
 
 def test_scene_and_insult_paths_apply_the_spice():
-    """两条链路都要真的调用它（源码级，避免只加话术没接线）。"""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    """两条链路都要真的调用它（源码级，避免只加话术没接线）。
+
+    P3-3-2 起这些调用点随分派链/续写家族在 runtime/dispatch.py。
+    """
+    src = (ROOT / "runtime" / "dispatch.py").read_text(encoding="utf-8")
     assert src.count("_spice_emoji(") >= 4, "羞辱 + 两种续写 + 重写 都要撒"
     assert "_spice_emoji," in src, "得先 import"
     fasao = (ROOT / "runtime" / "fasao.py").read_text(encoding="utf-8")
@@ -125,7 +128,8 @@ def test_blank_phrase_helper_distinguishes_missing_from_blank():
 
 
 def test_bot_wires_the_idle_branch():
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    """P3-3-2 起调教 idle 分支随分派链在 runtime/dispatch.py。"""
+    src = (ROOT / "runtime" / "dispatch.py").read_text(encoding="utf-8")
     i = src.index('elif (dj_cmd := is_dj_command_cmd(cmd))')
     seg = src[i:]
     seg = seg[:seg.index("elif is_diaojiao_cmd(cmd)")]

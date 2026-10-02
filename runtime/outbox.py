@@ -32,6 +32,12 @@ PENDING = "pending"
 LEASED = "leased"
 SENT = "sent"
 FAILED = "failed"
+# P12-BR ⑦：**终态** —— 人工核对后放弃的陈旧记录（多见于"进程重启打断、未确认"）。
+# 它**不计入 `failed_count()`、不再重发、也不再出现在失败列表里**，
+# 但记录本身保留（审计要能查到"当时那条到底发了什么、为什么放弃"）。
+# 为什么要它：真失败（平台拒了）和"不知道发没发"混在同一个 failed 里，
+# 状态行的 failed=N 就永远清不干净，巡检的"失败增长"口径也跟着失真。
+EXPIRED = "expired"
 
 # P12-J：安全重试的两个参数（只对"明确被拒"的失败生效）
 RETRY_MAX_ATTEMPTS = 3      # 连同首次发送，最多试 4 次
@@ -230,6 +236,28 @@ class OutboxStore:
                 "SELECT * FROM outbound WHERE status=? ORDER BY created_at LIMIT ?",
                 (status, n)).fetchall()
         return [dict(r) for r in rows]
+
+    def expire(self, ids, reason: str) -> int:
+        """把陈旧失败**结案**成 `EXPIRED`（终态）。返回改了几条。
+
+        P12-BR ⑦：只改状态 + 追一条人工结案理由进 `last_error`；
+        **不删记录、不改正文、不重发**。`failed_count()` 只认 `failed`，
+        所以结案之后状态行立刻干净。
+        """
+        ids = [i for i in (ids or []) if i]
+        if not ids:
+            return 0
+        note = "[已结案] " + str(reason or "")
+        n = 0
+        with self._lock:
+            for i in ids:
+                cur = self._conn.execute(
+                    "UPDATE outbound SET status=?, "
+                    "last_error=coalesce(last_error,'') || ' | ' || ? "
+                    "WHERE id=? AND status=?", (EXPIRED, note, i, FAILED))
+                n += cur.rowcount or 0
+            self._conn.commit()
+        return n
 
     def failed_count(self) -> int:
         """失败记录条数（P12-AB：巡检靠它发现"某条消息静默丢了"）。"""

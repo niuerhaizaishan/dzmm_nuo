@@ -46,46 +46,13 @@ FIELDS = (
     ("extra", "专属设定", "追加到系统提示词末尾的一段；留空 = 不加"),
 )
 
+# P4-4A：`_CSS` 大头已删（样式走 /static/base.css + components.css，外壳走
+# admin.shell.page）。下面只剩本页特有的 4 条：
 _CSS = """
-body{font:13px/1.6 -apple-system,Segoe UI,Roboto,'Noto Sans CJK SC',sans-serif;
-margin:0;background:#12141a;color:#d8dee9}
-header{padding:10px 16px;background:#1b1f2a;border-bottom:1px solid #2b3140;
-display:flex;gap:14px;align-items:baseline;flex-wrap:wrap}
-h1{font-size:15px;margin:0;font-weight:600}
-h2{font-size:14px;margin:22px 0 6px;border-bottom:1px solid #232935;padding-bottom:4px}
-h3{font-size:12px;margin:14px 0 4px;color:#8b95a7;font-weight:500}
-a{color:#7aa2f7}
-.badge{padding:1px 7px;border-radius:9px;font-size:11px;margin-left:6px}
-.ok{background:#1f3d2b;color:#7ee2a8}.bad{background:#4a1f27;color:#ff8b9a}
-.warn{background:#463a1c;color:#ffd479}.chg{background:#243044;color:#c8d6f0}
-.dim{color:#6c7686}.mono{font-family:ui-monospace,Consolas,monospace}
-main{padding:14px 16px;max-width:1100px}
-table{border-collapse:collapse;width:100%;margin-bottom:8px}
-th,td{padding:4px 6px;text-align:left;border-bottom:1px solid #232935;
-vertical-align:top}
-th{color:#8b95a7;font-weight:500;font-size:12px}
-input[type=text],textarea{background:#0f1218;color:#d8dee9;border:1px solid #2b3140;
-border-radius:5px;padding:4px 6px;font-size:12px;width:100%;box-sizing:border-box;
-font-family:inherit}
-input[type=text]{width:240px}
 textarea.extra{height:200px;line-height:1.5}
 textarea.p{height:52px;line-height:1.5}
-button{padding:6px 14px;border:0;border-radius:6px;background:#2f6feb;color:#fff;
-font-size:13px;cursor:pointer}
-button.ghost{background:#2b3140}
-button.tiny{padding:3px 9px;font-size:11px}
-.msg{padding:8px 11px;border-radius:6px;margin:10px 0}
-.msg.bad{background:#4a1f27;color:#ff8b9a}
-.msg.ok{background:#1f3d2b;color:#7ee2a8}
-.msg.warn{background:#463a1c;color:#ffd479}
-.msg.chg{background:#243044;color:#c8d6f0;border-left:3px solid #2f6feb}
-.msg ul{margin:4px 0 0 18px;padding:0}
-pre{background:#0f1218;border:1px solid #2b3140;border-radius:6px;padding:9px;
-white-space:pre-wrap;word-break:break-word;margin:4px 0 10px;font-size:12px;
-max-height:320px;overflow:auto}
-label.chk{font-size:12px;color:#8b95a7}
-footer{padding:10px 16px;color:#6c7686;font-size:11px}
-.changed{border-left:3px solid #2f6feb;padding-left:6px}
+label.chk{font-size:12px;color:var(--c-text-2)}
+.changed{border-left:3px solid var(--c-accent);padding-left:6px}
 """
 
 
@@ -198,10 +165,9 @@ def render_personas(cfg_raw, groups, csrf="", error="", notice="", changes=(),
     """画人设与话术页。`cfg_raw` 里 `personas` 节 = 要**显示**的那一份（可能是草稿）。"""
     P = persona_mod or _P()
     ovs = _personas_cfg(cfg_raw)
-    gids = [g.get("cid") for g in groups if g.get("cid")]
 
-    blocks = []
-    for key in P.PERSONAS:
+    tab_labels, panes, pane_css = [], [], []
+    for i, key in enumerate(P.PERSONAS):
         default = P.PERSONAS[key]
         ov = ovs.get(key) or {}
         dph = dict(P.PHRASES["nuo"])
@@ -215,12 +181,12 @@ def render_personas(cfg_raw, groups, csrf="", error="", notice="", changes=(),
             if v != (dph.get(pk) or ""):
                 changed.append(P.PHRASE_LABELS.get(pk, pk))
 
-        badge = ("<span class='badge chg'>已改 {} 处</span>".format(len(changed))
-                 if changed else "<span class='badge ok'>未改（用代码默认）</span>")
+        badge = ("<span class='badge badge--info'>已改 {} 处</span>".format(len(changed))
+                 if changed else "<span class='badge badge--ok'>未改</span>")
         in_use = _in_use(cfg_raw, key, groups)
-        use_txt = ("<span class='dim'>用于：" + "、".join(a for _c, a in in_use)
+        use_txt = ("<span class='text-dim'>用于：" + "、".join(a for _c, a in in_use)
                    + "</span>"
-                   if in_use else "<span class='dim'>目前没有群在用它</span>")
+                   if in_use else "<span class='text-dim'>目前没有群在用它</span>")
 
         rows = []
         for f, label, note in FIELDS:
@@ -233,7 +199,7 @@ def render_personas(cfg_raw, groups, csrf="", error="", notice="", changes=(),
                 cell = ("<input type=text name='ptext[{k}][{f}]' value='{v}' "
                         "maxlength=40>").format(k=_e(key), f=_e(f), v=_e(cur))
             rows.append(
-                "<tr class='{cls}'><td>{l}<br><span class='dim'>{n}</span></td>"
+                "<tr class='{cls}'><td>{l}<br><span class='text-dim'>{n}</span></td>"
                 "<td>{cell}</td></tr>".format(
                     cls="changed" if is_ch else "", l=_e(label), n=_e(note),
                     cell=cell))
@@ -244,58 +210,80 @@ def render_personas(cfg_raw, groups, csrf="", error="", notice="", changes=(),
             dflt = dph.get(pk) or ""
             is_ch = cur != dflt
             prows.append(
-                "<tr class='{cls}'><td>{l}<br><span class='dim mono'>{k}</span></td>"
+                "<tr class='{cls}'><td>{l}<br><span class='mono text-dim'>{k}</span></td>"
                 "<td><textarea class='p' name='pphrase[{key}][{k}]' spellcheck=false>"
                 "{v}</textarea></td>"
-                "<td class='dim' title='{dt}'>{d}</td></tr>".format(
+                "<td class='text-dim' title='{dt}'>{d}</td></tr>".format(
                     cls="changed" if is_ch else "",
                     l=_e(P.PHRASE_LABELS.get(pk, pk)), k=_e(pk), key=_e(key),
                     v=_e(cur), dt=_e(dflt), d=_e(_short(dflt, 30))))
 
         # 体检一律按**页面上的草稿**算（模块全局里那份可能是 bot 启动时的旧配置）
         health = _health_with_draft(P, key, ovs)
-        hmsg = ("<div class='msg bad'><b>体检：{} 个问题</b><ul>{}</ul></div>".format(
+        hmsg = ("<div class='msg msg--bad'><b>体检：{} 个问题</b><ul>{}</ul></div>".format(
             len(health), "".join("<li>{}</li>".format(_e(x)) for x in health))
-            if health else "<div class='msg ok'>体检通过</div>")
+            if health else "<div class='msg msg--ok'>体检通过</div>")
 
-        blocks.append(
-            "<h2>人设：{label} <span class='dim mono'>{key}</span>{badge}</h2>"
-            "<div>{use}</div>{hmsg}"
+        # 恢复按钮：主表单不能嵌套，用 HTML5 的 button form= 属性引用页面
+        # 底部的隐藏小表单（纯 HTML、无 JS；见 content 模板尾部的 rforms）。
+        reset_btn = ("<button class='btn btn--ghost btn--sm' type='submit' "
+                     "form='pf-reset-{k}'>恢复「{l}」的全部默认</button>".format(
+                         k=_e(key), l=_e(_label_of(P, key))))
+
+        panes.append(
+            "<div class='tab-panel ppane' id='ppane-{i}'>"
+            "<h2>人设：{label} <span class='mono text-dim'>{key}</span>{badge}</h2>"
+            "<div class='mb-2'>{use} {reset_btn}</div>{hmsg}"
             "<input type=hidden name='pseen[{key}]' value='1'>"
             "<h3>A · 人设文本</h3>"
-            "<table>{rows}</table>"
+            "<table class='table table--compact'>{rows}</table>"
             "<h3>B · 固定话术（这些句子不走 AI，直接发出去）</h3>"
-            "<table><tr><th style='width:190px'>话术</th>"
+            "<table class='table table--compact'><tr><th style='width:190px'>话术</th>"
             "<th>当前生效文本（可改）</th><th style='width:200px'>代码默认</th></tr>"
-            "{prows}</table>".format(
-                label=_e(_label_of(P, key)), key=_e(key), badge=badge, use=use_txt,
-                hmsg=hmsg, rows="".join(rows), prows="".join(prows)))
+            "{prows}</table></div>".format(
+                i=i, label=_e(_label_of(P, key)), key=_e(key), badge=badge,
+                use=use_txt, reset_btn=reset_btn, hmsg=hmsg,
+                rows="".join(rows), prows="".join(prows)))
+        # tab 标签带改动徽章（一眼看出哪个人设动过）
+        tab_labels.append(
+            "<input type='radio' name='ptab' id='ptab-{i}' data-no-dirty{chk}>"
+            "<label for='ptab-{i}' class='tab'>{l}{b}</label>".format(
+                i=i, chk=" checked" if i == 0 else "",
+                l=_e(_label_of(P, key)), b=badge))
+        # CSS-only 切换（同功能页的 gtabs：radio + 兄弟选择器，无 JS 可用）
+        pane_css.append("#ptab-%d:checked ~ #ppane-%d{display:block}" % (i, i))
+        pane_css.append(
+            ("#ptab-%d:checked ~ label[for='ptab-%d']" % (i, i))
+            + "{color:var(--c-accent);border-bottom-color:var(--c-accent)}")
 
-    # 恢复默认（每个按钮一个独立表单 —— 表单不能嵌套）
+    # 恢复默认的小表单：本体藏在页面底部，pane 里的按钮经 form= 引用提交。
+    # （表单不能嵌套，所以这些 form 必须在主 form 外。）
     rforms = []
     for key in P.PERSONAS:
         rforms.append(
-            "<form method=post action='/personas/reset' style='display:inline'>"
+            "<form id='pf-reset-{k}' method=post action='/personas/reset' "
+            "class='sr-only'>"
             "<input type=hidden name='csrf' value='{c}'>"
             "<input type=hidden name='persona' value='{k}'>"
-            "<button class='ghost tiny' type=submit>恢复「{l}」的全部默认</button>"
-            "</form> ".format(c=_e(csrf), k=_e(key), l=_e(_label_of(P, key))))
+            "</form>".format(c=_e(csrf), k=_e(key)))
     rforms.append(
         "<form method=post action='/personas/reset' style='display:inline'>"
         "<input type=hidden name='csrf' value='{c}'>"
         "<input type=hidden name='persona' value='*'>"
-        "<button class='ghost tiny' type=submit>恢复全部人设的默认</button>"
-        "</form>".format(c=_e(csrf)))
+        "<button class='btn btn--ghost btn--sm' type=submit>恢复全部人设的默认"
+        "</button></form>".format(c=_e(csrf)))
+    persona_tabs = "<div class='tabs ptabs'>{labels}{panes}</div>".format(
+        labels="".join(tab_labels), panes="".join(panes))
 
     msg = ""
     if error:
-        msg += "<div class='msg bad'>{}</div>".format(_e(error))
+        msg += "<div class='msg msg--bad'>{}</div>".format(_e(error))
     if notice:
-        msg += "<div class='msg ok'>{}</div>".format(_e(notice))
+        msg += "<div class='msg msg--ok'>{}</div>".format(_e(notice))
     if reset_note:
-        msg += "<div class='msg ok'>{}</div>".format(_e(reset_note))
+        msg += "<div class='msg msg--ok'>{}</div>".format(_e(reset_note))
     if changes:
-        msg += ("<div class='msg chg'><b>本次改动 {} 项</b>（逐条列出，请核对）："
+        msg += ("<div class='msg msg--info'><b>本次改动 {} 项</b>（逐条列出，请核对）："
                 "<ul>{}</ul></div>".format(
                     len(changes),
                     "".join("<li>{}</li>".format(_e(x)) for x in changes)))
@@ -319,51 +307,50 @@ def render_personas(cfg_raw, groups, csrf="", error="", notice="", changes=(),
             a=_e(g.get("alias") or cid[:8]),
             sel=" selected" if cid == preview_cid else ""))
 
-    return ("<!doctype html><html lang='zh'><head><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<title>人设与话术 · 小小糯 运维后台</title><style>{css}</style>"
-            "</head><body>"
-            "<header><h1>小小糯 · 人设与话术</h1>"
-            "<span class='dim'>写入 config.json 的 personas 一节"
-            "（校验不过一个字都不写）</span>"
-            "<span style='margin-left:auto'><a href='/'>← 只读面板</a> · "
-            "<a href='/edit'>群与 Bot</a> · <a href='/features'>功能与参数</a> · "
-            "<a href='/prompts'>文案模板</a> · "
-            "<a href='/logout'>退出</a></span></header><main>{msg}{pv}"
+    # P4-4A：外壳走 admin.shell；页面特有样式经 extra_head 注入。
+    from admin import shell
+    extra_head = "<style>{}</style>".format(
+        _CSS + ".ptabs{flex-wrap:wrap}.ptabs .ppane{display:none;width:100%}"
+        + "".join(pane_css))
+    content = ("{msg}{pv}"
             "<form method=post action='/personas'>"
             "<input type=hidden name='csrf' value='{csrf}'>"
             "<input type=hidden name='persona_form' value='1'>"
-            "<div class='dim'>每格里显示的就是<b>当前生效的文本</b>。"
+            "<div class='text-dim'>每格里显示的就是<b>当前生效的文本</b>。"
 
             "保存时逐格和代码默认比：一样 = 不写覆盖，不一样 = 写（<b>清空也算改动</b>）。"
-            "想回默认，按下面的「恢复默认」。</div>{blocks}"
+            "想回默认，按各人设页签里的「恢复默认」。</div>{persona_tabs}"
             "<h2>预览与试说</h2>"
-            "<div class='dim'>点「预览（不保存）」会用<b>你刚改的草稿</b>渲染一遍"
+            "<div class='text-dim'>点「预览（不保存）」会用<b>你刚改的草稿</b>渲染一遍"
             "（合成后的提示词、每条话术的最终样子、体检结果）——"
             "不会写文件、也不会发到群里。</div>"
-            "<div style='margin:6px 0 12px'>"
+            "<div class='mt-2'>"
             "看哪个群：<select name='preview_cid'>{opts}</select> "
             "<label class='chk'><input type=checkbox name='preview_try' value='1'"
             "{trychk}> 顺便让模型试说一句（调一次模型，可能要十几秒）</label> "
-            "<input type=text name='preview_msg' value='{pmsg}' maxlength=100 "
+            "<input class='input' type=text name='preview_msg' value='{pmsg}' maxlength=100 "
             "placeholder='对群里说的一句话（可留空）'></div>"
-            "<div style='margin-top:16px'>"
-            "<button type=submit name='action' value='save'>保存</button> "
-            "<button class='ghost' type=submit name='action' value='preview'>"
+            "<div class='mt-6 flex items-center gap-4'>"
+            "<button class='btn btn--primary' type=submit name='action' value='save'>保存</button> "
+            "<button class='btn btn--ghost' type=submit name='action' value='preview'>"
             "预览（不保存）</button> "
-            "<a href='/personas' style='margin-left:10px'>放弃改动重新载入</a>"
+            "<a href='/personas'>放弃改动重新载入</a>"
             "</div></form>"
             "<h2>恢复默认</h2>"
-            "<div class='dim'>清掉这个人设的全部文本/话术覆盖，回到代码里写的那份。"
+            "<div class='text-dim'>清掉这个人设的全部文本/话术覆盖，回到代码里写的那份。"
             "（只动人设，不影响群、Bot、功能开关）</div>"
-            "<div style='margin-top:6px'>{rforms}</div>"
-            "</main><footer>人设与话术改完约 1 秒自动生效（热加载，不用重启）· "
+            "<div class='mt-2'>{rforms}</div>"
+            "<footer class='footer'>人设与话术改完约 1 秒自动生效（热加载，不用重启）· "
             "写入前自动备份 · 校验失败不落盘 · 没有 JavaScript 也能完成全部操作</footer>"
-            "</body></html>").format(
-        css=_CSS, msg=msg, pv=pv, csrf=_e(csrf), blocks="".join(blocks),
+            ).format(
+        msg=msg, pv=pv, csrf=_e(csrf), persona_tabs=persona_tabs,
         opts="".join(opts),
         trychk=" checked" if preview is not None and preview.get("tried") else "",
         pmsg=_e(preview_msg), rforms="".join(rforms))
+    return shell.page(
+        active="/personas", title="人设与话术",
+        breadcrumb="运行时配置 / 人设与话术", content=content,
+        extra_head=extra_head)
 
 
 def _label_of(P, key):
@@ -395,7 +382,7 @@ def _render_preview(pv, cfg_raw, groups, csrf, preview_cid, preview_msg):
         a=_e(alias.get(pv.get("cid"), (pv.get("cid") or "")[:8])))
     body = []
     if pv.get("error"):
-        body.append("<div class='msg bad'>试说失败：{}</div>".format(_e(pv["error"])))
+        body.append("<div class='msg msg--bad'>试说失败：{}</div>".format(_e(pv["error"])))
     body.append("<h3>1 · 合成后的系统提示词（人设那部分）</h3>"
                 "<pre>{}</pre>".format(_e(pv.get("system"))))
     body.append("<h3>2 · 这条话术最终会发成什么（示例 3 条）</h3><pre>{}</pre>".format(
@@ -403,13 +390,13 @@ def _render_preview(pv, cfg_raw, groups, csrf, preview_cid, preview_msg):
                      list((pv.get("phrases") or {}).items())[:3]))))
     health = pv.get("health") or []
     body.append("<h3>3 · 体检</h3>" + (
-        "<div class='msg bad'><b>{} 个问题</b><ul>{}</ul></div>".format(
+        "<div class='msg msg--bad'><b>{} 个问题</b><ul>{}</ul></div>".format(
             len(health), "".join("<li>{}</li>".format(_e(x)) for x in health))
-        if health else "<div class='msg ok'>体检通过</div>"))
+        if health else "<div class='msg msg--ok'>体检通过</div>"))
     if pv.get("tried"):
         body.append("<h3>4 · 模型试说（没有发到群里）</h3><pre>{}</pre>".format(
             _e(pv.get("reply") or "（模型没返回内容）")))
-    return ("<div class='msg chg'>{head}<div class='dim'>"
+    return ("<div class='msg msg--info'>{head}<div class='text-dim'>"
             "这是<b>草稿</b>的效果，还没有保存。</div></div>{body}").format(
         head=head, body="".join(body))
 

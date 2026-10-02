@@ -108,8 +108,11 @@ def test_ah_sprinkles_bangs_and_hearts_not_a_fixed_string():
     assert "标点与表情" in e
     assert "感叹号要真的用出来" in e, "实测只写'该有情绪就上'时 6 条里只有 1 个'！'"
     assert "每两三条回复里至少有一条" in e, "感叹号要有频率下限，不能当可选项"
-    assert "❤️ 多撒" in e and "一到四个都行" in e
-    assert "大部分回复都该至少带上一个" in e, "屋主要的是'多加一些'，不是偶尔一处"
+    # P12-BD（2026-09-30 屋主："太像机器人了"）把 ❤️ 从"每条都带"改成**有上限的密度**：
+    # 实测"每条都带"时真人只有 1% 带 ❤️，而她是 80% —— 这条本身就是机器味。
+    assert "❤️ 要撒" in e and "别条条都撒" in e
+    assert "一到两个就够" in e
+    assert "大约三条里一条" in e, "要给的是密度（三条里一条），不是'每条都带'"
     assert "玩法正文里也撒" in e
     # 但要有上限，别变成符号雨
     assert "不超过 4 个" in e and "不超过 5 个" in e and "别变成符号雨" in e
@@ -131,17 +134,22 @@ def test_ah_scopes_the_density_to_the_at_conversation():
     实测证据（v4）：闲聊 0 个 ❤️ / 0 个 ！、观点题 313 字也是 0 个 ——
     而羞辱/调教正文反而一堆（因为规则只写了"正文也撒"）。所以必须有**专门管
     @ 对话**的密度要求，否则模型把"高冷"理解成"不用这些符号"。
+
+    P12-BD 把这条的**上限**补上了：2026-09-30 屋主说"太像机器人了"，量出来 @ 闲聊里
+    ❤️ 80%（真人 1%）、感叹号条条都有 —— 所以现在写的是"三条里一条左右"，
+    但**下限仍然在**（不能又退回 0 个）。
     """
     e = P.RUOJIN_EXTRA
     assert "@ 你 / 跟你聊天的时候" in e
-    assert "这条路要更多" in e
-    assert "每条都带 ❤️" in e, "@ 对话要有下限：每条都带"
-    assert "每条至少有一处用" in e, "感叹号也要有下限"
-    assert "高冷照旧高冷" in e, "别为了加符号把人设弄软"
+    assert "这条路要多一点活人气" in e
+    assert "三条里一条左右" in e, "@ 对话要有密度（不是每条都带，也不是不带）"
+    assert "两三条里至少一处" in e, "感叹号也要有下限"
+    assert "高冷照旧高冷" in e, "别为了符号把人设弄软"
     assert "一次都不许出现" in e
-    # 例子要真的带符号（few-shot 比规则管用）
+    # 例子还在（few-shot 比规则管用），而且现在**故意不是每条都带符号**
     seg = e[e.index("有人 @ 你"):]
-    assert seg.count("❤️") >= 5 and "！！" in seg
+    assert seg.count("❤️") >= 2 and "！！" in seg
+    assert '"在，说吧。"' in seg, "要有一个不撒符号的例子"
 
 
 def test_ah_colloquial_does_not_mean_shorter():
@@ -217,8 +225,11 @@ def test_insult_prefix_is_data_not_code():
 
 
 def test_bot_wires_the_prefix_and_drops_the_robot_mark():
-    """加了前缀的消息不能再有"🤖 "在前面 —— 否则 /talk 就不在"最最前面"了."""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    """加了前缀的消息不能再有"🤖 "在前面 —— 否则 /talk 就不在"最最前面"了.
+
+    P3-3-2 起这三处接线随分派链在 runtime/dispatch.py。
+    """
+    src = (ROOT / "runtime" / "dispatch.py").read_text(encoding="utf-8")
     assert "_insult_prefix(cid, get_full_name(target_uid))" in src
     assert 'reply if _no_prefix else ("🤖 " + reply)' in src
     assert "_no_prefix = False" in src

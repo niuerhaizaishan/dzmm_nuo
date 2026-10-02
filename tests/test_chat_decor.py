@@ -82,10 +82,31 @@ def test_only_ruojin_has_the_decor_switch_on():
 
 
 def test_bot_wires_it_into_the_at_branch_only():
-    """只接在 @ 问答那条路（屋主点名的就是那条），且开关为空时等于没加。"""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    i = src.index("P12-AH：@ 对话补足装饰")
-    seg = src[i:i + 400]
-    assert '_ensure_decor(reply, p("chat_decor", cid))' in seg
+    """只接在 @ 问答那条路（屋主点名的就是那条），且开关为空时等于没加。
+
+    P12-AW 起外面多了一层 `if not _no_decor:` —— 运势卡这类**卡片回复**要跳过它
+    （`bang` 半段会把卡上最后一个"。"换成"！！"）。
+
+    P12-BD 起这一层里面还多了两件事（都只在这条路上）：
+      · `_humanize_chat`：收空行 / 限行数（排版才是"一眼机器人"的主因）；
+      · 概率：`chat.decor_prob` / `chat.bang_prob` —— 默认 1.0 = 今天的行为，
+        上班群把它调低，"每条都带 ❤️ 和 ！！"就变成偶尔。
+    `p("chat_decor", cid)` 仍旧是那条开关（空 = 不补）。
+    """
+    # P3-3-4 起 @ 闲聊分支（含装饰段）在 runtime/at_chat.py
+    src = (ROOT / "runtime" / "at_chat.py").read_text(encoding="utf-8")
+    i_anchor = src.index("P12-AH：@ 对话补足装饰")
+    i_guard = src.index("if not _no_decor:")
+    assert i_anchor < i_guard, "装饰那段要留在 @ 分支里"
+    seg = src[i_guard:i_guard + 900]
+    assert "_ensure_decor(reply, _heart, bang=_bang)" in seg, \
+        "跳过开关里面就是装饰调用（P12-BD 起改成按概率取的两个实参）"
+    assert '_heart = p("chat_decor", cid)' in seg, "开关还是那条话术"
+    assert "chat.decor_prob" in seg and "chat.bang_prob" in seg, \
+        "概率必须从可调参数读（默认 1.0 = 零回归）"
+    assert "_humanize_chat(reply)" in seg and "chat.humanize" in seg, \
+        "排版收口也要接在这条路上"
     # 玩法正文那条路的装饰走 spice_emoji，不受影响
-    assert "_spice_emoji(reply, p(\"spice_emoji\", cid))" in src
+    # （P3-3-2 起分派链在 runtime/dispatch.py，去那边数）
+    assert "_spice_emoji(reply, p(\"spice_emoji\", cid))" in (
+        ROOT / "runtime" / "dispatch.py").read_text(encoding="utf-8")

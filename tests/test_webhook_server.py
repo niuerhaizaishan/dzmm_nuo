@@ -375,9 +375,9 @@ def test_run_all_passes_bot_specs_not_identity_dicts():
     """源码级钉住：`_run_all` 必须传 `_CFG.bots`（带 token_env）。"""
     import bot as B
     import inspect as I
-    src = I.getsource(B._run_all)
-    assert "_wh.collect_secrets(_CFG.bots)" in src
-    assert "collect_secrets(_CFG.bots_for_identity" not in src
+    src = I.getsource(B._mainloop.run_all)
+    assert "_wh.collect_secrets(B._CFG.bots)" in src
+    assert "collect_secrets(B._CFG.bots_for_identity" not in src
 
 
 # ---------------------------------------------------------------- 加载方式（踩过的坑）

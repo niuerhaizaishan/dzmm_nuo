@@ -163,14 +163,22 @@ def test_group_persona_selection_takes_effect(cfgfile):
 
 
 def test_whole_table_is_replaced_not_merged(cfgfile):
-    """整体替换：新表里没有的键必须消失（否则会留下"上一版还开着"的鬼）。"""
+    """整体替换：新表里没有的键必须消失（否则会留下"上一版还开着"的鬼）。
+
+    ⚠️ 2026-10-02：表里除了 `features` 子表，还有**群级字段 `screen` 桥进来的键**
+    （`"<cid>|screen"`，见 `config_store.feature_map()` 的事故注释）。
+    它由群级字段决定、每一版都在，所以断言只看"非 screen"的键。
+    """
+    def _non_screen():
+        return {k: v for k, v in F.overrides().items() if not k.endswith("|screen")}
+
     _boot(cfgfile)
     _write(cfgfile, _cfg(features={"insult": False}))
     H.maybe_reload()
-    assert F.overrides() == {"insult": False}
+    assert _non_screen() == {"insult": False}
     _write(cfgfile, _cfg(features={"vote": False}))
     H.maybe_reload()
-    assert F.overrides() == {"vote": False}, "旧键 insult 必须被清掉"
+    assert _non_screen() == {"vote": False}, "旧键 insult 必须被清掉"
     assert F.on(CID_A, "insult") is True, "回到代码默认"
 
 
@@ -614,12 +622,16 @@ def test_readonly_panel_proof_markers_include_p11_p12():
 
     否则"配置到底来自文件还是默认值 / 覆盖了几个 / 热加载开没开"在面板上
     看不到 —— 而那正是这一期最需要一眼看到的东西。
-    每一行都是**每次启动都会打**的（`bot.py` 里有对应 log 调用），
-    所以"全都在"才是有意义的判据。
+    每一行都是**每次启动都会打**的，所以"全都在"才是有意义的判据。
+    P3-10 起 P11/P12 的自证行真身在 runtime/status.py（bot._log_runtime_status
+    只是注入壳），`P12: 热加载=` 仍在 bot.py —— 两边合起来查。
     """
     import dashboard as dash
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    src = "\n".join([
+        (ROOT / "bot.py").read_text(encoding="utf-8"),
+        (ROOT / "runtime" / "status.py").read_text(encoding="utf-8"),
+    ])
     for m in ("P11: 配置=", "P11: 人设", "P12: 功能", "P12: 参数",
               "P12: 人设文本", "P12: 热加载="):
         assert m in dash.PROOF_MARKERS, m
-        assert m in src, "bot.py 里没有打印 {} —— 面板会一直显示缺失".format(m)
+        assert m in src, "bot.py/runtime/status.py 里没有打印 {} —— 面板会一直显示缺失".format(m)

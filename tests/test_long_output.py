@@ -108,14 +108,55 @@ def test_scene_generation_asks_for_a_longer_budget(monkeypatch):
         T.set_overrides({})
 
 
-def test_scene_prompts_no_longer_cap_the_line_count():
-    """"10 行以内 / 否则会被系统截断"这条已过时（实测 66 行照发），必须撤掉。"""
+def test_scene_length_hint_is_injected_per_group(monkeypatch):
+    """P12-AX：正文长度改成**按群注入**【长度要求】，认证群减半不影响上班群。
+
+    屋主 2026-09-29："妹子认证群发骚输出太长了，一半就行"——但上班群 09-27 提过
+    "内容太少"，所以不能改提示词默认档一刀切。配了 `scene.length` 才注入。
+    """
+    from runtime import ctx, fasao
+    from runtime import tuning as T
+    seen = {}
+
+    def _run(cid, overrides):
+        T.set_overrides(overrides)
+        ctx.set_active_cid(cid)
+        seen.clear()
+        monkeypatch.setattr(fasao, "generate_scene",
+                            lambda ai, **kw: seen.update(ai=ai) or "x")
+        monkeypatch.setattr(fasao, "_parse_scene_target", lambda t: (None, "某人", []))
+        try:
+            fasao.scene("/发骚 某人 测试")
+        finally:
+            ctx.reset_active_cid()
+
+    try:
+        # 认证群：配了要求 → 注入
+        _run("c-auth", {"c-auth|scene.length": "350-550 字，最多 8 行"})
+        assert "【长度要求】350-550 字，最多 8 行" in seen["ai"], seen["ai"]
+        # 上班群：没配 → 一个字不加（继续用提示词默认档 700-1100 字）
+        _run("c-work", {})
+        assert "【长度要求】" not in seen["ai"], seen["ai"]
+    finally:
+        T.set_overrides({})
+
+
+
+    """"10 行以内 / 否则会被系统截断"这条已过时（实测 66 行照发），必须撤掉。
+
+    P12-AX（2026-09-29 屋主："妹子认证群发骚输出太长了，一半就行"）之后，
+    长度**不再写死在提示词里**：提示词给默认档，具体以运行时注入的【长度要求】为准
+    （按群参数 `scene.length`，认证群 350-550 字，上班群不配 = 保持 700-1100 字）。
+    """
     files = ("SCENE_PROMPT.md", "SCENE_CONTINUE_PROMPT.md", "SCENE_REWRITE_PROMPT.md")
     for f in files:
         txt = (ROOT / "prompts" / f).read_text(encoding="utf-8")
         assert "10 行以内" not in txt, f
         assert "会被系统截断" not in txt, f
-        assert "字以上再收尾" in txt, f
+    # 主场景那篇：默认档 + 以【长度要求】为准
+    main_txt = (ROOT / "prompts" / "SCENE_PROMPT.md").read_text(encoding="utf-8")
+    assert "700-1100" in main_txt, "默认档要留着（上班群靠它）"
+    assert "【长度要求】" in main_txt, "长度要以运行时注入的要求为准"
 
 
 # ---------------------------------------------------------------- 3. 排行前 10

@@ -87,7 +87,8 @@ def test_member_preload_clears_pending(monkeypatch):
 
 def test_loop_preloads_member_names_in_a_worker_thread():
     """主循环里要有"每 10 分钟在工作线程里批量刷昵称"的那一段。"""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    # P3-19 起主循环体在 runtime/mainloop.py（bot 桥 B 前缀，子串兼容）
+    src = (ROOT / "runtime" / "mainloop.py").read_text(encoding="utf-8")
     assert "_load_member_names, cid" in src, "没接预载"
     i = src.index("_load_member_names, cid")
     assert "asyncio.to_thread(" in src[max(0, i - 120):i], "预载必须走 to_thread"
@@ -146,11 +147,18 @@ def test_no_blocking_calls_left_in_async_handlers():
     注意 `_build_climax_context` 现在是在**同步助手** `_build_climax_texts` 里调的，
     那个助手整体走 `to_thread`（上面有行为用例钉住），所以这里不禁止它出现。
     """
+    # P3-19：主循环体搬进 runtime/mainloop.py；高潮生成段仍在 bot.py 的
+    # `_handle_climax`（P3-9 留守）—— 两边都检查。
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    src_ml = (ROOT / "runtime" / "mainloop.py").read_text(encoding="utf-8")
     assert "= _retrieve_memory(" not in src, "记忆检索又在事件循环里同步调了"
-    assert "= await asyncio.to_thread(\n" in src and "_retrieve_memory, cid, q," in src
+    assert "= _retrieve_memory(" not in src_ml, "记忆检索又在事件循环里同步调了"
     i = src.index("items = await asyncio.to_thread")
     assert "_build_climax_texts" in src[i:i + 120], "高潮生成段没走 to_thread"
+    # P3-3-4 起 @ 分支的记忆检索搬进了 runtime/at_chat.py —— 一样必须 to_thread
+    src_a = (ROOT / "runtime" / "at_chat.py").read_text(encoding="utf-8")
+    assert "= _retrieve_memory(" not in src_a, "记忆检索又在事件循环里同步调了"
+    assert "= await asyncio.to_thread(\n" in src_a and "_retrieve_memory, cid, q," in src_a
     perf = (ROOT / "runtime" / "perf.py").read_text(encoding="utf-8")
     # 写盘只允许出现在同步助手 `_write_novel` 里，且调用点必须走 to_thread
     assert perf.count('with open(path, "w"') == 1, "写盘点变多了，检查是不是又回到 async 函数里"

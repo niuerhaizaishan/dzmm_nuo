@@ -70,7 +70,10 @@ def test_empty_command_is_not_refused():
 
 def test_main_loop_uses_the_single_gate():
     """闸门只能有一个判定点：`main_loop` 必须调 `_room_cmd_refused`."""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    # P3-19 起主循环体在 runtime/mainloop.py（bot 模块桥 B 前缀，子串兼容）
+    src = (ROOT / "runtime" / "mainloop.py").read_text(encoding="utf-8")
     assert "_room_cmd_refused(cid, cmd, cmd_sender)" in src
     # 婉拒那条路也要放行开放指令（否则 `/查` 会从另一条路被挡）
-    assert "and not is_open_room_cmd(r_text)" in src
+    # P3-3-3 起婉拒分支在 runtime/room.py（房间消息处理块整体搬出）
+    src_r = (ROOT / "runtime" / "room.py").read_text(encoding="utf-8")
+    assert "and not is_open_room_cmd(r_text)" in src_r

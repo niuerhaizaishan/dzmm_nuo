@@ -205,12 +205,26 @@ def test_send_photo_url_rejects_empty_url():
 # ---------------------------------------------------------------- 接线
 
 def test_bot_wires_all_three_paths():
-    """三个挂点一个都不能少（屋主 2026-09-27 定："两处都发 + 自然语言也发"）."""
+    """三个挂点一个都不能少（屋主 2026-09-27 定："两处都发 + 自然语言也发"）.
+
+    P3-3-1 起"进房问好"在 runtime/joins.py；P3-3-2 起"/自我介绍"（reason="指令"）
+    在 runtime/dispatch.py；P3-3-3 起"房间自然语言"在 runtime/room.py；
+    P3-3-4 起"@提问"在 runtime/at_chat.py —— 一起数。
+    """
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    assert src.count("_intro_photo.send(") >= 2, "进房问好 + /自我介绍 两处要发"
-    assert src.count("_intro_photo.maybe_send(") >= 2, "房间消息 + @提问 两处要发"
-    assert 'reason="进房问好"' in src
-    assert 'reason="指令"' in src
+    src_j = (ROOT / "runtime" / "joins.py").read_text(encoding="utf-8")
+    src_d = (ROOT / "runtime" / "dispatch.py").read_text(encoding="utf-8")
+    src_r = (ROOT / "runtime" / "room.py").read_text(encoding="utf-8")
+    src_a = (ROOT / "runtime" / "at_chat.py").read_text(encoding="utf-8")
+    assert (src.count("_intro_photo.send(") + src_j.count("_intro_photo.send(")
+            + src_d.count("_intro_photo.send(")) >= 2, \
+        "进房问好 + /自我介绍 两处要发"
+    assert (src_r.count("_intro_photo.maybe_send(")
+            + src_a.count("_intro_photo.maybe_send(")) >= 2, \
+        "房间消息 + @提问 两处要发"
+    assert 'reason="进房问好"' in src_j
+    assert 'reason="指令"' in src_d
+    assert 'reason="@提问"' in src_a
 
 
 # ---------------------------------------------------------------- 欢迎语/问答都用新自我介绍
@@ -236,8 +250,11 @@ def test_welcome_without_intro_has_no_leftover_placeholder():
 
 
 def test_who_are_you_uses_the_fixed_intro():
-    """问"你是谁"走固定自我介绍（本群配了立绘时），认证群不受影响."""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    """问"你是谁"走固定自我介绍（本群配了立绘时），认证群不受影响.
+
+    P3-3-3 起这条分支在 runtime/room.py。
+    """
+    src = (ROOT / "runtime" / "room.py").read_text(encoding="utf-8")
     i = src.index("_intro_photo.photo_url(cid)")
     window = src[i:i + 600]
     assert 'reply = p("intro_text", cid)' in window

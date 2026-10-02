@@ -16,10 +16,12 @@
     5. python-socketio 自带 reconnection 断线重连；重连成功后置 resync 标记，主循环据此补拉
 """
 import asyncio
+import inspect
 import os
 import sys
 import json
 import time
+import uuid
 from collections import OrderedDict
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -123,6 +125,34 @@ class SioSubscriber:
     def is_connected(self) -> bool:
         return self._connected.is_set()
 
+    # ---------- 发送（P12-AZ） ----------
+    async def send_text(self, cid: str, user_id: str, text: str) -> str:
+        """用**当前这条长连接**替账号发一条消息。返回 message_id；这条连接不可用时返回 ""。
+
+        为什么要它（P12-AZ）：账号的另一条发送路 `socketio.DZMMSocket`（HTTP）每次都得
+        重新握手，而握手会撞 `connect=400 {"code":1,"message":"Session ID unknown"}`
+        —— 实测要重试 4~6 次才成。这条连接是**读消息用的那条**，早就建立好了，
+        还带 `python-socketio` 的断线重连。
+
+        ⚠️ 返回值只代表"emit 出去了"，**不代表消息落地**：平台上 emit 成功 ≠ 群里有。
+        调用方必须去群里读回（`bot.Sender._verify_landed`）。
+        """
+        if not self._sio or not self._connected.is_set():
+            return ""
+        mid = str(uuid.uuid4())
+        msg = {"message_id": mid, "chatroom_id": cid, "sent_by": user_id,
+               "sent_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+               "content": {"type": "text", "text": text}}
+        try:
+            # python-socketio 的 AsyncClient.emit 是协程；万一换成同步实现也别炸
+            r = self._sio.emit("message:send", {"chatroomId": cid, "message": msg})
+            if inspect.isawaitable(r):
+                await r
+        except Exception as e:                                  # noqa: BLE001
+            print("[sio] ⚠️ emit 发送失败: " + str(e)[:60])
+            return ""
+        return mid
+
     # ---------- 内部 ----------
     def _get_token(self) -> str:
         # 优先从 token JSON 直接 decode access_token（renew_token 持续写回，是新鲜的），
@@ -167,12 +197,18 @@ class SioSubscriber:
         重连退避顶到 3600 秒 —— 那段时间读消息只能靠 HTTP 兜底，正是"机器人变慢/漏消息"
         观感的来源之一。
         现在只看 renew_token 写的**业务探针**结果（`data/session_state.json`）。
+
+        ⚠️ P12-AR：只认 `probe == "unauth"` 为死。`probe` 还有 "error"/"backoff"
+        两种"这一轮没验证会话"的取值，而它们都会让 `alive` 为 False ——
+        按 `alive is False` 判的话，一次验证码退避就会把重连退避顶到 3600 秒，
+        又变回 P12-AJ 刚修掉的那个坑。
         """
         try:
             st = env_config.data_dir() / "session_state.json"
             if st.exists():
                 d = json.loads(st.read_text(encoding="utf-8"))
-                if d.get("alive") is False and time.time() - float(d.get("at") or 0) < 1800:
+                if str(d.get("probe")) == "unauth" \
+                        and time.time() - float(d.get("at") or 0) < 1800:
                     return True
         except Exception:
             pass

@@ -31,11 +31,15 @@ PROBE_MAX_MIN = 180     # 后台探测最长等待：3 小时
 
 
 def notify(text: str) -> None:
+    """发飞书告警，记录成功/失败结果到 stderr（不再静默吞异常）。"""
+    import sys
     try:
         from wx_alert import send_weixin
-        send_weixin(text)
-    except Exception:
-        pass
+        ok = send_weixin(text)
+        # P12-BR-fix: 与 renew_token.py 一致，记录飞书发送结果
+        print(f"[captcha_novnc] 飞书告警: {'✅ 已发' if ok else '❌ 失败'}", file=sys.stderr)
+    except Exception as e:
+        print(f"[captcha_novnc] 飞书告警异常: {type(e).__name__}: {str(e)[:60]}", file=sys.stderr)
 
 
 def ip_captcha_cleared() -> bool:
@@ -119,7 +123,8 @@ def main() -> int:
                 str(ROOT / "pw_captcha"), channel=env_config.get_channel(), headless=False,
                 viewport={"width": 1280, "height": 800},
                 proxy={"server": proxy_url} if proxy_url else None, user_agent=UA,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-gpu"])
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-gpu",
+                      "--disk-cache-size=52428800"])
             page = ctx.new_page()
             try:
                 page.goto(env_config.get_dzmm_origin() + "/", timeout=60000, wait_until="domcontentloaded")

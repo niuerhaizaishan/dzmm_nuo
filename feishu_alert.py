@@ -45,8 +45,10 @@ def _gen_sign(timestamp: int) -> str:
 
 
 def send_feishu(text: str, retries: int = 2) -> bool:
-    """发一条飞书群消息。静默失败（最终返回 False）。"""
+    """发一条飞书群消息。失败时返回 False 并打印原因到 stderr。"""
+    import sys
     if not text or not text.strip() or not WEBHOOK:
+        print(f"[feishu] skip: webhook_empty={not WEBHOOK} text_empty={not text}", file=sys.stderr)
         return False
     msg = {"msg_type": "text", "content": {"text": text}}
     if SECRET:
@@ -54,20 +56,27 @@ def send_feishu(text: str, retries: int = 2) -> bool:
         msg["timestamp"] = timestamp
         msg["sign"] = _gen_sign(int(timestamp))
     body = json.dumps(msg, ensure_ascii=False)
+    last_err = None
     for attempt in range(retries + 1):
         try:
             r = requests.post(WEBHOOK, data=body.encode("utf-8"),
                               headers={"Content-Type": "application/json"}, timeout=15)
             if r.status_code == 200:
                 try:
-                    if r.json().get("code") == 0:
+                    resp = r.json()
+                    if resp.get("code") == 0:
                         return True
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                    last_err = f"code={resp.get('code')} msg={resp.get('msg', '')[:40]}"
+                except Exception as e:
+                    last_err = f"json_parse: {e}"
+            else:
+                last_err = f"http_{r.status_code}"
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {str(e)[:40]}"
         if attempt < retries:
             time.sleep(3 * (attempt + 1))
+    # P12-BR-fix: 所有重试失败后记录原因（原来静默返回 False，完全无法排查）
+    print(f"[feishu] send failed after {retries+1} attempts: {last_err}", file=sys.stderr)
     return False
 
 

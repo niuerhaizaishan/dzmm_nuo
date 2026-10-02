@@ -183,7 +183,12 @@ def test_override_maps_mix_global_and_per_group():
                         "tuning": {"dice.timeout": 60}}])
     cfg = cs._parse(raw, BASE)
     fm, tm = cfg.feature_map(), cfg.tuning_map()
-    assert fm == {"insult": False, "{}|vote".format(CID_A): False}
+    # ⚠️ 2026-10-02：除了 `features` 子表，**群级字段 `screen` 也要桥进这张表**
+    # （原先没桥 ⇒ `_feat_on(cid,"screen")` 永远回落到默认 True ⇒ 对账闸门是死的
+    #  ⇒ screen=False 的上班群被按认证群规矩踢人）。所以这里多一个键。
+    assert fm == {"insult": False,
+                  "{}|vote".format(CID_A): False,
+                  "{}|screen".format(CID_A): False}, "群级 screen 必须也进覆盖表"
     assert tm["devil.base_prob"] == pytest.approx(0.2)
     assert tm["{}|dice.timeout".format(CID_A)] == 60
 

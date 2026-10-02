@@ -62,6 +62,13 @@ def test_defaults_match_the_code_constants():
         ("scene.timeout", 15 * 60),
         # 发骚正文长度上限（2026-09-27 屋主："有截断""内容太少" → 700 → 1800）
         ("scene.max_tokens", brains.SCENE_MAX_TOKENS),
+        # P12-AX：按群的正文长度话术（空 = 用提示词默认档 700-1100 字）。
+        # 认证群要"一半"→ 配 350-550 字；上班群不配 =一个字不变。
+        ("scene.length", ""),
+        # P12-AW：茶水间的运势入口（`#运势` 开关 + 当天卡复用冷却）。
+        # 默认都是"关/0" ⇒ 其他群一个字不变。
+        ("fortune.hash_cmd", 0),
+        ("fortune.cooldown", 0),
         ("diaojiao.timeout", 300),
         ("diaojiao.idle_seconds", 30),
         ("dice.timeout", bot.DICE_TIMEOUT_SEC),
@@ -102,6 +109,23 @@ def test_defaults_match_the_code_constants():
         # （原来写死 400 token / 末尾 4 条、且**不含机器人自己说过的话**）
         ("reply.max_tokens", 800),
         ("reply.context_msgs", 20),
+        # P12-BD：让"@ 闲聊"更像人 —— 装饰概率与排版收口。
+        # 前三项的默认值**就是今天的行为**（1.0/1.0/关/空），所以等于没上线：
+        # 只有按群给上班群配了值，行为才会变（见 docs/P12-BD）。
+        ("chat.decor_prob", 1.0),
+        ("chat.bang_prob", 1.0),
+        ("chat.humanize", 0),
+        ("chat.frame_length", ""),
+        # P12-BQ：@ 闲聊的两个人味闸门（默认都是"关"= 今天的行为）
+        ("chat.reply_cooldown", 0),
+        ("chat.solicit_guard", 0),
+        # P12-BE：上下文范围（0=全群 = 今天的行为）
+        ("reply.ctx_mode", 0),
+        # P12-BR a：排行榜前几名（= `rank_summary(top=10)` 原来的默认）
+        ("rank.top_n", 10),
+        # P12-BR b：羞辱/调教长度（= 原先 brains.py 里写死的 600）
+        ("insult.max_tokens", 600),
+        ("diaojiao.max_tokens", 600),
         # 定时
         ("schedule.scan_hour", bot.PROFILE_SCAN_HOUR),
         ("schedule.greet_window_min", 90),

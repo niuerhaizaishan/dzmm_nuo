@@ -32,8 +32,24 @@ MEM_THRESHOLD_KB = 500000       # 内存 RSS 阈值 500MB
 ACCESS_EXPIRE_ALERT_SEC = -300  # access_token 过期超过 5 分钟（续期没续上）
 REFRESH_WARN_DAYS = 7           # refresh_token 剩余 < 7 天预告警（到期前留出重登窗口）
 REFRESH_TOKEN_TTL_SEC = 30 * 86400  # Supabase refresh_token 默认有效期 30 天（从 last_sign_in_at 起算）
-PROFILES_MAX_KB = 5120          # profiles.json 大小阈值 5MB，超过提示优化档案存储
+PROFILES_MAX_KB = 5120          # profiles.json 大小阈值 5MB，超过提示优化磁盘
 OUTBOX_PENDING_MAX = 20         # 出站队列积压阈值（条）——超过说明发送通道可能卡住
+# P12-AR：续期循环每 5 分钟一轮（`entrypoint.sh`），20 分钟 = 连丢 4 轮才算停摆。
+# 为什么不能更小：续期窗口（token 剩余 ≤10 分钟那 10 分钟）里循环在做真续期，
+# 而心跳原先只在快路径写 —— 实测会出现"心跳 15.9 分钟"的**健康**状态。
+# 那个根因已经修掉（`renew_token.main()` 任何成功一轮都刷新心跳），
+# 现在正常的最大间隔 ≈ 5~6 分钟，20 分钟是安全阈值。
+RENEW_LOOP_STALE_MIN = 20
+# P12-AS：连续多少分钟"没能验证会话是活的"就告警。
+# 2026-09-29 15:49~18:11 事故：探针一直返回 "error"（平台回的是
+# "Invalid authentication credentials"，旧分类器认不出来），于是
+# `dead` 判据一路 False、巡检一路"正常"，而用户那边已经两个多小时没回话。
+# 判据从"死没死"扩成"多久没证明它活着"——这才是用户能感知的那个量。
+SESSION_UNVERIFIED_ALERT_MIN = 20
+# P12-AY（2026-09-30）：进程数数不到 1 时的**复核等待**（秒）。
+# 部署重建那一瞬间会短暂数到 0 或 2（旧容器在退、新容器的 entrypoint 还要先跑
+# `headless_relogin` 才启动 bot.py），实测 09:19:59 白喊了一次"双进程异常"。
+PROCESS_RECHECK_SEC = 5
 
 
 def log(msg: str, to_stdout: bool = False):
@@ -97,6 +113,24 @@ def check_process() -> tuple:
     return len(pids), pids
 
 
+def _process_count_debounced() -> tuple:
+    """数 `bot.py` 进程；**数不到 1 时隔 `PROCESS_RECHECK_SEC` 复核一次**（P12-AY）。
+
+    为什么要去抖：部署重建那一瞬间会短暂数到 0 或 2 —— 旧容器在退、新容器的 entrypoint
+    还要先跑 `headless_relogin` 才启动 bot.py。2026-09-30 09:19:59 实测白喊了一次
+    "双进程异常（2 个 bot.py 实例）"，5 分钟后又自愈，中间什么都没发生。
+    """
+    count, pids = check_process()
+    if count == 1:
+        return count, pids
+    time.sleep(PROCESS_RECHECK_SEC)
+    count2, pids2 = check_process()
+    if count2 != count:
+        log("进程数瞬时异常（{} → {}，{}秒后复核）".format(
+            count, count2, PROCESS_RECHECK_SEC))
+    return count2, pids2
+
+
 def check_cpu_mem(pid: str) -> tuple:
     """返回 (cpu%, rss_kb)。"""
     r = subprocess.run(["ps", "-o", "%cpu=,rss=", "-p", pid], capture_output=True, text=True)
@@ -142,12 +176,16 @@ def check_token() -> dict:
 def check_session_state() -> dict:
     """读业务探针结果（`renew_token.py` 写的 `data/session_state.json`）—— P12-AJ。
 
-    返回 `{"dead": bool, "probe": str, "ago": 分钟}`：
-      · `dead=True` 只在**探针说业务调用也 401** 时为真（会话真失效）；
-      · 文件太旧（>30 分钟）或不存在 ⇒ 不下结论（dead=False），免得重启初期误报；
+    返回 `{"dead": bool, "probe": str, "ago": 分钟, "stale": bool}`：
+      · `dead=True` **只在探针说 `unauth`**（业务调用也 401）时为真；
+      · `stale=True` = 心跳太旧（`RENEW_LOOP_STALE_MIN` 分钟没更新）——
+        P12-AR 新增：以前只"不下结论"，于是**续期循环停摆没人知道**，
+        只能等 bot 不回话才发现。注意文件**不存在**时不算 stale
+        （首次部署/换机时没有心跳是正常的，那种情况由 `check_renew` 的 FAIL 兜）；
       · access_token 过期**不算** dead —— 那只是只读接口的事。
     """
-    out = {"dead": False, "probe": "", "ago": 0.0}
+    out = {"dead": False, "probe": "", "ago": 0.0, "stale": False,
+           "unverified_min": 0.0, "unverified": False}
     try:
         p = env_config.data_dir() / "session_state.json"
         if not p.exists():
@@ -156,8 +194,20 @@ def check_session_state() -> dict:
         ago = (time.time() - float(d.get("at") or 0)) / 60.0
         out["probe"] = str(d.get("probe") or "")
         out["ago"] = ago
-        if ago <= 30 and d.get("alive") is False:
+        # ⚠️ P12-AR：只认 "unauth" 为死。`probe` 还有 "error"/"backoff" 两种
+        #    "这一轮没验证会话"的取值，把 `alive is False` 当死会让一次验证码退避
+        #    就误报"会话已失效"。
+        if ago <= 30 and out["probe"] == "unauth":
             out["dead"] = True
+        out["stale"] = ago > RENEW_LOOP_STALE_MIN
+        # P12-AS：**"没验证通过"本身也要告警**。今天 15:49~18:11 的宕机里探针一直
+        # 返回 "error"（不是 unauth），于是 `dead` 一直是 False、巡检一路"正常" ——
+        # 而用户那边"群里不回话"已经两个多小时了。所以判据不能只看"死没死"，
+        # 还要看"**多久没证明它活着**"（`bad_since` 由 renew_token 维护）。
+        bs = d.get("bad_since")
+        if bs:
+            out["unverified_min"] = (time.time() - float(bs)) / 60.0
+            out["unverified"] = out["unverified_min"] > SESSION_UNVERIFIED_ALERT_MIN
     except Exception:
         pass
     return out
@@ -314,8 +364,8 @@ def main():
             alerts.setdefault(key, {})["alerted"] = False
             recovered.append(recover_msg)
 
-    # 1. 进程
-    count, pids = check_process()
+    # 1. 进程（数不到 1 会隔 5 秒复核一次，见 `_process_count_debounced`）
+    count, pids = _process_count_debounced()
     if count == 1:
         transition("process", False, "", "进程恢复正常（单实例）")
         pid = pids[0]
@@ -375,6 +425,22 @@ def main():
                    + (f"（探针 {sess.get('probe')}，{sess.get('ago', 0):.0f} 分钟前）"
                       if sess.get("probe") else ""),
                    "会话恢复正常（业务调用可用）")
+        # P12-AR：续期循环**停摆**以前是无告警的 —— 只读接口 401 现在只记 NOTE，
+        # 快路径又什么都不写，于是"循环死了"在日志里没有任何痕迹，
+        # 只能等 token 到期、账号通道发不出去（表现是"群里突然不回话"）才发现。
+        # 现在按心跳判：`session_state.json` 超过 RENEW_LOOP_STALE_MIN 分钟没更新
+        # = 循环没在跑（正常每 5 分钟刷新一次）。
+        transition("renew_loop", sess.get("stale", False),
+                   "⚠️ 续期循环疑似停摆（心跳 {:.0f} 分钟没更新，正常每 5 分钟一次）"
+                   "—— token 到期后将无法自动续期".format(sess.get("ago", 0)),
+                   "续期循环恢复正常（心跳已刷新）")
+        # P12-AS：**"连续没验证通过"要单独告警** —— 今天那次宕机 `dead` 一直是 False
+        # （探针 error 不是 unauth），巡检全程"正常"，而实际已经读不到消息了。
+        transition("session_unverified", sess.get("unverified", False),
+                   "⚠️ 会话已连续 {:.0f} 分钟没能验证通过（探针 {}）—— "
+                   "账号通道可能已经读不到/发不出消息".format(
+                       sess.get("unverified_min", 0), sess.get("probe") or "无结论"),
+                   "会话恢复正常（已验证通过）")
     if refresh_days is not None and refresh_days < REFRESH_WARN_DAYS:
         was_alerted = alerts.get("refresh_token", {}).get("alerted", False)
         if _alert_token:

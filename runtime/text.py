@@ -16,7 +16,8 @@ __all__ = [
     "_get_opencc", "_normalize_cn", "_simplify", "_strip_parenthesis",
     "_is_stop_word", "_dedupe_options", "_normalize_choice",
     "_extract_deadline_seconds", "_squash", "_clean_name", "_norm_poem",
-    "_spice_emoji", "_ensure_decor",
+    "_spice_emoji", "_ensure_decor", "_humanize_chat",
+    "_solicit_tail", "_strip_solicit_tail",
 ]
 
 # 句末标点：撒表情只在它们**后面**动手
@@ -53,6 +54,83 @@ def _ensure_decor(text: str, heart: str = "", bang: bool = True) -> str:
             out += "。"
         out += heart
     return out
+
+
+def _humanize_chat(text: str, max_lines: int = 5) -> str:
+    """P12-BD：把"@ 闲聊"回复的排版收得像人一点（**只动版式，不动一个字**）。
+
+    为什么需要（2026-09-30 量出来的数据）：上班群里 93% 的回复带**空行分段**
+    （`结论⏎⏎解释⏎⏎收尾`），而真人只有 7%；73% 的回复 ≥5 行，真人 3%。
+    这种"整齐的三段式"比用词更容易被一眼看出是机器人。
+
+    规则（刻意保守）：
+      · 空行折成单换行；
+      · 去掉首尾空行、行内不留尾随空格；
+      · 超过 `max_lines` 行时**只截行、保留最后一行**（最后一行通常是收尾，
+        避免把话截成半句）。
+
+    ⚠️ 只用在 @ 闲聊那条路（见 `bot.py` 接线）：**卡片**（运势卡等 `_no_decor`）
+    与玩法正文（羞辱/发骚/调教/场景）**一律不走这里**。
+    """
+    if not text:
+        return text
+    lines = [ln.strip() for ln in str(text).replace("\r\n", "\n").split("\n")]
+    lines = [ln for ln in lines if ln]
+    if not lines:
+        return str(text).strip()
+    if max_lines and len(lines) > int(max_lines):
+        keep = int(max_lines)
+        lines = lines[:keep - 1] + [lines[-1]]
+    return "\n".join(lines)
+
+
+def _solicit_tail(text: str) -> str:
+    """P12-BQ：这条回复的**收尾**是不是在"递话"（要对方产出下一轮），命中则返回命中的词。
+
+    量出来的差距（`tools/probe_solicit.py`，2026-09-30）：若瑾 **67%** 的回复以提问或派活
+    收尾，真人只有 **6%**；真人 85% 是陈述句说完就停。屋主点名的"工具熊每次都要问要不要
+    调酒"就是这个。
+
+    判据刻意保守（宁可漏，不可错杀正常答话）：
+      · **问号收尾**（`？`/`?`）—— 最强的递话信号；
+      · 派活词：要不要 / 好吗 / 好不好 / 行不行 / 选一个 / 说清楚 / 我等着 / 我听着 /
+        换个说法 / 说说看 / 别让我等 / 等你回话；
+      · 倒计时：30秒没人 / 我数到三；
+      · 尾巴上挂**指令菜单**（`/xxx` 形式）。
+    """
+    tail = re.sub(r"[\s❤️♡]+$", "", str(text or "").strip())
+    if not tail:
+        return ""
+    last = (tail.split("\n")[-1] or tail).strip()
+    if re.search(r"[？?]$", last):
+        return "问号收尾"
+    for kw in ("要不要", "好吗", "好不好", "行不行", "选一个", "说清楚", "讲明白",
+               "我等着", "我听着", "换个说法", "说说看", "别让我等", "等你回话",
+               "说句话", "冒个泡"):
+        if kw in last:
+            return kw
+    if re.search(r"(三十秒|30\s*秒|我数到三)", last):
+        return "倒计时"
+    if re.search(r"/[a-zA-Z\u4e00-\u9fa5]{1,6}", last):
+        return "指令菜单"
+    return ""
+
+
+def _strip_solicit_tail(text: str) -> str:
+    """P12-BQ：兜底 —— 重写还是递话时，**把最后那句纯招揽删掉**（别把话删残）。
+
+    只在最后一句自己就命中 `_solicit_tail`、且删掉之后还剩内容时才动手；
+    句子边界按 `。！？…` 与换行切。
+    """
+    s = str(text or "").strip()
+    if not s:
+        return s
+    parts = re.split(r"(?<=[。！？…])", s)
+    parts = [p for p in parts if p.strip()]
+    if len(parts) < 2 or not _solicit_tail(parts[-1]):
+        return s
+    left = "".join(parts[:-1]).strip()
+    return left or s
 
 
 def _spice_emoji(text: str, emojis, every: int = 2, max_n: int = 6) -> str:

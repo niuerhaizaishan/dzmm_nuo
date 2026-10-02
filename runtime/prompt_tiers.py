@@ -95,7 +95,7 @@ def _c3(key, title, note="", **kw):
     return PromptSpec(key, "C3", title, note, **kw)
 
 
-# ---------------------------------------------------------------- 40 个
+# ---------------------------------------------------------------- 41 个
 _SPECS = [
     # ============ C3 · 输出被程序解析（6 个） ============
     _c3("HEAT_JUDGE_PROMPT", "发情值评定",
@@ -116,7 +116,7 @@ _SPECS = [
         contract="json_list",
         sample_user="昵称：小糯 性别：女 签名：想被主人拴着 简介：喜欢露出和黑丝",
         expect_nonempty=True),
-    _c3("MEMORY_FILTER_PROMPT", "记忆精筛（第 40 个）",
+    _c3("MEMORY_FILTER_PROMPT", "记忆精筛（唯一一条在 runtime/memory.py 里的）",
         "逐行输出原文（`_ai_filter` 按行比对），必须保留 `{limit}` 占位符",
         must_keep=("{limit}",),
         contract="lines",
@@ -143,6 +143,13 @@ _SPECS = [
         min_counts=(("用户:", 4), ("你:", 4)),
         sample_user="在吗？今天心情不太好",
         max_newlines=None),
+    _c2("AT_FRAME_PROMPT", "@ 回复的收尾块（谁在说话 / 他这一句 / 只回这一句）",
+        "⚠️ 这条不是人设，是**拼进用户消息最后一块**的结构（P12-AP）。"
+        "三个【】标记和 {who}/{q} 占位符缺一个，就等于退回"
+        "『当前这句混在历史里』的老毛病 —— 实测她会把一句『摸摸头』读成"
+        "『糯糯姐冒头了』，然后对着不相干的人把待办念一遍。"
+        "占位符用 str.replace 填（正文里有花括号，不能 format）；没有自测样例（不调模型）。",
+        must_keep=("【现在跟你说话的人】", "【他这一句】", "【怎么回】", "{who}", "{q}")),
     _c2("FORTUNE_PROMPT", "今日运势点评",
         "只写一句、不换行，拼进定长卡片",
         must_keep=("不要换行", "一句"),

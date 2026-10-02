@@ -14,6 +14,11 @@ ORIGIN = env_config.get_dzmm_origin()
 # 代理地址走环境变量 DZMM_PROXY（默认 127.0.0.1:7890；云端香港/新加坡直连设空字符串）
 PROXIES = env_config.get_proxies()
 
+# P12-BL：所有非浏览器请求统一用**浏览器 UA**（依据见 `api()` 里的注释与
+# `tools/probe_ua_wall.py` 的实测：WAF 按 UA 挑战，`Python-urllib/x` 会被 403）。
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+
 
 def get_cookies() -> dict:
     return token_store.get_cookie_dict()
@@ -39,7 +44,12 @@ def api(path: str, inp: dict, cookies: dict | None = None,
     q = urllib.parse.quote(json.dumps(inp))
     url = ORIGIN + "/api/trpc/" + path + "?input=" + q
     _throttle("trpc:" + path)                  # P5.2：令牌桶（失败开放，绝不阻塞）
-    resp = requests.get(url, cookies=cookies, timeout=timeout, proxies=PROXIES)
+    # P12-BL：带**浏览器 UA**。依据：平台的 WAF 按 UA 挑战 —— 实测同一端点、
+    # 同一时刻，`Python-urllib/3.11` 被回 403（WAF 拦截页），而 Chrome /
+    # `Mozilla/5.0 DZMM-Agent/1.0` 都是 200（`tools/probe_ua_wall.py`）。
+    # requests 的默认 UA 是 `python-requests/x.y` —— 典型爬虫签名，属于"可能被挑战"那一类。
+    resp = requests.get(url, cookies=cookies, timeout=timeout, proxies=PROXIES,
+                        headers={"User-Agent": BROWSER_UA})
     status = getattr(resp, "status_code", 0)
     try:
         data = resp.json()
@@ -125,11 +135,25 @@ def get_user(chat_id: str, user_id: str,
         return None
 
 
-def get_members(chat_id: str, cookies: dict | None = None) -> dict:
-    """一次查所有成员，返回 {uid: fullName}."""
+# P12-AO（2026-09-28）：`chatroom.getMembers` **默认只返回 101 个成员**，而且是静默截断
+# （返回体里没有任何"还有下一页"的提示）。茶水间 782 人 → 只有前 101 人拿得到群昵称，
+# 其余 681 人的昵称缓存**永远补不上**；这些人 @ 她时，`get_full_name` 只能退化成
+# 「档案名 → uid 前 8 位」，于是被叫成 `bcec3c30` 这种一串 uid。
+# 实测（线上 782 人群）：不传 limit → 101 人；`limit=1000` → 782 人。
+# 这就是"小小糯有时候会叫错名字"的主因：不在前 101 的人才会错。
+MEMBER_FETCH_LIMIT = 1000
+
+
+def get_members(chat_id: str, cookies: dict | None = None,
+                limit: int = MEMBER_FETCH_LIMIT) -> dict:
+    """一次查所有成员，返回 {uid: fullName}.
+
+    ⚠️ 必须显式带 `limit`（见 `MEMBER_FETCH_LIMIT`）：平台默认只给 101 个成员。
+    """
     if cookies is None:
         cookies = get_cookies()
-    data = api("chatroom.getMembers", {"json": {"chatroomId": chat_id}}, cookies)
+    data = api("chatroom.getMembers",
+               {"json": {"chatroomId": chat_id, "limit": limit}}, cookies)
     members = data.get("members") or []
     return {m["id"]: m.get("fullName", "") for m in members if m.get("id")}
 

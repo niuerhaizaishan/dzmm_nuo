@@ -1,0 +1,24 @@
+# DZMM bot 日志轮转（部署到宿主机 /etc/logrotate.d/dzmm-bot）
+#
+# ⚠️ 2026-10-01 修正：原 pattern 是
+#       /opt/dzmm/bot.log /opt/dzmm/logs/*.log
+#   但 **/opt/dzmm/logs/ 这个目录根本不存在**，而 renew_token.log / check_health.log
+#   都躺在 /opt/dzmm/ 根下 —— 于是这两个文件**永不轮转**（append-only、无界增长）。
+#   实测 2026-10-01：renew_token.log 289KB、check_health.log 456KB、
+#   monitor_recover.log 394KB（宿主侧）。
+#
+# copytruncate 是**必须**的：这些文件都被常驻进程以 append 方式打开
+#   （容器里 entrypoint 的 renew/health 循环每 300 秒写一次），
+#   用默认的 create 轮转会换掉 inode、而进程仍往旧 inode 写 ⇒ 日志静默丢失。
+#   代价是"截断瞬间可能丢几行"，对运维日志可以接受。
+#
+# ⚠️ 改动本文件后必须 `logrotate -d /etc/logrotate.d/dzmm-bot` 干跑校验一次。
+/opt/dzmm/bot.log /opt/dzmm/renew_token.log /opt/dzmm/check_health.log /opt/dzmm/monitor_recover.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

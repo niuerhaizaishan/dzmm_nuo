@@ -39,6 +39,11 @@ services:
       TZ: "Asia/Shanghai"
       # 凭据注入（从 .env 读，不写死进镜像）
       DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      # S1（2026-10-01）：凭据路径指向 secrets/ 目录 —— 目录 bind mount 上
+      # os.replace 原子写可用，单文件挂载的 EBUSY 就此消失。
+      # 双写期老挂载仍保留；回滚 = 删掉下面两行（不设 = 老路径，零回归）。
+      DZMM_TOKEN_FILE: "${DZMM_TOKEN_FILE:-/app/secrets/token.json}"
+      DZMM_LOGIN_FILE: "${DZMM_LOGIN_FILE:-/app/secrets/login.json}"
       # 飞书告警 webhook（主通道，无 session 依赖）+ 可选签名密钥
       FEISHU_WEBHOOK: "${FEISHU_WEBHOOK:-}"
       FEISHU_SECRET: "${FEISHU_SECRET:-}"
@@ -156,7 +161,11 @@ services:
       - ./pw_captcha:/app/pw_captcha
       # 验证码远程桌面：挂载 X socket，容器内 chromium headed 显示到宿主机虚拟屏
       - /tmp/.X11-unix:/tmp/.X11-unix
-      # 凭据（本地从已迁移的 token JSON + login 挂载；云端改用 secrets）
+      # ---- S1 双写期（2026-10-01）：secrets 目录挂载（新路径，原子写可用）----
+      # 观察期满（≥15 分钟无 EBUSY + 24h 无续期错误）后执行 Step 2-5：
+      # 删掉下面两行老挂载，宿主机把老文件 mv 成 .old 留观。
+      - ./secrets:/app/secrets
+      # 凭据（老挂载，双写期保留供回滚；Step 2-5 移除）
       - ./.dzmm_token.json:/app/.dzmm_token.json
       - ./.dzmm_login.json:/app/.dzmm_login.json
     extra_hosts:

@@ -204,17 +204,28 @@ def test_seed_failure_is_not_fatal(monkeypatch):
 
 def test_loop_records_the_whole_batch_including_own_messages():
     """批处理里 `is_self → continue` 只是不处理指令，不代表不用记账。"""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    i = src.index("_lag = message_lag(msgs)")
+    # P3-19 起主循环体在 runtime/mainloop.py（bot 桥 B 前缀）
+    src = (ROOT / "runtime" / "mainloop.py").read_text(encoding="utf-8")
+    i = src.index("_lag = B.message_lag(msgs)")
     seg = src[i:i + 900]
     assert "_remember_turn(" in seg
-    assert '"我" if is_self(_muid) else get_name(_muid)' in seg
+    assert '"我" if B.is_self(_muid) else B.get_name(_muid)' in seg
     assert "_m.get(" in seg or "_m.get('" in seg
 
 
 def test_own_replies_are_recorded_on_every_send_path():
-    """三处发回复的地方（指令 / @问答 / 房间）都要记，不然下一句又断片。"""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    sends = src.count('log("💬 " + reply[:200])')
+    """三处发回复的地方（指令 / @问答 / 房间）都要记，不然下一句又断片。
+
+    P3-3-2 起"指令"那条路在 runtime/dispatch.py；P3-3-3 起"房间"那条路在
+    runtime/room.py；P3-3-4 起"@问答"那条路在 runtime/at_chat.py
+    —— 四边合起来数。
+    """
+    src = (ROOT / "runtime" / "mainloop.py").read_text(encoding="utf-8")
+    src_d = (ROOT / "runtime" / "dispatch.py").read_text(encoding="utf-8")
+    src_r = (ROOT / "runtime" / "room.py").read_text(encoding="utf-8")
+    src_a = (ROOT / "runtime" / "at_chat.py").read_text(encoding="utf-8")
+    sends = (src.count('log("💬 " + reply[:200])') + src_d.count('log("💬 " + reply[:200])')
+             + src_r.count('log("💬 " + reply[:200])') + src_a.count('log("💬 " + reply[:200])'))
     assert sends == 3, "发回复的地方数变了，去看是不是漏了记账"
-    assert src.count('_remember_turn(cid, "我"') >= 3
+    assert (src.count('_remember_turn(cid, "我"') + src_d.count('_remember_turn(cid, "我"')
+            + src_r.count('_remember_turn(cid, "我"') + src_a.count('_remember_turn(cid, "我"')) >= 3

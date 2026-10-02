@@ -11,7 +11,7 @@ from brains import generate_trend
 from personas import me as _pme, p as _pp          # 自称 + 按群人设文案（小小糯/薇丝）
 from profiles import get_profile
 from runtime.ctx import PRIMARY_CID
-from runtime.fortune import _fortune_calc
+from runtime.fortune import _fortune_calc, _gender_label_of
 from runtime.identity import get_full_name, get_name
 from runtime.obs import log
 import state_store
@@ -145,6 +145,10 @@ async def week_trend(cid: str, uid: str, days: int = TREND_DEFAULT_DAYS) -> str:
     pairs = _trend_days(cid, uid, days)
     st = _trend_stats(pairs)
     name = get_name(uid)
+    # P12-BA：称呼按性别（屋主 2026-09-30："运势你也不能逮谁叫谁姐姐呀"）——
+    # `TREND_PROMPT` 原来直接写死"叫对方姐姐"，现在要把性别作为**输入**给模型。
+    # `_gender_label_of` 自己吞异常并留痕（查不到 = "未知"，prompt 里写死"未知只叫名字"）。
+    glabel = await asyncio.to_thread(_gender_label_of, uid, cid)
     if st["n"] == 0:
         _me = _pme(cid)
         return (_pp("trend_empty", cid, days=days) or (
@@ -192,7 +196,7 @@ async def week_trend(cid: str, uid: str, days: int = TREND_DEFAULT_DAYS) -> str:
                 + "最长连跌：" + (str(st.get("drop")) + " 天" if st.get("drop") else "无") + "\n"
                 + "日冲本命的日子：" + ("、".join(_wd_cn(d) for d in chongs) if chongs else "无"))
     try:
-        para = await asyncio.to_thread(generate_trend, data_txt, name)
+        para = await asyncio.to_thread(generate_trend, data_txt, name, glabel)
     except Exception as e:
         log("趋势点评生成失败: " + str(e)[:60])
         para = ""

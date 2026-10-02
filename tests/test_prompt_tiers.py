@@ -31,14 +31,14 @@ C3 = ("HEAT_JUDGE_PROMPT", "VOTE_OPTIONS_PROMPT", "XP_PROMPT",
 def test_every_registered_prompt_has_a_tier():
     reg = set(RP.registry())
     specs = set(PT.SPECS)
-    assert len(reg) == 40, "登记册里应当是 40 个（39 + MEMORY_FILTER）"
+    assert len(reg) == 41, "登记册里应当是 41 个（40 + MEMORY_FILTER）"
     assert reg - specs == set(), "这些 prompt 没有分档：{}".format(sorted(reg - specs))
     assert specs - reg == set(), "这些分档没有对应 prompt：{}".format(sorted(specs - reg))
 
 
 def test_tier_counts_are_pinned():
     """数量钉死：加/减一个 prompt 必须同时改这里（提醒作者想清楚分档）。"""
-    assert PT.tier_counts() == {"C1": 23, "C2": 11, "C3": 6}
+    assert PT.tier_counts() == {"C1": 23, "C2": 12, "C3": 6}
 
 
 def test_c3_are_exactly_the_machine_parsed_ones():

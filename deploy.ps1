@@ -309,7 +309,27 @@ function Push-CodeFiles {
     # restarting on half a tree. NOTE: keep this file ASCII-only -- non-ASCII
     # literals in a .ps1 break the parser on this host.
     $names = @($rels | ForEach-Object { $_ -replace '\\', '/' })
-    $need = @('bot.py', 'brains.py', 'runtime/obs.py', 'runtime/prompts.py',
+    # P3 (2026-10-01): bot.py was split into 18 runtime/ modules plus the
+    # personas/ package and prompt_defaults.py. A half-uploaded tree now means
+    # ImportError at startup, so the gate covers one load-bearing file from
+    # every P3 dependency group (main loop body, dispatch chain, sender engine,
+    # personas package, brains prompt defaults). NOTE: the OLD personas.py on
+    # the server must be removed BY HAND when the personas/ package ships --
+    # same name, package wins on import only if the .py is gone.
+    $need = @('bot.py', 'brains.py', 'prompt_defaults.py',
+              'runtime/obs.py', 'runtime/prompts.py',
+              'runtime/mainloop.py', 'runtime/joins.py', 'runtime/dispatch.py',
+              'runtime/sender.py', 'runtime/at_chat.py', 'runtime/room.py',
+              'runtime/roster.py', 'runtime/pushes.py', 'runtime/rank.py',
+              'runtime/profile_sync.py', 'runtime/inflight.py',
+              'runtime/turns.py', 'runtime/sender_chain.py',
+              'runtime/config_boot.py', 'runtime/reply_gate.py',
+              'runtime/status.py', 'runtime/roast.py', 'runtime/climax.py',
+              'personas/__init__.py', 'personas/registry.py',
+              'admin/shell.py', 'admin/features_ui.py', 'admin/personas_ui.py',
+              'admin/prompts_ui.py', 'admin/config_ui.py', 'admin/dashboard.py',
+              'admin/static/base.css', 'admin/static/components.css',
+              'admin/static/dashboard.css', 'admin/static/app.js',
               '.dockerignore')
     $miss = @($need | Where-Object { $names -notcontains $_ })
     $prompts = @($names | Where-Object { $_ -like 'prompts/*.md' }).Count
@@ -352,6 +372,8 @@ switch ($Action) {
         # `up -d` alone recreates from the OLD image -- that silently skipped a
         # whole deploy once (the container came up without the new code).
         Invoke-Ssh "cd $RemoteDir && docker compose build dzmm-bot && docker compose up -d dzmm-bot"
+        # Same layer-store hygiene as the 'deploy' action (see the note there).
+        Invoke-Ssh "docker image prune -f; docker builder prune -f --keep-storage 1.5GB"
         Write-Host "OK compose applied (backup: docker-compose.yml.bak-$stamp)"
     }
     'deploy' {
@@ -375,6 +397,21 @@ switch ($Action) {
 
         Write-Host "[3/3] rebuild container on cloud..."
         Invoke-Ssh "cd $RemoteDir && docker compose build dzmm-bot && docker compose up -d dzmm-bot"
+        # Bound the docker layer store (2026-09-29 P12-AV, updated 2026-10-01).
+        # Every build writes layers into the image store and NOTHING ever pruned them:
+        # measured 13G under /var/lib/docker (5 x ~1GB playwright layers from the
+        # unpinned-deps era + 257 dangling images) while `docker system df` showed only
+        # 18MB of "Build Cache" -- i.e. the legacy-builder intermediates are invisible
+        # to that number, and `docker image prune -f` alone reclaimed "0B".
+        # `docker builder prune -a` reclaimed 11.5G.
+        # --keep-storage must be LARGER than the expensive layers we want to keep:
+        # apt + pip + `playwright install chromium` is ~1.3GB, so 1GB would evict the
+        # very layer that makes rebuilds cheap (next build then re-downloads chromium).
+        # 1.5GB keeps one set of expensive layers plus recent COPY layers, and still caps
+        # the runaway growth. (Reduced from 3GB on 2026-10-01: actual usage was only
+        # 1.107GB, so 3GB was over-provisioned.)
+        Write-Host "[3/3] prune docker build artifacts..."
+        Invoke-Ssh "docker image prune -f; docker builder prune -f --keep-storage 1.5GB; docker system df"
         Write-Host "OK deploy done (backup: $RemoteDir/$tar)"
     }
     'status' {
@@ -392,7 +429,13 @@ switch ($Action) {
         $latest = (Invoke-Ssh "ls -t $RemoteDir/backup-code-*.tar.gz 2>/dev/null | head -1").Trim()
         if (-not $latest) { throw "no backup-code-*.tar.gz found on cloud" }
         Write-Host "rollback to: $latest"
-        Invoke-Ssh "cd $RemoteDir && tar xzf $latest && docker compose build dzmm-bot && docker compose up -d dzmm-bot"
+        # tar extraction does NOT delete files that are not in the archive, so
+        # the personas/ PACKAGE shipped by the P3 refactor would survive the
+        # rollback and keep SHADOWING the restored old personas.py (Python
+        # prefers a package over a same-name module). Remove it explicitly so
+        # the pre-P3 tree is byte-for-byte back. If a future rollback ever
+        # needs to keep personas/, revisit this line.
+        Invoke-Ssh "cd $RemoteDir && tar xzf $latest && rm -rf personas && docker compose build dzmm-bot && docker compose up -d dzmm-bot"
         Write-Host "OK rollback done"
     }
     'sync' {

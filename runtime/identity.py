@@ -22,7 +22,7 @@ dict 就地读写，所以留在 bot.py 的两个使用点（`_daily_profile_sca
 """
 import os
 
-from dzmm import get_members, get_user
+from dzmm import MEMBER_FETCH_LIMIT, get_members, get_user
 from profiles import get_profile
 from runtime import ctx
 
@@ -327,6 +327,11 @@ def _load_member_names(cid: str = None):
 
     ⚠️ 这是**阻塞**调用（平台 HTTP），必须在工作线程里跑
     （主循环每 10 分钟 `await asyncio.to_thread(_load_member_names, cid)`）。
+
+    P12-AO（2026-09-28）：平台 `chatroom.getMembers` 默认只回 101 人，所以
+    `dzmm.get_members` 现在显式带 `limit`（见 `dzmm.MEMBER_FETCH_LIMIT`）。
+    这里加一道**看得见的兜底**：万一哪天又回到"只拿到一小撮人"，
+    日志里要能立刻看出是成员表被截断了，而不是继续静默地叫 uid 前缀。
     """
     try:
         members = get_members(cid or ctx.get_active_cid())
@@ -334,6 +339,12 @@ def _load_member_names(cid: str = None):
             if name:
                 _name_cache[uid] = name
                 _pending_names.discard(uid)
+        # 101 = 平台默认截断值（P12-AO 实测）；拿到正好这个数基本就是又被截断了。
+        if len(members) in (101, MEMBER_FETCH_LIMIT):
+            _warn_once(
+                "加载成员昵称截断",
+                RuntimeError("成员表可能被截断：只拿到 {} 人（limit={}）".format(
+                    len(members), MEMBER_FETCH_LIMIT)))
     except Exception as e:                                     # noqa: BLE001
         # P12-AB：原来是静默 pass —— 后果是"昵称缓存一直补不上"，
         # 之后每次取名字都退化成档案名/uid 前缀，而没人知道是这次拉取失败了。

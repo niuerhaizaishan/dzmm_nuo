@@ -1,12 +1,14 @@
 """P8 第 3 步的守卫测试：prompt 外置。
 
-外置的做法是**覆盖**而不是搬家：代码里的字面量仍在，`prompts/<NAME>.md`
-存在且非空才覆盖。这批测试盯的正是这件事最容易出岔子的几个点：
+外置的做法是**覆盖**而不是搬家：出厂默认值住在 `prompt_defaults.py`（P3-5 起，
+原先内联在 brains.py），`prompts/<NAME>.md` 存在且非空才覆盖。这批测试盯的
+正是这件事最容易出岔子的几个点：
 
-1. 带出去的 39 个文件和代码里的默认值**逐字节相同** —— 否则"外置"本身
+1. 带出去的 41 个文件和出厂默认值**逐字节相同** —— 否则"外置"本身
    就等于偷偷改了 prompt（改了机器人性格，最难发现的那种回归）。
 2. 文件缺失 / 为空 / 读失败 → 必须**退回默认值**，绝不能变成空 prompt。
-3. `brains.py` 里不能再有裸露的 `*_PROMPT = <三引号字符串>`（漏包一个就静默失效）。
+3. `brains.py` 里不能再有裸露的 `*_PROMPT = <三引号字符串>`（漏包一个就静默失效），
+   也不许再把默认值字面量写回 `_p()` 调用里 —— 出厂值只许住 `prompt_defaults.PD`。
 """
 import ast
 import sys
@@ -18,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import brains  # noqa: E402
+import prompt_defaults as PD  # noqa: E402  P3-5：出厂默认值数据库
 import runtime.prompts as rp  # noqa: E402
 
 BRAINS_PY = ROOT / "brains.py"
@@ -26,9 +29,10 @@ PROMPT_DIR = ROOT / "prompts"
 
 
 def _assignments():
-    """从 brains.py 里读出所有 `NAME = _p("NAME", <字面量>)`。
+    """从 brains.py 里读出所有 `NAME = _p("NAME", PD["NAME"])`。
 
-    返回 `{NAME: (声明的名字, 默认值字面量)}`。
+    返回 `{NAME: 出厂默认值}`。P3-5 起默认值住 `prompt_defaults.PD`，
+    这里从数据模块取值，同时钉住"brains 侧引用键与常量名一致"。
     """
     tree = ast.parse(BRAINS_PY.read_text(encoding="utf-8"))
     out = {}
@@ -46,7 +50,12 @@ def _assignments():
         assert isinstance(arg0, ast.Constant) and arg0.value == name, \
             "{} 的 _p() 名字对不上".format(name)
         assert len(call.args) == 2, "{} 的 _p() 参数不是 2 个".format(name)
-        out[name] = ast.literal_eval(call.args[1])
+        arg1 = call.args[1]            # P3-5：出厂默认值只许住 prompt_defaults.PD
+        assert isinstance(arg1, ast.Subscript) and arg1.value.id == "PD", \
+            ('{} 的默认值必须写 PD["{}"]（出厂值住 prompt_defaults.py，'
+             "别把字面量搬回来）").format(name, name)
+        assert ast.literal_eval(arg1.slice) == name, "{} 的 PD 键对不上".format(name)
+        out[name] = PD.PD[name]
     return out
 
 
@@ -66,14 +75,21 @@ REG = rp.registry()
 # --------------------------------------------------------------- 结构与计数
 
 def test_brains_has_prompts():
-    assert len(ASSIGNS) == 39, "brains.py 里的 prompt 数量变了：{}".format(len(ASSIGNS))
+    # 39 → 40（P12-AP 加了 AT_FRAME_PROMPT：@ 回复的收尾块）
+    assert len(ASSIGNS) == 40, "brains.py 里的 prompt 数量变了：{}".format(len(ASSIGNS))
 
 
-def test_registry_has_all_forty():
-    """39 个在 brains + 1 个在 runtime/memory = 40（第 40 个是 P12-G 补上的）。"""
-    assert len(REG) == 40, sorted(REG)
+def test_pd_module_covers_exactly_brains_prompts():
+    """P3-5：出厂默认值数据库的键必须与 brains 的 40 个常量**一一对应**（不多不少）。"""
+    assert set(PD.PD) == set(ASSIGNS), sorted(set(PD.PD) ^ set(ASSIGNS))
+
+
+def test_registry_has_all_prompts():
+    """40 个在 brains + 1 个在 runtime/memory = 41（第 41 个是 MEMORY_FILTER_PROMPT）。"""
+    assert len(REG) == 41, sorted(REG)
     assert "MEMORY_FILTER_PROMPT" in REG
     assert REG["MEMORY_FILTER_PROMPT"]["module"] == "runtime.memory"
+    assert REG["AT_FRAME_PROMPT"]["module"] == "brains"
 
 
 def test_registry_module_is_the_owner_not_a_later_reader():
@@ -177,9 +193,9 @@ def test_stats_reports_files(monkeypatch):
     monkeypatch.setattr(rp, "_sources", dict(rp.sources()))
     st = rp.stats()
     assert st["enabled"] is True
-    # total = **登记册**里的提示词数（40）；
+    # total = **登记册**里的提示词数（41）；
     # `sources()` 里可能还有测试自己读过的临时名字，所以不能拿它当分母。
-    assert st["total"] == len(rp.registry()) == 40
+    assert st["total"] == len(rp.registry()) == 41
     assert st["from_file"] + st["from_code"] == st["total"]
     assert st["files_on_disk"] >= st["from_file"]
 

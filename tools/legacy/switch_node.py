@@ -18,7 +18,20 @@ import urllib.request
 
 LOG = "/opt/dzmm/switch_node.log"
 ENV_FILE = "/opt/dzmm/.env"
-TOKEN_FILE = "/opt/dzmm/.dzmm_token.json"
+
+
+def _resolve_token_file() -> str:
+    """S1：优先环境变量，其次 secrets/（新纪元），最后老路径（未迁移时）。"""
+    env = os.environ.get("DZMM_TOKEN_FILE", "").strip()
+    if env:
+        return env
+    for p in ("/opt/dzmm/secrets/token.json", "/opt/dzmm/.dzmm_token.json"):
+        if os.path.exists(p):
+            return p
+    return "/opt/dzmm/.dzmm_token.json"
+
+
+TOKEN_FILE = _resolve_token_file()
 STATE_FILE = "/opt/dzmm/switch_node_state.json"
 INTERVAL = 300  # 5 分钟
 FAIL_THRESHOLD = 3  # 连续 3 次才切

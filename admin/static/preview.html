@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DZMM 运维后台 — Phase 4A 设计原型</title>
+<link rel="stylesheet" href="base.css">
+<link rel="stylesheet" href="components.css">
+<link rel="stylesheet" href="dashboard.css">
+<!-- 本页为 Phase 4A 设计原型：引用真实 base/components/dashboard.css + app.js。
+     不进入部署（deploy.ps1 只上传 py/sh/yml/js/css/png/jpg）。 -->
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ 侧边栏 ============ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar__brand">
+      <div class="sidebar__logo">糯</div>
+      <div class="sidebar__title">小小糯 · 运维后台</div>
+    </div>
+    <nav class="sidebar__nav">
+      <div class="nav-group">
+        <div class="nav-group__label">监控</div>
+        <a class="nav-item active"><span class="nav-item__icon">📊</span><span class="nav-item__label">总览</span></a>
+        <a class="nav-item"><span class="nav-item__icon">💓</span><span class="nav-item__label">健康与日志</span></a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group__label">运行时配置</div>
+        <a class="nav-item"><span class="nav-item__icon">🎚️</span><span class="nav-item__label">功能开关</span>
+          <span class="badge badge--ok" style="margin-left:auto">68</span></a>
+        <a class="nav-item"><span class="nav-item__icon">⚙️</span><span class="nav-item__label">参数与集合</span>
+          <span class="badge badge--neutral" style="margin-left:auto">67</span></a>
+        <a class="nav-item"><span class="nav-item__icon">🎭</span><span class="nav-item__label">人设文本</span></a>
+        <a class="nav-item"><span class="nav-item__icon">📝</span><span class="nav-item__label">提示词</span>
+          <span class="badge badge--info" style="margin-left:auto">41</span></a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group__label">危险区</div>
+        <a class="nav-item"><span class="nav-item__icon">↩️</span><span class="nav-item__label">回滚与重置</span></a>
+      </div>
+    </nav>
+    <div class="sidebar__footer">
+      <div class="flex items-center gap-2">
+        <span class="badge badge--ok badge--dot badge--pulse">运行中</span>
+        <span class="text-dim" style="font-size:var(--fs-xs)">v2026.10.01 · P3</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ 主区 ============ -->
+  <div class="main">
+    <header class="header">
+      <div class="header__left">
+        <button class="sidebar-toggle" id="sidebarToggle" aria-label="打开侧边栏">☰</button>
+        <span class="header__breadcrumb">监控 / <span>总览</span></span>
+      </div>
+      <div class="header__right">
+        <span class="badge badge--ok badge--dot badge--pulse">在线</span>
+        <button class="theme-toggle" id="themeToggle" aria-label="切换主题">☀️</button>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <!-- 告警条（仅异常时出现） -->
+      <div class="alert-banner alert-banner--bad">
+        <span>🔴</span>
+        <span>示例：连续 2 次健康巡检失败（token 过期）—— 19:20 起</span>
+        <a href="#" style="margin-left:auto" class="btn btn--sm btn--secondary">查看日志</a>
+      </div>
+
+      <!-- 状态卡格 -->
+      <div class="status-grid">
+        <div class="stat-card stat-card--ok">
+          <div class="stat-card__label">容器</div>
+          <div class="stat-card__value">运行中</div>
+          <div class="stat-card__meta">Up 2h · 重启 0 次</div>
+        </div>
+        <div class="stat-card stat-card--ok">
+          <div class="stat-card__label">登录态</div>
+          <div class="stat-card__value">正常</div>
+          <div class="stat-card__meta">上次续期 19:29</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card__label">群 / Bot</div>
+          <div class="stat-card__value">4 <span class="text-dim" style="font-size:var(--fs-md)">群</span> · 3 <span class="text-dim" style="font-size:var(--fs-md)">Bot</span></div>
+          <div class="stat-card__meta">并行模式 · 每群一实例</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card__label">出站队列</div>
+          <div class="stat-card__value">0 <span class="text-dim" style="font-size:var(--fs-md)">pending</span></div>
+          <div class="stat-card__meta">failed 0 · 重试任务运行中</div>
+        </div>
+      </div>
+
+      <div class="grid-2col" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:var(--sp-4)">
+        <!-- 快捷操作 -->
+        <section class="card card--elevated">
+          <div class="card__header">
+            <div class="card__title">快捷操作</div>
+            <div class="card__meta">高频运维动作</div>
+          </div>
+          <div class="card__body flex gap-2" style="flex-wrap:wrap">
+            <button class="btn btn--primary">🔄 热加载配置</button>
+            <button class="btn btn--secondary">💓 立即巡检</button>
+            <button class="btn btn--secondary">🔁 重登账号</button>
+            <button class="btn btn--ghost">📄 拉取日志</button>
+          </div>
+        </section>
+
+        <!-- 各层自证（P5/P7/P8/P11/P12 启动自证的页面化） -->
+        <section class="card card--elevated">
+          <div class="card__header">
+            <div class="card__title">启动自证</div>
+            <div class="card__meta">来源：19:29:28 启动日志</div>
+          </div>
+          <div class="card__body card__body--compact">
+            <table class="table table--compact">
+              <tbody>
+                <tr><td>P5 会话锁 / 限流</td><td><span class="badge badge--ok">on · 90/min</span></td></tr>
+                <tr><td>P7 存储</td><td><span class="badge badge--ok">sqlite · 11 群 / 78 档案</span></td></tr>
+                <tr><td>P8 提示词</td><td><span class="badge badge--ok">41/41 来自文件</span></td></tr>
+                <tr><td>P11 配置</td><td><span class="badge badge--ok">file</span></td></tr>
+                <tr><td>P12 功能接线</td><td><span class="badge badge--ok">68/68</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- 群状态表 -->
+      <section class="card mt-6">
+        <div class="card__header">
+          <div class="card__title">群状态</div>
+          <div class="card__meta">4 个群 · 并行实例各 1</div>
+        </div>
+        <div class="card__body card__body--compact card__body--scroll">
+          <table class="table table--striped table--compact">
+            <thead>
+              <tr><th>群</th><th>人设</th><th>Bot 通道</th><th>功能开关</th><th>最近活动</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>认证群</td><td><span class="badge badge--info">小小糯</span></td><td><span class="badge badge--ok">官方 Bot</span></td><td class="text-dim">筛查 · 推送 · 发骚…</td><td class="text-dim">2 分钟前</td></tr>
+              <tr><td>玫瑰房</td><td><span class="badge badge--neutral">薇丝</span></td><td><span class="badge badge--ok">官方 Bot</span></td><td class="text-dim">房间管家 · 迎客…</td><td class="text-dim">18 分钟前</td></tr>
+              <tr><td>上班群</td><td><span class="badge badge--warn">若瑾</span></td><td><span class="badge badge--ok">官方 Bot</span></td><td class="text-dim">闲聊 · 排行…</td><td class="text-dim">1 小时前</td></tr>
+              <tr><td>顶层茶水间</td><td><span class="badge badge--neutral">小小糯</span></td><td><span class="badge badge--neutral">Socket.IO</span></td><td class="text-dim">运势 · at_only</td><td class="text-dim">10 分钟前</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 组件样例区（原型专用：供屋主过目设计系统的各组件形态） -->
+      <section class="card mt-6">
+        <div class="card__header">
+          <div class="card__title">设计系统组件样例</div>
+          <div class="card__meta">Phase 4A 交付物预览 · 上线后本节不存在</div>
+        </div>
+        <div class="card__body flex flex-col gap-3">
+          <div class="flex items-center gap-2" style="flex-wrap:wrap">
+            <span class="badge badge--ok badge--dot">正常</span>
+            <span class="badge badge--warn">已覆盖</span>
+            <span class="badge badge--bad badge--pulse">失败</span>
+            <span class="badge badge--info">来自文件</span>
+            <span class="badge badge--neutral">neutral</span>
+          </div>
+          <div class="flex items-center gap-2" style="flex-wrap:wrap">
+            <button class="btn btn--primary">主要</button>
+            <button class="btn btn--secondary">次要</button>
+            <button class="btn btn--ghost">幽灵</button>
+            <button class="btn btn--danger">危险</button>
+            <button class="btn btn--secondary" disabled>禁用</button>
+          </div>
+          <div class="flex gap-3">
+            <input class="input input--narrow" placeholder="搜索功能…">
+            <input class="input" value="90" style="max-width:80px">
+            <span class="badge badge--neutral" style="align-self:center">90 / 分钟</span>
+          </div>
+          <div class="tabs">
+            <button class="tab active">文本段</button>
+            <button class="tab">话术</button>
+            <button class="tab">历史</button>
+          </div>
+        </div>
+      </section>
+
+    </div>
+    <footer class="footer">DZMM Admin · Phase 4A 设计原型 · 数据为示例</footer>
+  </div>
+</div>
+
+<div class="sidebar-overlay" id="overlay"></div>
+<script src="app.js"></script>
+<script>
+  // 原型专用：接 app.js 的侧边栏开关（app.js 已实现主题切换）
+  var t = document.getElementById("sidebarToggle"),
+      s = document.getElementById("sidebar"),
+      o = document.getElementById("overlay");
+  if (t) t.addEventListener("click", function () {
+    s.classList.toggle("open"); o.classList.toggle("visible");
+  });
+  if (o) o.addEventListener("click", function () {
+    s.classList.remove("open"); o.classList.remove("visible");
+  });
+</script>
+</body>
+</html>

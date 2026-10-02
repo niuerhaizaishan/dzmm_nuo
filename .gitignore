@@ -27,6 +27,12 @@ token.emergency
 # 探针抓取到的真实群消息
 probe/captured/
 
+# 公演小说（可能含群友昵称/桥段）—— 本地与服务器保留，不入库
+content/novels/
+
+# 测试产物
+.pytest-ts/
+
 # 日志
 *.log
 

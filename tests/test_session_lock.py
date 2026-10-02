@@ -146,3 +146,56 @@ def test_login_mains_use_guard():
     for mod in (renew_token, headless_relogin, auto_recover):
         src = inspect.getsource(mod.main)
         assert "guard(" in src, mod.__name__
+
+
+# ------------------------------------------------- P0：父进程持锁时的子进程自锁
+#
+# 现场（2026-10-01 21:29，生产实锤）：
+#   21:34:43 ESCALATE: 会话不可用 → 自动跑一次密码重登（headless_relogin.py）
+#   21:37:43   [relogin] SKIP: 另一个进程正在续期/重登，放弃本次登录   ← 整整 180s
+# 根因：`guard()` 只有**一把锁文件**，`reason` 只是备注。renew_token.py 在
+# `guard("renew_token")` 内部用 subprocess.run 同步 spawn headless_relogin.py，
+# 子进程再去抢同一把锁 ⇒ 永远拿不到。两次长时间掉线（9-30 8.8h / 10-1 21:29）
+# 都因此只能人工救。修法：父进程通过环境变量显式声明"锁已由我持有"。
+
+
+def test_relogin_child_does_not_self_lock_when_parent_declares_lock(lockenv, monkeypatch):
+    """带 DZMM_RELOGIN_UNDER_PARENT_LOCK=1 时，即使**真的**有人持锁也必须立刻成功。"""
+    import headless_relogin
+
+    lockenv.setattr(session, "FORCED_BACKEND", "excl")
+    lockenv.setenv("DZMM_RELOGIN_UNDER_PARENT_LOCK", "1")
+    monkeypatch.setattr(headless_relogin, "check_logged_in", lambda: True)
+
+    # 父进程视角：持着锁不放（模拟 renew_token 的 with 块仍在栈上）
+    with session.guard("renew_token", timeout=0.5) as got:
+        assert got is True, "父进程必须拿到锁"
+        # 修复前这里会阻塞 180s 后返回 1（SKIP）；修复后必须立刻返回 0
+        assert headless_relogin.main() == 0
+
+
+def test_relogin_child_still_acquires_lock_without_the_env(lockenv, monkeypatch):
+    """反面：没有该变量时必须**照常抢锁** —— 不能默认放开，否则真并发会互相作废。"""
+    import headless_relogin
+    import session_guard
+
+    lockenv.delenv("DZMM_RELOGIN_UNDER_PARENT_LOCK", raising=False)
+    monkeypatch.setattr(headless_relogin, "check_logged_in", lambda: True)
+
+    calls = []
+
+    class _FakeCtx:
+        def __enter__(self):
+            return True
+
+        def __exit__(self, *a):
+            return False
+
+    def _fake_guard(reason, timeout=30.0):
+        calls.append((reason, timeout))
+        return _FakeCtx()
+
+    monkeypatch.setattr(session_guard, "guard", _fake_guard)
+    assert headless_relogin.main() == 0
+    assert [c[0] for c in calls] == ["headless_relogin"], \
+        "未声明父锁时，重登脚本必须自己去抢 headless_relogin 锁"

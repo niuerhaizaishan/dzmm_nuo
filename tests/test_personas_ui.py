@@ -167,7 +167,12 @@ def test_page_has_csp_and_no_inline_script(srv):
     assert st == 200
     assert "script-src 'self'" in h.get("Content-Security-Policy", "")
     assert h.get("X-Frame-Options") == "DENY"
-    assert "onsubmit" not in page and "<script" not in page
+    # P4-4A：页面壳注入了**外链** /static/app.js（渐进增强；CSP script-src
+    # 'self' 允许同源外链）。纪律不变的是**不许内联**脚本与事件处理器——
+    # 内联脚本会被 CSP 拦掉、看着像坏了。
+    assert "onsubmit" not in page
+    tags = re.findall(r"<script\b[^>]*>", page)
+    assert tags and all("src=" in t for t in tags), tags
 
 
 def test_page_escapes_persona_text(srv, monkeypatch, dbdir):

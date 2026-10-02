@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import bot                     # noqa: E402
+import runtime.mainloop as mainloop  # noqa: E402  P3-19：main_loop/_run_all 体搬迁至此
 import runtime.ctx as ctx      # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -92,7 +93,7 @@ def test_main_loop_takes_a_group_subset_and_shared_resources():
 
 def test_run_all_shares_one_sender_and_one_state():
     """`_run_all` 必须**只建一份** sender / state / subscriber（并行时才成立）。"""
-    src = inspect.getsource(bot._run_all)
+    src = inspect.getsource(mainloop.run_all)
     assert src.count("_wrap_with_outbox(") == 1
     assert src.count("load_state()") == 1
     assert src.count("SioSubscriber(") == 1
@@ -101,7 +102,7 @@ def test_run_all_shares_one_sender_and_one_state():
 
 def test_global_blocks_are_primary_only():
     """跨群/进程级的块必须在 `is_primary` 里（否则被跑 N 遍）。"""
-    src = inspect.getsource(bot.main_loop)
+    src = inspect.getsource(mainloop.run_main_loop)
     for marker in ("hot_reload_check()", "_daily_profile_scan",
                    "_scheduled_pushes(sender, dry)", "_dice_current_player(_dg)"):
         idx = src.index(marker)
@@ -124,5 +125,5 @@ def test_parallel_flag_defaults_off(monkeypatch):
 
 def test_sequential_path_is_still_one_loop(monkeypatch):
     """开关关着时，仍然只起一个实例、管全部群（= P12-I 之前的行为）。"""
-    src = inspect.getsource(bot._run_all)
-    assert "groups=GROUPS" in src and "is_primary=True" in src
+    src = inspect.getsource(mainloop.run_all)
+    assert "groups=B.GROUPS" in src and "is_primary=True" in src

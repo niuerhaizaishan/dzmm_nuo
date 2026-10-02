@@ -19,8 +19,9 @@ CMD_PROMPT = _p("CMD_PROMPT", \"\"\"<原来的字符串>\"\"\")
 ### 生效时机
 
 `brains.py` 在 **import 时**调用 `load()`，所以只改文件不重启是不生效的。
-P12-F 加了**热加载**：`brains.refresh_prompts()` 会把 39 个 prompt 常量按磁盘上
-的文件重算一遍（`_p()` 里登记了每个 prompt 的代码默认值，见 `brains._PROMPT_DEFAULTS`）。
+P12-F 加了**热加载**：`brains.refresh_prompts()` 会把已登记的 prompt 常量按磁盘上
+的文件重算一遍（`declare()` 把每个 prompt 的代码默认值登记进中央登记册；
+P3-5 起出厂默认值住 `prompt_defaults.PD`，brains 只写 `PD["KEY"]`）。
 `load()` 自己带**mtime 缓存**（同一文件没动就不重复读盘），
 所以"每轮循环检查一次有没有改"是很便宜的。
 """

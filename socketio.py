@@ -16,15 +16,33 @@ class DZMMSocket:
     def send_message(self, chatroom_id: str, user_id: str, text: str,
                      cookie_str: str, retries: int = 3) -> bool:
         """发送消息，自动重试（每次重新握手），提高间歇性失败的成功率."""
+        return self.send_message_ex(chatroom_id, user_id, text, cookie_str,
+                                    retries)[0]
+
+    def send_message_ex(self, chatroom_id: str, user_id: str, text: str,
+                        cookie_str: str, retries: int = 3,
+                        message_id: str = "") -> tuple:
+        """同 `send_message`，但把**服务端回执**带出来：`(是否被接受, 说明, message_id)`。
+
+        P12-AZ（2026-09-30）：为什么需要回执 —— 这条路"时好时坏"，失败几乎都发生在
+        `connect` 阶段（`400 {"code":1,"message":"Session ID unknown"}`）。
+        实测：**connect 失败时 `send` 有时照样返回 `200 ok`，而群里什么都没有** ——
+        所以回执只能用来判断"要不要重新握手再来一次"，**能不能算成功只有读回说了算**。
+        """
+        mid = message_id or str(uuid.uuid4())
+        notes = []
         for attempt in range(retries):
             if attempt > 0:
                 time.sleep(0.5 * attempt)
-            if self._try_send(chatroom_id, user_id, text, cookie_str):
-                return True
-        return False
+            note = self._try_send(chatroom_id, user_id, text, cookie_str, mid)
+            if not note:
+                return True, "ok", mid
+            notes.append(note)
+        return False, "; ".join(notes) or "没试", mid
 
     def _try_send(self, chatroom_id: str, user_id: str, text: str,
-                  cookie_str: str) -> bool:
+                  cookie_str: str, message_id: str = "") -> str:
+        """发一次。**成功返回空串**，失败返回说明（`connect=400` / `send=400` / `err=…`）。"""
         ts = str(int(time.time() * 1000))
         s = requests.Session()
         # 走代理：dzmm.ai Socket.IO 直连会丢 session（connect 返回 Session ID unknown），代理直达源站才稳
@@ -50,7 +68,9 @@ class DZMMSocket:
                         headers={"Content-Type": "text/plain;charset=UTF-8"},
                         timeout=8)
             if r2.status_code >= 400:
-                return False
+                # 最常见的失败：`400 {"code":1,"message":"Session ID unknown"}` ——
+                # 握手拿到的 sid 没被注册（代理/边缘节点不对味），只能整个重来。
+                return "connect=" + str(r2.status_code)
             # 2b. GET poll 读取服务端连接确认（关键：否则 sid 未注册，下一步 POST 报 Session ID unknown）
             try:
                 s.get(base, timeout=8)
@@ -58,7 +78,7 @@ class DZMMSocket:
                 pass
 
             # 3. Join + send（batch 一起发，省一次往返）
-            mid = str(uuid.uuid4())
+            mid = message_id or str(uuid.uuid4())
             msg = {
                 "message_id": mid, "chatroom_id": chatroom_id,
                 "sent_by": user_id,
@@ -75,9 +95,13 @@ class DZMMSocket:
             r3 = s.post(base, data=batch.encode("utf-8"),
                         headers={"Content-Type": "text/plain;charset=UTF-8"},
                         timeout=8)
-            return r3.status_code < 400
+            if r3.status_code >= 400:
+                return "send=" + str(r3.status_code)
+            # ⚠️ `200 ok` **不代表投递**（connect 没成时它也回 200）⇒ 这里只报"接受"，
+            # 真正算不算数由调用方读回决定。
+            return ""
         except Exception as e:
             print("[socket] " + str(e)[:60])
-            return False
+            return "err=" + str(e)[:40]
         finally:
             s.close()

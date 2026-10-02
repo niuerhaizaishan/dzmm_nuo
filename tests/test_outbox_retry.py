@@ -183,8 +183,8 @@ def test_requeue_puts_messages_back_without_dedupe():
 def test_loop_does_not_break_on_the_first_command():
     """源码级钉住：命令扫描不许"见到第一条就 break"，并且要 requeue 剩下的。"""
     import inspect
-    import bot as B
-    src = inspect.getsource(B.main_loop)
+    import runtime.mainloop as B   # P3-19：main_loop 体搬迁至此（bot 桥前缀，子串兼容）
+    src = inspect.getsource(B.run_main_loop)
     a1 = "# 检查 pending 里有没有 / 指令或 @ 消息"
     a2 = "# `cmd` 优先于 @ / 房间分支"
     assert a1 in src and a2 in src, "命令扫描那段的锚点变了，请更新这条测试"

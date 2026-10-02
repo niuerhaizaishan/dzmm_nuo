@@ -295,8 +295,8 @@ def test_generate_reply_accepts_the_token_budget(monkeypatch):
 
 
 def test_room_reply_path_reads_the_param():
-    """源码级：房间回复那一处必须读 tuning，而不是写死。"""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    """源码级：房间回复那一处必须读 tuning，而不是写死（P3-3-3 起在 runtime/room.py）。"""
+    src = (ROOT / "runtime" / "room.py").read_text(encoding="utf-8")
     assert 'generate_reply, ctx' in src
     assert 'room.reply_max_tokens' in src
 

@@ -14,6 +14,12 @@ ROOT = Path(__file__).parent
 HERMES_PY = sys.executable  # 当前解释器（容器/裸机通用）
 PRIMARY_CID = "bd7fe6a4-0065-4551-ad3d-94116dba8f9c"
 
+# 抢会话锁的最长等待（2026-10-01 调整，原为 300s）。
+# renew_token 在重登期间最长持锁 `RELOGIN_TIMEOUT_SEC=300` 秒，等满 300 秒就是
+# "白等 5 分钟"——那时候 renew 那条链早把活干完了。20 秒足够区分"只是短暂重叠"
+# 与"确实有别人正在做"。
+AUTO_RECOVER_LOCK_WAIT_SEC = 20.0
+
 
 def notify(text: str):
     """飞书通知（静默失败）。"""
@@ -130,10 +136,14 @@ def main() -> int:
     **只允许一个真正去登录** —— 否则 refresh_token 轮换会让彼此作废。
     """
     from session_guard import guard
-    with guard("auto_recover", timeout=300) as got:
+    with guard("auto_recover", timeout=AUTO_RECOVER_LOCK_WAIT_SEC) as got:
         if not got:
-            notify("⚠️【小小糯bot】另一个进程正在登录，本次自动恢复跳过")
-            print("SKIP: 另一个进程正在续期/重登，放弃本次恢复")
+            # ⚠️ 刻意**不发微信告警**（2026-10-01 调整）：
+            # 按群并行（P12-I）下有 4 个主循环实例，会话一死是 4 个群**同时**读失败
+            # ⇒ 4 个 auto_recover 一起抢锁，只有 1 个能进，另外 3 个若各发一条
+            # "另一个进程正在登录"就是纯噪音。屋主要的是"恢复没恢复"的结论，
+            # 不是恢复过程的每一步 —— 真正的结论由 `_recover_locked()` 末尾发。
+            print("SKIP: 另一个进程正在续期/重登，放弃本次恢复（不发告警）")
             return 1
         return _recover_locked()
 

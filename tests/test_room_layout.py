@@ -167,7 +167,8 @@ def test_send_never_raises_without_channel_or_url():
 
 
 def test_bot_wires_layout_hooks():
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    # P3-3-3 起挂点在 runtime/room.py（房间消息处理块整体搬出）
+    src = (ROOT / "runtime" / "room.py").read_text(encoding="utf-8")
     assert "_room_layout.send_layout(" in src, "屋子复原那条要发图"
     assert "_room_layout.maybe_send(" in src, "改布局那条要发图"
     assert "_layout_after = _room_layout.DEFAULT_LAYOUT" in src

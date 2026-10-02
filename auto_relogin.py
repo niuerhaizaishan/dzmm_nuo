@@ -14,6 +14,7 @@
 """
 import base64
 import json
+import os
 import subprocess
 import sys
 import time
@@ -21,7 +22,8 @@ from pathlib import Path
 import env_config
 
 ROOT = Path(__file__).parent
-CONFIG = ROOT / ".dzmm_login.json"
+# S1：与 headless_relogin 同一套 DZMM_LOGIN_FILE 口径（本脚本是 macOS 遗留路径，一并改齐）
+CONFIG = Path(os.environ.get("DZMM_LOGIN_FILE") or (ROOT / ".dzmm_login.json"))
 DZMM_URL = env_config.get_dzmm_origin() + "/"
 
 

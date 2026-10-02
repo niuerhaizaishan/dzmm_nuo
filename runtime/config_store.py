@@ -183,11 +183,30 @@ class Config:
 
         全局用 `"key"`，按群用 `"cid|key"` —— 群级优先由 features 层负责。
         顺序上先全局后按群（dict 后写覆盖先写，语义更直观）。
+
+        ⚠️ 2026-10-02（生产事故，`screen=False` 的上班群被按认证群规矩踢人）：
+        这里原先**只导出 `groups[].features` 子表**，而群级字段 `screen` 是**独立字段**
+        （不在 features 子表里）⇒ 覆盖表里从来没有 `"<cid>|screen"`
+        ⇒ `features.on(cid, "screen")` 只能回落注册表默认值，而
+        `Feature("screen", …)` **没写 `default=`** ⇒ 默认 **True**
+        ⇒ **`_feat_on(cid, "screen")` 对每个群都返回 True —— 那个闸门是死的。**
+
+        代价就在 `mainloop` 的成员对账：
+        `if not B._feat_on(_cid, "screen"): continue` 永远不 continue
+        ⇒ 每次容器重启都对**所有群**做对账 ⇒ 上班群被当认证群筛查并踢人
+        （实测 2026-10-02 08:46:14 对账 → 08:46:16 `已移出 30932a9a`）。
+
+        入群事件那条路侥幸没出事，只因为它在 `runtime/joins.py` 里**还额外查了**
+        `cid in SCREEN_CIDS` —— 那个集合来自群级字段，是对的。
+        **两个调用点、两套判定，只有一个是对的** —— 这就是事故的形状。
         """
         out = {k: bool(v) for k, v in (self.features or {}).items()}
         for cid, spec in (self.group_specs or {}).items():
             for k, v in (getattr(spec, "features", None) or {}).items():
                 out["{}|{}".format(cid, k)] = bool(v)
+            # 群级字段也要桥进功能覆盖表，否则 `_feat_on(cid, "screen")` 是死的。
+            # 只桥 `screen`：`mute`/`push` 没有同名 Feature，桥了反而会造出假覆盖。
+            out["{}|screen".format(cid)] = bool(getattr(spec, "screen", False))
         return out
 
     def tuning_map(self) -> dict:
@@ -477,6 +496,19 @@ def _parse(raw: dict, defaults: dict) -> Config:
             _require(persona in known_personas,
                      "{} 的 persona={!r} 不存在（可用：{}）".format(
                          where, persona, ", ".join(sorted(known_personas))))
+        # ⚠️ 2026-10-02（接事故一）：`screen` 曾经有**两个可写的真源** ——
+        # 群级字段（/edit 页的复选框）和 features 子表（功能矩阵的三态行），
+        # 而 `feature_map()` 桥接时群级字段**后写覆盖**，features 页写的
+        # `features.screen` 会**静默失效**（"看起来配了、实际不生效"）。
+        # 这里读入时**归一成单真源**：子表里的 screen 吸收进群级字段
+        # （子表赢 —— 它是功能矩阵里的显式覆盖操作）并从子表删除；
+        # `as_dict()` 只序列化群级字段，配置文件里的 `features.screen`
+        # 在下一次保存后自然消失，双真源逐步收敛。
+        feats = _override_map(g.get("features"), where + ".features",
+                              _feature_keys(), "功能开关")
+        screen_field = _strict_bool(g.get("screen", False), where + ".screen")
+        if "screen" in feats:
+            screen_field = bool(feats.pop("screen"))
         spec = GroupSpec(
             cid=cid,
             alias=str(g.get("alias") or "").strip(),
@@ -484,11 +516,10 @@ def _parse(raw: dict, defaults: dict) -> Config:
             # "false" 静默当成打开（这类"静默反向"比直接报错糟得多）
             enabled=_strict_bool(g.get("enabled", True), where + ".enabled"),
             mute=_strict_bool(g.get("mute", False), where + ".mute"),
-            screen=_strict_bool(g.get("screen", False), where + ".screen"),
+            screen=screen_field,
             push=_strict_bool(g.get("push", False), where + ".push"),
             persona=persona,
-            features=_override_map(g.get("features"), where + ".features",
-                                   _feature_keys(), "功能开关"),
+            features=feats,
             tuning=_override_map(g.get("tuning"), where + ".tuning",
                                  _param_keys(), "参数"),
         )

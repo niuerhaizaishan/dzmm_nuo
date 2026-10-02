@@ -348,11 +348,15 @@ def test_greeting_gate_is_actually_consulted(monkeypatch, state):
     （`period` 在循环里拼），正则扫不到字符串字面量。第一次写这条测试时，
     注册表写着 wired、静态扫描却找不到 —— 说明"看起来接了"和"真接了"是两回事。
     所以这里驱动真代码，记录 `_feat_on` 被问了哪些 key。
+    P3-11 起真身在 runtime/pushes.py：`_feat_on`/`PUSH_CIDS` 经注入壳仍是
+    bot 接缝；generate_greeting/datetime/_publish_memory_report 是叶子工具，
+    pushes 直接 import，patch 相应改到 pushes 模块上。
     """
     import asyncio
     from datetime import datetime as _dt
 
     import bot
+    from runtime import pushes
 
     seen = []
     real = bot._feat_on
@@ -363,11 +367,11 @@ def test_greeting_gate_is_actually_consulted(monkeypatch, state):
 
     monkeypatch.setattr(bot, "_feat_on", recorder)
     monkeypatch.setattr(bot, "PUSH_CIDS", ["c1"])
-    monkeypatch.setattr(bot, "generate_greeting", lambda period, today: "测试问候")
+    monkeypatch.setattr(pushes, "generate_greeting", lambda period, today: "测试问候")
     fake = _FakeSender()
 
     # 08:30 → 只该问 greet_morning
-    monkeypatch.setattr(bot, "datetime",
+    monkeypatch.setattr(pushes, "datetime",
                         _frozen_datetime(_dt(2026, 9, 26, 8, 30)))
     asyncio.run(bot._scheduled_pushes(fake, False))
     assert "greet_morning" in seen, seen
@@ -376,9 +380,9 @@ def test_greeting_gate_is_actually_consulted(monkeypatch, state):
 
     # 12:30 → 午安 + 记忆汇报
     seen.clear()
-    monkeypatch.setattr(bot, "datetime",
+    monkeypatch.setattr(pushes, "datetime",
                         _frozen_datetime(_dt(2026, 9, 26, 12, 30)))
-    monkeypatch.setattr(bot, "_publish_memory_report",
+    monkeypatch.setattr(pushes, "_publish_memory_report",
                         _async_noop)
     asyncio.run(bot._scheduled_pushes(fake, False))
     assert "greet_noon" in seen and "memory_report" in seen, seen
@@ -390,7 +394,8 @@ async def _async_noop(*a, **kw):
 
 def test_rank_push_gate_is_wired_in_source():
     """排行推送的闸门在长条件里，静态确认它挂在正确的位置（与 last_daily_rank_date 同处）。"""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    # P3-19 起主循环体在 runtime/mainloop.py（bot 桥 B 前缀，子串兼容）
+    src = (ROOT / "runtime" / "mainloop.py").read_text(encoding="utf-8")
     assert '_feat_on(cid, "rank_push")' in src
     idx = src.index('_feat_on(cid, "rank_push")')
     window = src[idx - 400:idx + 100]
@@ -414,8 +419,9 @@ def test_cmd_attribution_table_covers_every_cmd_gate():
         "profile_card",
     }
     table_keys = {k for entry in bot._CMD_FEATURE_ORDER for k in entry[0]}
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    chain = src[src.index("# 吹牛骰子命令（优先）"):src.index("elif at_msg:")]
+    # P3-3-2 起分派链在 runtime/dispatch.py（handle_slash 到文件尾）
+    src_d = (ROOT / "runtime" / "dispatch.py").read_text(encoding="utf-8")
+    chain = src_d[src_d.index("# 吹牛骰子命令（优先）"):]
     gate_keys = set(re.findall(r'_feat_on\(cid, "([a-z_]+)"\)', chain))
     missing = gate_keys - table_keys - inner_ok
     assert not missing, "分派链里有闸门但归属表没登记：{}".format(sorted(missing))
@@ -432,8 +438,9 @@ def test_cmd_attribution_order_follows_the_chain():
     所以在归属表里没有对应项，也不该参与顺序比较。
     """
     import bot
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    chain = src[src.index("# 吹牛骰子命令（优先）"):src.index("elif at_msg:")]
+    # P3-3-2 起分派链在 runtime/dispatch.py（handle_slash 到文件尾）
+    src_d = (ROOT / "runtime" / "dispatch.py").read_text(encoding="utf-8")
+    chain = src_d[src_d.index("# 吹牛骰子命令（优先）"):]
     src_order = []
     for line in chain.splitlines():
         m = re.search(r'_feat_on\(cid, "([a-z_]+)"\)', line)
@@ -464,10 +471,11 @@ def test_generic_stop_word_gets_a_hint_instead_of_silence():
     功能关掉时该静默还静默（"这个群没开这个玩法"不能被当成闲聊或提示答）。
     """
     import bot
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    chain = src[src.index("# 吹牛骰子命令（优先）"):src.index("elif at_msg:")]
+    # P3-3-2 起分派链在 runtime/dispatch.py（handle_slash 到文件尾；链体缩进 24→4）
+    src_d = (ROOT / "runtime" / "dispatch.py").read_text(encoding="utf-8")
+    chain = src_d[src_d.index("# 吹牛骰子命令（优先）"):]
     i_hint = chain.index("elif _is_stop_word(cmd):")
-    i_else = chain.index("\n                        else:\n")
+    i_else = chain.index("\n    else:\n")
     assert i_hint < i_else, "兜底提示必须在真正的收尾分支之后、兜底聊天之前"
     assert 'p("no_play", cid)' in chain[i_hint:i_else], "提示文案走话术 no_play"
 
@@ -611,12 +619,25 @@ def test_heat_gate_blocks_further_scoring(state):
 
 def test_screen_off_still_welcomes_in_source():
     """`screen` 只该包住"筛查踢人"那一支，不能包住整个入群块 ——
-    否则关掉筛查会把欢迎语、房间迎客一起关掉（那两件事另有开关）。"""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    region = src[src.index("# 检测新成员加入"):src.index("# 检查 pending")]
-    assert 'cid in SCREEN_CIDS and _feat_on(cid, "screen")' in region
-    assert 'elif cid in SCREEN_CIDS:' in region, "关掉筛查要退化成「只欢迎不踢人」"
-    assert 'WELCOME_TEXT_PLAIN' in region
+    否则关掉筛查会把欢迎语、房间迎客一起关掉（那两件事另有开关）。
+
+    P3-3-1 起分派逻辑在 runtime/joins.py（`handle_join_event`）；
+    bot.py 只留"剧情进行中不迎新"的故事态闸门。
+    """
+    src_b = (ROOT / "bot.py").read_text(encoding="utf-8")
+    src_j = (ROOT / "runtime" / "joins.py").read_text(encoding="utf-8")
+    region = src_j[src_j.index("async def handle_join_event"):src_j.index("for jid in passed")]
+    assert 'cid in screen_cids and _feat_on(cid, "screen")' in region
+    assert "elif cid in screen_cids:" in region, "关掉筛查要退化成「只欢迎不踢人」"
+    # P12-BD：那份中性欢迎语现在先问话术表（注入的 `welcome_of`），没写 key 的群仍旧
+    # 用常量兜底 —— 语义没变，只是取法可覆盖。
+    # P3-20：常量真源与兜底表达式搬 runtime/joins.py（bot 壳传值注入）。
+    src_j = (ROOT / "runtime" / "joins.py").read_text(encoding="utf-8")
+    assert "welcome_of(cid, plain=True)" in region
+    assert "welcome_text_plain if plain else welcome_text" in src_j, "常量还是兜底"
+    # 故事态闸门留在调用点（P3-19 起随主循环体在 runtime/mainloop.py，B 前缀）
+    src_ml = (ROOT / "runtime" / "mainloop.py").read_text(encoding="utf-8")
+    assert 'if not B._get_story_state(cid).get("active"):' in src_ml
 
 
 def test_defaults_are_logically_equivalent_to_before(state):

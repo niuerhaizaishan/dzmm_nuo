@@ -204,6 +204,28 @@ def test_security_headers_present():
     assert "form-action 'self'" in src
 
 
+def test_every_referenced_static_asset_is_served(server):
+    """防漂移钉点：shell.py 引用的**每一个** /static/ 资产都必须真的能拉到。
+
+    2026-10-02 踩过的坑：4A 新增三个 CSS，shell 引用了但 `_STATIC` 白名单
+    忘了登记 —— 线上 404、整站裸 HTML。本地目检走 http.server 直读文件系统、
+    渲染冒烟只查 HTML 字符串，都没经过这个路由，所以漏了。
+    这里从 shell.py 源码**提取**全部 /static/ 引用逐个 GET —— 以后再加
+    资产忘了登记，这条会当场红。
+    """
+    import re as _re
+    shell_src = (ROOT / "admin" / "shell.py").read_text(encoding="utf-8")
+    referenced = sorted(set(_re.findall(r"/static/[\w.-]+", shell_src)))
+    assert referenced, "shell.py 里没找到静态引用（提取正则坏了？）"
+    for p in referenced:
+        st, body, h = _req(server, p)
+        assert st == 200, "{} 被壳引用但服务器没服务（_STATIC 忘登记？）".format(p)
+        assert body, p
+    # 内容类型抽查：CSS 必须 text/css（浏览器对错类型的外链样式会拒载）
+    _st, _b, h = _req(server, "/static/base.css")
+    assert "text/css" in h.get("Content-Type", "")
+
+
 # ---------------------------------------------------------------- 行为：HTTP
 
 @pytest.fixture(autouse=True)
@@ -608,12 +630,13 @@ def test_prompts_section_reports_real_counts_not_zeros():
     生产镜像预检时才发现。字段存在 ≠ 数值有意义。
 
     P12-G：第 40 个（`MEMORY_FILTER`，在 `runtime/memory.py`）外置之后是 **40 个**；
+    P12-AP 又加了 `AT_FRAME_PROMPT`（@ 回复的收尾块）→ **41 个**。
     `section_prompts()` 会主动 import 所有持有常量的模块，所以后台进程也数得对。
     """
     d = dash.section_prompts()
-    assert d["total"] == 40, d
-    assert d["from_file"] == 40, d
-    assert d["files_on_disk"] == 40, d
+    assert d["total"] == 41, d
+    assert d["from_file"] == 41, d
+    assert d["files_on_disk"] == 41, d
     assert "warning" not in d, d
 
 

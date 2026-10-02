@@ -8,6 +8,7 @@
 从 `runtime.fortune` 拿，而不是回指 bot.py。
 """
 import random
+import re
 import time
 from datetime import datetime
 
@@ -15,12 +16,15 @@ from brains import generate_fortune
 from profiles import get_profile
 from runtime import ctx
 from runtime.identity import get_full_name
+from runtime.members import _gender_of
 from runtime.text import _clean_name
+from runtime.tuning import get as _tune        # P12-AW：按群参数（fortune.cooldown）
 from personas import me as _pme, p as _pp             # 自称 + 按群人设文案（小小糯/薇丝）
 import state_store
 
 __all__ = [
-    "is_fortune_cmd", "fortune", "_fortune_calc", "_fortune_score",
+    "is_fortune_cmd", "is_fortune_ask", "fortune", "fortune_reply",
+    "_fortune_calc", "_fortune_score",
     "_fortune_level", "_record_fortune", "_get_fortune_history",
     "_char_wx", "_name_wx", "_ganzhi", "_relation",
 ]
@@ -55,10 +59,27 @@ _WX_ORDER = ["木", "火", "土", "金", "水"]
 
 _WX_BASE = {"木": 54, "火": 53, "土": 55, "金": 52, "水": 50}
 
+# P12-AX：天干阴阳（甲丙戊庚壬 = 阳，乙丁己辛癸 = 阴）。
+# 为什么需要它：算分原来只看**当日天干的五行**，而天干五行是**两天一换**
+# （甲乙木、丙丁火、戊己土、庚辛金、壬癸水）⇒ 连续两天的分数一模一样。
+# 2026-09-29 屋主报"昨天和今天分数都没变"，线上实测：
+#   御褚 09-29 07:37 CST = 51 分；09-30 07:12 CST = 51 分（那两天日柱是丙午/丁未，**都是火**）
+# 阴阳是**隔天交替**的，把它作为一个可展示的项（±3，"同五行、阴阳不同力道略差"）
+# 加进去，分数就必然天天变；四维的 seed 也补上日期（原先只按名字 ⇒ 永远不变）。
+_YANG_GAN = ("甲", "丙", "戊", "庚", "壬")
 
-_WX_LUCK = {"木": ("竹青", "3", "正东"), "火": ("绛红", "7", "正南"),
-            "土": ("杏黄", "5", "正中"), "金": ("皓白", "9", "正西"),
-            "水": ("月白", "1", "正北")}
+
+# P12-AY：**今日**幸运（颜色·数字·方位）。原来是每个五行一个固定三元组 ⇒
+# 同一个人的"幸运"永远一样（和"昨天的分数"是同一类毛病，屋主 2026-09-30 要求一起改）。
+# 现在每种五行给几个选项，用"日期序数 + 名字长度"取模 —— 日序数每天 +1，
+# 所以**隔天必然换一个**（不会连着两天一样）。
+_WX_LUCK = {
+    "木": (("竹青", "3", "正东"), ("青碧", "8", "东南"), ("墨绿", "3", "正东")),
+    "火": (("绛红", "7", "正南"), ("朱砂", "2", "正南"), ("石榴红", "7", "东南")),
+    "土": (("杏黄", "5", "正中"), ("琥珀", "0", "西南"), ("赭石", "5", "东北")),
+    "金": (("皓白", "9", "正西"), ("银灰", "4", "西北"), ("香槟金", "9", "正西")),
+    "水": (("月白", "1", "正北"), ("藏青", "6", "正北"), ("黛蓝", "1", "东北")),
+}
 
 
 _WX_YI = {"木": ("会友", "开工"), "火": ("社交", "表白"), "土": ("守成", "理财"),
@@ -123,8 +144,129 @@ _ZHI_PENALTY = -15  # 日冲本命
 
 
 def is_fortune_cmd(cmd: str) -> bool:
-    """识别算命指令."""
-    return any(cmd.startswith(p) for p in ["/算命", "/运势", "/占卜", "/今日运势", "/今日运气", "/运气"])
+    """识别算命指令（`/` 老入口 + P12-AW 给茶水间开的 `#` 新入口）."""
+    return any(cmd.startswith(p) for p in [
+        "/算命", "/运势", "/占卜", "/今日运势", "/今日运气", "/运气",
+        # P12-AW：茶水间没有 Bot、又只接 @（`at_only`），`/` 那条路在那边被
+        # `slash_cmds=off` 关着（防别家 bot 的游戏指令），所以给它一条 `#` 入口。
+        "#算命", "#运势", "#占卜", "#今日运势", "#今日运气", "#运气",
+    ])
+
+
+# ---------------------------------------------------------------- P12-AW：自然语言入口
+# 屋主 2026-09-30："**@小小糯 算运势（包括之类的话）也可以触发**，@ 的时候不用加 #"。
+# 判定照抄 `runtime/recap.py::_recap_intent` 的路子（关键词表，不调模型）：
+#   · 强词：直接触发
+#   · 弱词：必须与"请求动词"同现（"帮我算算运气" ✅ / "我今天运气好差" ❌ 仍走闲聊）
+#   · 排除：出现这些词就不当请求（"运势榜/排行/趋势/大家/群里"）
+_FORTUNE_STRONG = ("运势", "算命", "占卜", "算卦", "算一卦", "看相", "命盘",
+                   # P12-BB：屋主 2026-09-30 原话就是「**给我卜一卦**」—— 原来这些词一个都不中，
+                   # 于是这句话掉进闲聊分支（当时还因为漏 import 直接报错，见下方 NameError 事故）。
+                   # 补上"八字/紫微/求签"这类说法，动词+卦的组合交给 `_FORTUNE_RE`。
+                   "八字", "紫微", "排盘", "求签", "卜卦", "起卦", "摇卦", "解卦")
+# 动词 + 可选的「一」+ 卦：卜一卦／起一卦／摇一卦／算一卦／解卦／看卦…
+# 单独一个"卦"字**不算**（"这卦真准""卦象不错"是闲聊，不能吃进来）。
+_FORTUNE_RE = re.compile(r"[卜占算起摇解求看批]一?卦|[求抽][个支]?签")
+_FORTUNE_WEAK = ("运气", "运程")
+_FORTUNE_VERBS = ("算", "测", "看", "查", "求", "来", "给", "帮")
+_FORTUNE_BLOCK = ("运势榜", "排行", "趋势", "大家", "群里")
+
+
+def is_fortune_ask(text: str) -> bool:
+    """自然语言里是不是在求运势（配合 `@小小糯` 用）。"""
+    t = (text or "").strip()
+    if not t or any(k in t for k in _FORTUNE_BLOCK):
+        return False
+    if any(k in t for k in _FORTUNE_STRONG) or _FORTUNE_RE.search(t):
+        return True
+    return any(k in t for k in _FORTUNE_WEAK) and any(v in t for v in _FORTUNE_VERBS)
+
+
+# ---------------------------------------------------------------- P12-AW：当天卡缓存
+# 屋主定的行为："冷却内再问 → **原样重发整卡**"（复用缓存、**不调模型**）。
+# 只留当天（跨天自动失效）；键 = uid，值 = {date, text}。
+FORTUNE_CARD_KEY = "fortune_card"
+
+# ⚠️ `runtime/` 里**不许新增静默 handler**（`tests/test_silent_errors.py` 的棘轮盯着）。
+# 缓存的失败不影响回答，但要留痕 —— 照 `runtime/identity.py` 的 `_warn_once` 写法。
+_CARD_WARNED: set = set()
+
+
+def _warn_once(what: str, exc: Exception) -> None:
+    key = what + "|" + type(exc).__name__
+    if key in _CARD_WARNED:
+        return
+    _CARD_WARNED.add(key)
+    msg = "⚠️ fortune: {} 失败（{}: {}）".format(what, type(exc).__name__, str(exc)[:80])
+    try:
+        from runtime.obs import log as _log
+        _log(msg)
+    except Exception:                                          # noqa: BLE001
+        print(msg)
+
+
+def _card_cache(cid: str) -> dict:
+    try:
+        return dict(state_store.group_get(cid, FORTUNE_CARD_KEY, {}) or {})
+    except Exception as e:                                     # noqa: BLE001
+        _warn_once("读运势卡缓存", e)
+        return {}
+
+
+def _card_get(cid: str, uid: str, date_str: str) -> str:
+    ent = _card_cache(cid).get(uid) or {}
+    return str(ent.get("text") or "") if ent.get("date") == date_str else ""
+
+
+def _card_put(cid: str, uid: str, date_str: str, text: str) -> None:
+    try:
+        today = {k: v for k, v in _card_cache(cid).items()
+                 if isinstance(v, dict) and v.get("date") == date_str}
+        today[uid] = {"date": date_str, "text": text}
+        state_store.group_set(cid, FORTUNE_CARD_KEY, today)
+    except Exception as e:                                     # noqa: BLE001
+        _warn_once("写运势卡缓存", e)
+
+
+def fortune_reply(cmd_sender: str, cid: str = None) -> str:
+    """P12-AW 的**运势入口**（`#运势` 与 `@我算运势` 都走它）。
+
+    · `fortune.cooldown = 0`（默认，**认证群就是 0**）⇒ 每次重新生成，行为与 `fortune()` 一致；
+    · `> 0`（茶水间 3600）⇒ 同一天同一个人再问就**原样重发那张卡**（不调模型）。
+    """
+    cid = cid or ctx.get_active_cid()
+    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        cd = int(_tune("fortune.cooldown", cid) or 0)
+    except Exception:                                          # noqa: BLE001
+        cd = 0
+    if cd > 0:
+        cached = _card_get(cid, cmd_sender, today)
+        if cached:
+            return cached
+    out = fortune(cmd_sender, cid)
+    if cd > 0 and out:
+        _card_put(cid, cmd_sender, today, out)
+    return out
+
+
+def _gender_label_of(uid: str, cid: str = None) -> str:
+    """这人什么性别（女生/男生/未知）—— **档案优先，档案没写就实时查一次平台**。
+
+    P12-BA（屋主 2026-09-30："**运势你也不能逮谁叫谁姐姐呀，要看性别的呀**"）：
+    `FORTUNE_PROMPT` 里其实早就写了"女生叫 X 姐姐、男生叫 X 哥哥"，但**输入里从来没给性别**
+    —— 模型手里只有一个人名和一堆命盘数字，示例又全是姐姐，于是见谁都叫姐姐
+    （和 P12-AL 那个"基础提示词 13 处姐姐、4 个示例全是姐姐"是同一类毛病）。
+    现在把性别当**输入字段**给出去，查不到就明说"未知"，prompt 里写死"未知只叫名字"。
+
+    ⚠️ 会发一次平台请求（`_gender_of`）：调用方必须在**线程里**（`/运势` 与 @ 两条路
+    都是 `asyncio.to_thread` 进来的）。
+    """
+    try:
+        return _gender_of(uid, cid) or "未知"
+    except Exception as e:                                     # noqa: BLE001
+        _warn_once("识别性别", e)
+        return "未知"
 
 
 def fortune(cmd_sender: str, cid: str = None) -> str:
@@ -159,6 +301,10 @@ def fortune(cmd_sender: str, cid: str = None) -> str:
     calc = ("命基" + str(base)
             + " " + ("−" if rn < 0 else "+") + " 名格" + str(abs(rn))
             + " " + ("−" if rb < 0 else "+") + " 本命" + str(abs(rb)))
+    # 日干阴阳（P12-AX）：固定展示成一项，分数才不会"两天一个样"
+    yy = int(info.get("yinyang", 0) or 0)
+    if yy:
+        calc += " " + ("−" if yy < 0 else "+") + " 阴阳" + str(abs(yy))
     if ze:
         calc += (" " + ("−" if ze < 0 else "+")
                  + (" 日冲" if ze < 0 else " 日合") + str(abs(ze)))
@@ -173,6 +319,8 @@ def fortune(cmd_sender: str, cid: str = None) -> str:
     d, lk = info["dims"], info["luck"]
     # AI 只写最后一句（传「主名」而非完整昵称，避免从括号后缀里挑错名字）
     main_name = _clean_name(full) or full
+    # P12-BA：称呼按性别 —— 性别必须**作为输入**给模型（prompt 里写了规则，但不给数据）
+    glabel = _gender_label_of(uid, cid)
     # 用户最近发言（供 AI 个性化点评，结合她近期在群里聊什么）
     recent = ""
     try:
@@ -182,6 +330,7 @@ def fortune(cmd_sender: str, cid: str = None) -> str:
     except Exception:
         pass
     hint = ("用户主名：" + main_name + "\n"
+            + "性别：" + glabel + "\n"
             + "命盘：本命" + info["ben_wx"] + "（" + _REL_TEXT.get(info["rel_ben"], "比和")
             + "）、名格" + info["name_wx"] + "（" + _REL_TEXT.get(info["rel_name"], "比和") + "）"
             + ("；日辰冲本命（今天尤其不顺，可以说得实在一点、别硬灌鸡汤）"
@@ -210,6 +359,7 @@ def fortune(cmd_sender: str, cid: str = None) -> str:
         "📜 命盘 →  本命" + ben_gan + "：" + ben_zhi + info["ben_wx"]
         + " | 名格：" + info["name_wx"]
         + " |  今日：" + info["day_ganzhi"] + info["day_wx"]
+        + ("（阳）" if int(info.get("yinyang", 0) or 0) > 0 else "（阴）")
         + " → " + concl,
         "📅 宜" + yi + " ｜ 忌" + ji + chong_txt,
         "🧮 " + calc,
@@ -249,6 +399,9 @@ def _fortune_calc(uid: str, full: str, date_str: str, bio: str = "") -> dict:
         dt_now = datetime.now()
     day_ganzhi, day_wx, day_zhi_wx = _ganzhi(dt_now)
     day_desc = day_wx + day_zhi_wx
+    # 日干阴阳（P12-AX）：隔天交替，保证"天天分数不同"
+    day_gan = day_ganzhi[0] if day_ganzhi else ""
+    yinyang = 3 if day_gan in _YANG_GAN else -3
     # 名格
     name_wx, name_ch = _name_wx(full)
     # 生克
@@ -271,10 +424,12 @@ def _fortune_calc(uid: str, full: str, date_str: str, bio: str = "") -> dict:
     human = min(human, 10)
     # 总分
     score = _WX_BASE.get(ben_wx, 50) + _REL_SCORE.get(rel_name, 8) \
-        + _REL_SCORE.get(rel_ben, 8) + human + zhi_extra
+        + _REL_SCORE.get(rel_ben, 8) + human + yinyang + zhi_extra
     score = max(0, min(100, score))
     # 四维（总分 ± 确定性偏移）
-    seed = sum(ord(c) for c in (name_ch or full or "糯")) % 7
+    # ⚠️ seed 必须**含日期**：原来只用名字 ⇒ 同一个人的四维永远不变（P12-AX）
+    seed = (sum(ord(c) for c in (name_ch or full or "糯"))
+            + dt_now.toordinal()) % 7
     dims = {
         "财运": max(0, min(100, score - 5 + seed % 5)),
         "事业": max(0, min(100, score + 4 + (seed + 2) % 5)),
@@ -287,9 +442,14 @@ def _fortune_calc(uid: str, full: str, date_str: str, bio: str = "") -> dict:
         "day_ganzhi": day_ganzhi, "day_wx": day_wx, "day_desc": day_desc,
         "day_zhi": day_ganzhi[-1], "name_wx": name_wx, "name_ch": name_ch,
         "rel_name": rel_name, "rel_ben": rel_ben, "human": human,
+        "yinyang": yinyang, "day_gan": day_gan,
         "ben_zhi": ben_zhi, "day_zhi": day_zhi,
         "chong_ben": chong_ben, "he_ben": he_ben, "zhi_extra": zhi_extra,
-        "dims": dims, "luck": _WX_LUCK.get(name_wx, ("杏黄", "5", "正中")),
+        "dims": dims,
+        # 今日幸运：按"日期序数 + 名字"从本五行的选项里取（隔天必换，见 `_WX_LUCK`）
+        "luck": (lambda opts: opts[(dt_now.toordinal()
+                                    + len(name_ch or full or "糯")) % len(opts)])(
+            _WX_LUCK.get(name_wx, (("杏黄", "5", "正中"),))),
     }
 
 

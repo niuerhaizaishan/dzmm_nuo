@@ -156,6 +156,37 @@ def test_interrupted_note_says_why_not_resent(store):
     assert "不自动重发" in INTERRUPTED_NOTE
 
 
+# ---------------------------------------------------------------- P12-BR ⑦：结案
+
+def test_expire_moves_stale_failures_out_of_the_failure_count(store):
+    """陈旧失败人工结案后**不再计入失败数**，但记录留着（审计可查）。
+
+    真失败（平台拒了）和"进程重启打断、未确认"混在同一个 `failed` 里时，
+    状态行的 `failed=N` 永远清不干净，巡检的"失败增长"口径也跟着失真。
+    """
+    from runtime.outbox import EXPIRED
+    a = store.enqueue(chatroom_id="c1", text="被打断的那条")
+    b = store.enqueue(chatroom_id="c1", text="真被平台拒的那条")
+    store.lease(a, "w"); store.mark_failed(a, "进程重启打断：未确认是否已投递")
+    store.lease(b, "w"); store.mark_failed(b, "sender 返回 False")
+    assert store.failed_count() == 2
+
+    assert store.expire([a], "人工核对：已过期，不重发") == 1
+    assert store.failed_count() == 1, "结案的要从失败数里消失"
+    row = store.get(a)
+    assert row["status"] == EXPIRED
+    assert "已结案" in row["last_error"] and "进程重启打断" in row["last_error"], \
+        "原来的原因要留着（审计线索）"
+    assert row["text"] == "被打断的那条", "只改状态，正文一个字不动"
+    # 幂等：已结案的再结一次 = 0
+    assert store.expire([a], "再来一次") == 0
+    # 不碰非 failed 的行（比如已经发出去的）
+    sent = store.enqueue(chatroom_id="c1", text="发出去的")
+    store.lease(sent, "w"); store.mark_sent(sent)
+    assert store.expire([sent], "不该动") == 0
+    assert store.get(sent)["status"] == SENT
+
+
 def test_pending_count_counts_leased_too(store):
     a = store.enqueue(chatroom_id="c1", text="a")
     store.enqueue(chatroom_id="c1", text="b")

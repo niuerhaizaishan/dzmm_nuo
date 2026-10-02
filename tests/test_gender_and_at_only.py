@@ -77,7 +77,8 @@ def test_at_only_registered_and_off_by_default():
 
 
 def test_scan_loop_gates_everything_on_at_only():
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    # P3-19 起主循环体在 runtime/mainloop.py（bot 桥 B 前缀，子串兼容）
+    src = (ROOT / "runtime" / "mainloop.py").read_text(encoding="utf-8")
     i = src.index("P12-AL：`at_only` 的群里")
     seg = src[i:i + 700]
     assert '_feat_on(cid, "at_only")' in seg

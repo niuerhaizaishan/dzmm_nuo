@@ -1,0 +1,136 @@
+/* ============================================================
+   DDZM Admin — Dashboard (Index Page) Specific Styles
+   ============================================================ */
+
+/* ---- Status Grid ---- */
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-6);
+}
+
+/* ---- Alert Banner ---- */
+.alert-banner {
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  margin-bottom: var(--sp-6);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  animation: fadeIn var(--duration-normal) var(--ease-out);
+}
+
+.alert-banner--bad {
+  background: var(--c-bad-bg);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  color: var(--c-bad);
+}
+
+.alert-banner--warn {
+  background: var(--c-warn-bg);
+  border: 1px solid rgba(210, 153, 34, 0.3);
+  color: var(--c-warn);
+}
+
+.alert-banner__icon { font-size: var(--fs-xl); flex-shrink: 0; }
+
+/* ---- Section Grid ---- */
+.section-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: var(--sp-4);
+}
+
+@media (max-width: 480px) {
+  .section-grid { grid-template-columns: 1fr; }
+}
+
+/* ---- Log Viewer ---- */
+.log-viewer {
+  background: var(--c-bg-0);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: var(--sp-3);
+  max-height: 360px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+  color: var(--c-text-2);
+}
+
+.log-line { white-space: pre-wrap; word-break: break-all; padding: 1px 0; }
+.log-line:hover { background: var(--c-accent-subtle); }
+.log-line--err { color: var(--c-bad); }
+.log-line--warn { color: var(--c-warn); }
+.log-line--ok { color: var(--c-ok); }
+
+/* ---- Group Status Table ---- */
+.group-row { cursor: pointer; transition: background var(--duration-fast); }
+.group-row:hover { background: var(--c-accent-subtle); }
+.group-row__expand { width: 20px; text-align: center; color: var(--c-text-3); transition: transform var(--duration-fast); }
+.group-row.expanded .group-row__expand { transform: rotate(90deg); }
+.group-detail { display: none; background: var(--c-bg-2); }
+.group-detail.visible { display: table-row; }
+
+/* ---- Proof Lines ---- */
+.proof-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--c-border);
+  font-size: var(--fs-sm);
+}
+
+.proof-item:last-child { border-bottom: none; }
+
+.proof-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.proof-dot--ok { background: var(--c-ok); box-shadow: 0 0 6px var(--c-ok); }
+.proof-dot--bad { background: var(--c-bad); box-shadow: 0 0 6px var(--c-bad); }
+
+/* ---- Cookie Table ---- */
+.cookie-expired { opacity: 0.5; text-decoration: line-through; }
+
+/* ---- Heat Map Mini ---- */
+.heat-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+}
+
+.heat-bar__fill {
+  height: 6px;
+  border-radius: var(--r-full);
+  background: linear-gradient(90deg, var(--c-ok), var(--c-warn), var(--c-bad));
+  transition: width var(--duration-normal) var(--ease-out);
+}
+
+/* ---- Auto-refresh indicator ---- */
+.refresh-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--c-text-3);
+}
+
+.refresh-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-ok);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.refresh-dot--stale { background: var(--c-warn); }

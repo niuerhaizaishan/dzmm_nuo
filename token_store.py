@@ -15,18 +15,40 @@ v10 加密写回 SQLite），云端 Linux 没有这套东西。本模块把 toke
 """
 import json
 import os
+import shutil
+import sys
 from pathlib import Path
 
-TOKEN_FILE = Path(__file__).parent / ".dzmm_token.json"
+# S1（2026-10-01）：路径可用 DZMM_TOKEN_FILE 覆盖 —— 双写期指向 secrets/ 目录
+# （目录 bind mount 上 os.replace 可用，单文件挂载的 EBUSY 就此消失）。
+# 不设该变量时路径与老版本逐字一致（零回归）。
+TOKEN_FILE = Path(
+    os.environ.get("DZMM_TOKEN_FILE")
+    or (Path(__file__).parent / ".dzmm_token.json")
+)
+_WARNED: set = set()
 
 
 def load_cookies() -> list:
-    """读 cookie 列表 [{name, value, domain, path, expires, secure, httpOnly}]。"""
-    try:
-        data = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))
-        return data.get("cookies", []) if isinstance(data, dict) else []
-    except Exception:
-        return []
+    """读 cookie 列表 [{name, value, domain, path, expires, secure, httpOnly}]。
+
+    P12-BL-fix：主文件读不出来（就地写被中断 ⇒ 半截 JSON）时**回退到 `.bak`**，
+    别让"没有原子性"直接升级成"凭据没了、只能人工重登"。
+    """
+    for p in (TOKEN_FILE, TOKEN_FILE.with_name(TOKEN_FILE.name + ".bak")):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            ck = data.get("cookies", []) if isinstance(data, dict) else []
+            if ck:
+                if p != TOKEN_FILE:
+                    _warn_once("主凭据文件不可用，已回退用 .bak", RuntimeError("fallback"))
+                return ck
+        except FileNotFoundError:
+            continue
+        except Exception as e:                                 # noqa: BLE001
+            _warn_once("读凭据失败 " + p.name, e)
+            continue
+    return []
 
 
 def _note_written() -> None:
@@ -42,25 +64,76 @@ def _note_written() -> None:
         pass
 
 
+def _warn_once(what: str, exc: Exception) -> None:
+    """同一类失败只往 stderr 吼一次（这个模块不许依赖 runtime.obs）。"""
+    key = what + "|" + type(exc).__name__
+    if key in _WARNED:
+        return
+    _WARNED.add(key)
+    try:
+        sys.stderr.write("⚠️ token_store: {}（{}: {}）\n".format(
+            what, type(exc).__name__, str(exc)[:120]))
+    except Exception:
+        pass
+
+
 def save_cookies(cookies: list) -> bool:
-    """写 cookie 列表（chmod 600，凭证敏感）。
+    """写 cookie 列表（chmod 600，凭证敏感）。**优先原子替换，挂载点上退化为就地写**。
 
     **这是全项目唯一的凭据写入点**（P5 的"唯一登录者"就建立在这上面）：
-    renew_token / headless_relogin / auto_recover 最终都调到这里，
-    所以版本递增只在这里做一次即可。
+    renew_token / headless_relogin / auto_recover 最终都调到这里。
+
+    ## 两条路（P12-BL → P12-BL-fix，2026-09-30 血的教训）
+
+    1. **首选**：临时文件 → `fsync` → `os.replace`（同目录 rename 是原子的）。
+    2. **退化**：目标是**单文件 bind mount** 时（线上就是：
+       `./.dzmm_token.json:/app/.dzmm_token.json`），rename 会 **EBUSY** ——
+       2026-09-30 17:40 起日志里连续 `FAIL: 写回 token JSON 失败` → 3 次后 EMERGENCY，
+       续期整整写不回去（token 一直停在旧值）。
+       所以 `os.replace` 失败时改成**就地截断写**，并在写之前把老文件拷一份到
+       `.bak`（挂载点旁边的普通文件，可写），`load_cookies()` 在主文件读不出来时
+       会回退用它 —— 这样"没有原子性"这件事不至于变成"凭据彻底没了"。
     """
+    payload = json.dumps({"cookies": cookies}, ensure_ascii=False, indent=2)
+    tmp = TOKEN_FILE.with_name(TOKEN_FILE.name + ".tmp")
+    bak = TOKEN_FILE.with_name(TOKEN_FILE.name + ".bak")
     try:
-        TOKEN_FILE.write_text(
-            json.dumps({"cookies": cookies}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
         try:
-            os.chmod(TOKEN_FILE, 0o600)
+            os.chmod(tmp, 0o600)
         except Exception:
             pass
+        try:
+            os.replace(tmp, TOKEN_FILE)
+        except OSError as e:                                   # EBUSY/EXDEV…
+            _warn_once("原子替换失败（多半是单文件 bind mount），退化为就地写", e)
+            # 先留一份备份（就地写没有原子性，写坏了还能捞回来）
+            try:
+                if TOKEN_FILE.exists():
+                    shutil.copy2(TOKEN_FILE, bak)
+                    os.chmod(bak, 0o600)
+            except Exception as e2:                            # noqa: BLE001
+                _warn_once("就地写之前备份失败", e2)
+            with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                os.chmod(TOKEN_FILE, 0o600)
+            except Exception:
+                pass
+        finally:
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
         _note_written()
         return True
-    except Exception:
+    except Exception as e:                                     # noqa: BLE001
+        _warn_once("写凭据失败", e)
         return False
 
 

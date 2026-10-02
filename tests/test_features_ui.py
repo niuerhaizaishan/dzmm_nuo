@@ -188,9 +188,12 @@ def test_no_inline_javascript(srv):
 def test_csp_allows_only_self_script(srv):
     base, _ = srv
     cookie = _login(base)
-    st, _b, h = _req(base, "/features", headers=cookie)
+    st, _b, h = _req(base, "/features")
     csp = h.get("Content-Security-Policy", "")
     assert "script-src 'self'" in csp
+    # 2026-10-02 线上事故：style-src 只有 'unsafe-inline' 时外链
+    # /static/*.css 被静默拒载（整站裸 HTML）—— 外链样式必须 'self'。
+    assert "style-src 'self'" in csp, csp
     assert "frame-ancestors 'none'" in csp
     assert "base-uri 'none'" in csp
     assert "default-src 'none'" in csp
