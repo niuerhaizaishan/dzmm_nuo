@@ -3236,3 +3236,38 @@ P4-4A 起 CSS 改为**外链** `/static/*.css` —— 外链样式表按**源**�
   全过；`test_prompts_ui.py` 21 个全过；全量 **1565 收集 0 失败**；
 - 部署（锚点 backup-code-20261002-141702.tar.gz），容器内确认新代码，
   restarts=0。
+
+
+## 2026-10-02 22:35 · P4-4C 收尾三件套 + GitHub Actions CI 上线并调平
+
+收尾（commit d666763）：
+- **P1 dispatch 真调用冒烟**：`tests/test_dispatch_smoke.py` 真调 `handle_slash()`
+  （/帮助 / /吐槽开|关 / 未知指令），断言发送文本 + last_id 推进 + _save_group 落盘 +
+  inflight 标记 —— 补上"getsource 测试抓不住分派链改名/死闸门"的盲区。
+- **P2 CI**：requirements-dev.txt（pytest==9.1.1）+ `.github/workflows/test.yml`
+  （ubuntu-latest / py3.11 / push+PR 触发 / junitxml 摘要）。
+- **P3** features_ui.py docstring `_WHITELIST`→`WHITELIST` 笔误。
+
+CI 首跑 33 连挂（commit 47120e6 调平，本地绿 ≠ CI 绿的六类根因）：
+1. **代理污染（25 个）**：`sio_subscribe` 被 import 时调 `set_process_proxy_env()`
+   把 HTTP(S)_PROXY 写进进程环境，之后所有裸 `urlopen` 全被拽去 127.0.0.1:7890 ——
+   本机 Clash 活着测不出来，CI 直接 Connection refused。
+   修：conftest 加 `_no_proxy_env` autouse 夹具，每用例前后清代理变量。
+2. **段缺白屏变无响应（2 个）**：`section_groups()` 在 STORE_DB 不存在时返回
+   `{"present": False}`，`body("groups")` 的 `d["groups"]` 直接 KeyError →
+   handler 无响应。修：`d.get("groups") or {}`（"段缺显示（缺）"约定的漏网点）。
+3. **审计假绿（1 个）**：audit_log 写 config 同目录，测试却读仓库根 ——
+   本机真审计文件喂出假绿。修：读 `cfgp.parent / AUDIT_NAME`。
+4. **patch 没打在真读口（1 个）**：`_detect_joins` 走 `identity.is_self → self_uids`，
+   测试 patch 的 `bot.BOT_UID` 是壳 re-export 不在链上。修：patch `identity.BOT_UID`。
+5. **环境值闸门（1 个）**：`self_names()` 只在 `BOT_UID` 非空时加 Bot 名变体，
+   CI 无 DZMM_BOT_ID → `@小小糯-bot` 被短名剥成 `-bot` 残余。修：测试补 patch。
+6. **平台差异（3 个）**：Windows 反斜杠路径字面量（Linux 上是文件名一部分）；
+   日志时间戳按本机时区写、却按东八区解析（UTC CI 上差 8 小时）。
+
+### 验证
+
+- 本地全量 **1562 passed / 6 skipped**；CI 第二跑 **tests=1568 failures=0 errors=0**
+  （1m48s，本地与 CI 的 skip 数差 3 个是环境相关 skip，正常）。
+- 教训入库：测试断言要打在**真读口**；环境敏感值（代理/时区/真实数据文件）
+  必须在夹具里显式钉死或清空。
