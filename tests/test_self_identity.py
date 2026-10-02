@@ -172,6 +172,9 @@ def test_strip_at_does_not_leave_a_prefix_residue(monkeypatch):
     """
     monkeypatch.setattr(identity, "BOT_NAME", "小小糯-bot")
     monkeypatch.setattr(identity, "BOT_NAME_SHORT", "小小糯")
+    # `self_names()` 只在 BOT_UID 非空时才把 Bot 名变体加进剥 @ 名单 ——
+    # CI 上没有 DZMM_BOT_ID，长名缺席 → `@小小糯-bot` 被短名剥成 `-bot`。
+    monkeypatch.setattr(identity, "BOT_UID", "uid-self")
     monkeypatch.setattr(identity, "get_full_name", lambda uid: "小小糯～")
     monkeypatch.setattr(identity, "get_name", lambda uid: "小小糯")
     monkeypatch.setattr(bot, "self_names_longest_first",

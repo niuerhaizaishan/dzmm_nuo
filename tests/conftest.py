@@ -27,6 +27,32 @@ import bot  # noqa: E402
 TMP_ROOT = ROOT / "tests" / "_tmp"
 _UNREMOVED: list = []
 
+# 代理类环境变量（大小写都算，urllib 两套都读）
+_PROXY_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "WS_PROXY", "WSS_PROXY",
+               "http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy")
+
+
+@pytest.fixture(autouse=True)
+def _no_proxy_env():
+    """测试进程内不许残留代理环境变量。
+
+    `sio_subscribe` 被 import 时会调 `set_process_proxy_env()` 把
+    HTTP(S)_PROXY/WS(S)_PROXY 写进**进程环境**（DZMM_PROXY 缺省
+    127.0.0.1:7890）。那之后的用例只要用裸 `urllib.request.urlopen`，
+    就全被拽去连代理 —— 本机 Clash 活着所以测不出来，CI 上没有代理，
+    直接 Connection refused（2026-10-02 CI 首跑 25 连挂的根因）。
+    所以每个用例前后各清一遍；本机本来就有的全局代理原样恢复。
+    """
+    saved = {k: os.environ.get(k) for k in _PROXY_KEYS}
+    for k in _PROXY_KEYS:
+        os.environ.pop(k, None)
+    yield
+    for k in _PROXY_KEYS:
+        os.environ.pop(k, None)
+    for k, v in saved.items():
+        if v is not None:
+            os.environ[k] = v
+
 
 def _on_rmtree_error(func, path, _exc):
     """Windows 上只读/占用的文件：改权限再试一次（拿不到就算了）。"""

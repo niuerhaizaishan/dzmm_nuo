@@ -827,13 +827,13 @@ def render_html(data):
                     .format(_e(cid[:8]), _e(len(g["buckets"])), _e(g["heat_people"]),
                             _e(",".join(g["playing"]) or "-"),
                             _e(", ".join("{}={}".format(u[:6], s) for u, s in g["heat_top"])))
-                    for cid, g in sorted(d["groups"].items()))
+                for cid, g in sorted((d.get("groups") or {}).items()))
                 return ("<div class='text-dim'>共 {} 个群；主群 {}</div>"
                         "<table class='table table--compact'>"
                         "<tr><th>群</th><th>状态键</th><th>发情人数</th>"
                         "<th>进行中</th><th>发情值 top3</th></tr>{}</table>"
                         "<div class='text-dim'>骰子局: {}</div>"
-                        .format(d["group_count"], _e((d.get("primary") or "")[:8]),
+                        .format(d.get("group_count", 0), _e((d.get("primary") or "")[:8]),
                                 rows, _e(json.dumps(d.get("dice"), ensure_ascii=False))))
             return _kv_table(d)
         return _kv_table(d)

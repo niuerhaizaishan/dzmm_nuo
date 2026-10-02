@@ -153,16 +153,17 @@ def test_no_consumption_site_reads_the_old_constants():
     "看起来能配、实际不生效"。这里扫源码，把"读旧常量"的地方找出来。
     """
     watch = {
-        r"bot.py": ["DICE_TIMEOUT_SEC", "PROFILE_SCAN_HOUR", "PROFILE_SCAN_MAX_API",
-                    "PROFILE_NOTICE_MAX", "DEVIL_BASE_PROB", "DEVIL_SENSITIVE_PROB",
-                    "DEVIL_HOT_PROB", "DEVIL_COOLDOWN", "DEVIL_COLD_THRESHOLD",
-                    "DEVIL_COLD_PROB", "DEVIL_COLD_COOLDOWN", "DEVIL_COLD_QUIET_HOUR"],
-        r"runtime\fasao.py": ["FASAO_TIMEOUT"],
-        r"runtime\vote.py": ["VOTE_DEFAULT_SECONDS"],
-        r"runtime\story.py": ["STORY_MAX_ROUND", "STORY_VOTE_SECONDS"],
-        r"runtime\recap.py": ["RECAP_MAX_MSGS", "RECAP_MAX_HOURS", "RECAP_COOLDOWN"],
-        r"runtime\trend.py": ["TREND_CIDS"],
-        r"runtime\recap.py_": ["RECAP_CIDS"],
+        # 一律正斜杠：Path 在 Windows 上也认 "/"，反斜杠在 Linux 是文件名的一部分
+        "bot.py": ["DICE_TIMEOUT_SEC", "PROFILE_SCAN_HOUR", "PROFILE_SCAN_MAX_API",
+                   "PROFILE_NOTICE_MAX", "DEVIL_BASE_PROB", "DEVIL_SENSITIVE_PROB",
+                   "DEVIL_HOT_PROB", "DEVIL_COOLDOWN", "DEVIL_COLD_THRESHOLD",
+                   "DEVIL_COLD_PROB", "DEVIL_COLD_COOLDOWN", "DEVIL_COLD_QUIET_HOUR"],
+        "runtime/fasao.py": ["FASAO_TIMEOUT"],
+        "runtime/vote.py": ["VOTE_DEFAULT_SECONDS"],
+        "runtime/story.py": ["STORY_MAX_ROUND", "STORY_VOTE_SECONDS"],
+        "runtime/recap.py": ["RECAP_MAX_MSGS", "RECAP_MAX_HOURS", "RECAP_COOLDOWN"],
+        "runtime/trend.py": ["TREND_CIDS"],
+        "runtime/recap.py_": ["RECAP_CIDS"],
     }
     offenders = []
     for rel, names in watch.items():

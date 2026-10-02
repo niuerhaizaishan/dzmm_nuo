@@ -278,12 +278,14 @@ def test_same_content_reports_no_change(edit_server):
 
 
 def test_save_appends_audit_line(edit_server):
-    base, _ = edit_server
+    base, cfgp = edit_server
     cookie = _login(base)
     csrf = _csrf_from(_req(base, "/edit", headers=cookie)[1])
     _req(base, "/edit", method="POST", headers=cookie,
          data=_form(BASE_GROUPS, BASE_BOTS, csrf))
-    lines = ui.read_audit(ROOT / ui.AUDIT_NAME)
+    # 审计与配置**同目录**（config_store.audit_path 的约定，容器里 /app 根
+    # 不在挂载卷内）；读仓库根的话本机会被真机的审计文件喂出假绿。
+    lines = ui.read_audit(cfgp.parent / ui.AUDIT_NAME)
     assert lines, "应当留下审计记录"
     last = lines[-1]
     assert "ip=127.0.0.1" in last, last

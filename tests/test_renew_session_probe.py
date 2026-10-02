@@ -489,8 +489,11 @@ def test_stale_threshold_is_bigger_than_the_healthy_worst_case():
 
 def test_health_renew_check_ignores_note_lines(dbdir, monkeypatch):
     """只读接口 401 现在记 `NOTE:` —— 巡检不能再把它当"续期脚本失败"。"""
+    from datetime import datetime
     monkeypatch.setattr(H, "ROOT", dbdir)
-    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    # check_renew 把日志时间戳按**东八区**解析（服务端永远在 CST 打日志）；
+    # 用本机时区写时间的话，UTC 的 CI 上会差 8 小时、永远落不进 15 分钟窗口。
+    stamp = datetime.now(H.TZ8).strftime("%Y-%m-%d %H:%M:%S")
     log = dbdir / "renew_token.log"
     log.write_text(stamp + " NOTE: 只读接口未授权（未授权），但业务调用正常 → 会话没死，不重登\n",
                    encoding="utf-8")

@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import bot  # noqa: E402
+from runtime import identity  # noqa: E402
 
 PREDICATES = [
     "is_help_cmd", "is_guide_cmd", "is_intro_cmd", "is_devil_cmd", "is_sync_cmd",
@@ -207,7 +208,10 @@ def test_detect_joins_excludes_bot_when_configured(monkeypatch):
     修复前 `_detect_joins` 只按 NUO_UID 排除，Bot id 不同 → 排除不掉。
     """
     bot_id = "eee88c3d-af91-4ecc-96df-d87eb9a358db"
-    monkeypatch.setattr(bot, "BOT_UID", bot_id)
+    # 读口是 runtime.identity（joins.detect_joins → is_self → self_uids）；
+    # bot.BOT_UID 只是壳的 re-export，patch 它影响不到判定 —— 本地过只是
+    # 因为真机环境恰好把这个 uid 认进了 _BOT_UIDS（2026-10-02 CI 揭穿）。
+    monkeypatch.setattr(identity, "BOT_UID", bot_id)
     pending = [
         {"sent_by": bot.NUO_UID, "content": {"text": "小小糯 加入了群聊"}},
         {"sent_by": bot_id, "content": {"text": "机器人 小小糯 加入了群聊"}},
