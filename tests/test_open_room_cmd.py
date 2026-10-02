@@ -7,7 +7,9 @@
 所以它要从那道闸门里豁免出去（Guest can query, cannot command）。
 
 判定集中在 `bot._room_cmd_refused` / `bot.is_open_room_cmd`，这里钉住：
-  - 开放：`/查`、`/whois`、`/资料`（含不带名字的 `/查`）；
+  - 开放：`/查`、`/whois`、`/资料`（含不带名字的 `/查`）、
+    `/注册`（2026-10-02 屋主开放：客人在玫瑰房可给自己建档；
+    代他人注册仍被 reg_self_only 拦）；
   - 不开放：其余一切 `/` 指令（仍走婉拒）；
   - **主人不受影响**：主人发什么指令都执行。
 """
@@ -29,12 +31,13 @@ GUEST = "ee68905d-c027-4328-9223-2b04cb551c63"       # 一般客人
 # ---------------------------------------------------------------- 谁被放行
 
 def test_profile_cmd_family_is_open():
-    for c in ("/查 某人", "/whois 某人", "/资料 某人", "/查", "/查  某人 "):
+    for c in ("/查 某人", "/whois 某人", "/资料 某人", "/查", "/查  某人 ",
+              "/注册"):
         assert bot.is_open_room_cmd(c) is True, c
 
 
 def test_other_commands_are_not_open():
-    for c in ("/写诗 月亮", "/算命", "/注册", "/帮助", "/发骚 x", "/投票 x",
+    for c in ("/写诗 月亮", "/算命", "/帮助", "/发骚 x", "/投票 x",
               "查 某人", "", None):
         assert bot.is_open_room_cmd(c) is False, c
 
@@ -43,10 +46,12 @@ def test_guest_query_is_not_refused_in_room():
     assert bot._room_cmd_refused(ROSE, "/查 橘先生", GUEST) is False
     assert bot._room_cmd_refused(ROSE, "/whois 橘先生", GUEST) is False
     assert bot._room_cmd_refused(ROSE, "/资料 橘先生", GUEST) is False
+    assert bot._room_cmd_refused(ROSE, "/注册", GUEST) is False, \
+        "2026-10-02 屋主开放：客人在玫瑰房可给自己建档"
 
 
 def test_guest_other_commands_are_still_refused():
-    for c in ("/写诗 月亮", "/算命", "/注册", "/帮助"):
+    for c in ("/写诗 月亮", "/算命", "/帮助"):
         assert bot._room_cmd_refused(ROSE, c, GUEST) is True, c
 
 
