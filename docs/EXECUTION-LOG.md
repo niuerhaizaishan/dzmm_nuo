@@ -3295,3 +3295,63 @@ CI 首跑 33 连挂（commit 47120e6 调平，本地绿 ≠ CI 绿的六类根�
   11:42 三 Bot 路由就绪、outbox pending=0 failed=0。
 - 遗留：`tests/test_session_lock.py` 单独与 renew 系测试同跑时 import
   headless_relogin/auto_recover 报 ModuleNotFoundError（存量测试顺序依赖，全量跑正常）。
+
+## 2026-10-03 14:32 · 内联重登补刀：残留死会话不许短路写回 + Singleton 锁自清
+
+P12-BT 排好了"unauth 先走内联密码重登热恢复（不重启 bot）"，但通读重登链发现
+`headless_relogin.py` 有两处会让这条热恢复**必败**的断点 —— 真到用时才发现就晚了：
+
+### 断点 1：残留死会话被"见 cookie 就写回"短路（核心）
+
+`headless_login()` 旧逻辑：打开页面等 4 秒后，只要 pw_login profile 里存在
+`sb-rls-auth-token` cookie 就**直接取走写回 token JSON**。而会话**真死**时
+（2026-10-03 09:13 形状），pw_login 里残留的正是**服务端已作废的同一份死会话**：
+
+```
+死会话 → renew 探针 unauth → 内联重登启动 → profile 有死 cookie → 短路写回
+→ 写回的还是死 token → 下一轮探针仍 unauth → "fail" → 落 emergency 重启
+```
+
+P12-BT 的"无重启热恢复"整条链等于空转，白白多付一次三实例重启。
+
+**修法**：新增 `need_fresh_login(cookies)` —— 残留 cookie 必须本地
+`expires_at` 剩余 > 300s 才复用（健康会话的 SPA 会在页面加载的 4 秒内自动
+刷新成新 cookie，本地 expires_at 是新鲜的，照旧短路、不做多余密码登录）；
+没有 / 过期 / 快过期 / 烂值 ⇒ `ctx.clear_cookies()` 清掉死会话，走完整
+账号密码登录。配套拆出 `_decode_session()` / `_session_fresh()` 纯函数。
+
+### 断点 2：Singleton* 残留锁只靠容器启动清理
+
+`entrypoint.sh` 只在容器启动时清一次各 profile 的 `Singleton*` 锁。但运行期内
+登录进程被 kill / 跑满 `RELOGIN_TIMEOUT_SEC` 超时后锁会留下 —— 而**热恢复路径
+故意不重启容器**（P12-BT 的设计目标），等不到下一次 entrypoint ⇒ 下一次
+chromium 直接拒绝启动，热恢复又断。
+
+**修法**：`clear_singleton_locks(profile_dir)`，`headless_login()` 每次起浏览器前
+自清；`login_manual_captcha()` 原地那坨清理循环收敛到同一函数。
+
+### 验证
+
+- `test_session_persistence.py` 新增 6 个钉点：无 token / 新鲜残留复用 /
+  死残留强制登录（事故形状：过期 10s 前 + 剩 60s 两个边界）/ 烂值 /
+  锁清理只删 Singleton* / 接线防回退（`clear_singleton_locks` + `need_fresh_login`
+  + `ctx.clear_cookies` 必须在 headless_login 段内，旧短路不许复活）；
+- 全量 **1576 passed / 6 skipped**（中途一次 localhost 连接中止为本机瞬时抖动，
+  单文件复跑 58/58 过，与改动无关）；CI 绿（37102905112）；
+- 部署（锚点 backup-code-20261003-142355.tar.gz），宿主机与容器内
+  `need_fresh_login` 各 2 处命中，restarts=0；14:26 真实新成员筛查 + /注册
+  处理正常，outbox pending=0 failed=0。
+
+### 线上观察项
+
+下次会话真死时，预期日志形状：`ESCALATE` → 若 pw_login 残留死会话则出现
+"残留会话本地已过期，清 cookie 重新密码登录" → `OK: 密码重登成功（未重启 bot）`。
+
+### 附带发现：deploy.ps1 exec 通道的假 SSH 失败
+
+`-Action exec` 的 `Invoke-Ssh` 重试循环**只看退出码** —— 远端命令非零退出
+（grep 无命中、路径不存在、引号打架导致解析错）会被误判成"SSH 握手失败"
+空转 10 轮重试。本次两次踩中：① 用了容器内路径 `/app/...`（exec 在宿主机
+执行，宿主机没有 /app）；② 带中文 grep 模式的复杂命令引号打架。
+⇒ exec 的命令必须保证退出码 0；查容器内文件要么走宿主机 `/opt/dzmm` 要么
+显式 `docker exec dzmm-bot ...`。
