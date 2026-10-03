@@ -100,3 +100,63 @@ def test_session_lock_is_deliberately_not_mounted():
     yml = _yml()
     assert ".session.lock" not in yml
     assert re.search(r"\.session\.lock", yml) is None
+
+
+# ---------------------------------------------------------------- 4. 内联重登：残留死会话不许短路
+
+import base64                                                     # noqa: E402
+import json                                                       # noqa: E402
+import time                                                       # noqa: E402
+
+import headless_relogin                                           # noqa: E402
+
+
+def _session_cookie(exp_at: float) -> dict:
+    raw = json.dumps({"expires_at": exp_at}, separators=(",", ":"))
+    return {"name": "sb-rls-auth-token",
+            "value": "base64-" + base64.b64encode(raw.encode()).decode()}
+
+
+def test_need_fresh_login_when_no_token():
+    assert headless_relogin.need_fresh_login([]) is True
+    assert headless_relogin.need_fresh_login([{"name": "_rid", "value": "x"}]) is True
+
+
+def test_residual_fresh_session_is_reused():
+    """健康残留（SPA 已自动刷新）⇒ 直接用，不做多余的密码登录。"""
+    assert headless_relogin.need_fresh_login(
+        [_session_cookie(time.time() + 1800)]) is False
+
+
+def test_residual_dead_session_forces_fresh_login():
+    """2026-10-03 09:13 事故形状：profile 握着本地已过期/快过期的死会话。"""
+    assert headless_relogin.need_fresh_login(
+        [_session_cookie(time.time() - 10)]) is True
+    assert headless_relogin.need_fresh_login(
+        [_session_cookie(time.time() + 60)]) is True
+
+
+def test_garbage_cookie_value_forces_fresh_login():
+    assert headless_relogin.need_fresh_login(
+        [{"name": "sb-rls-auth-token", "value": "烂值"}]) is True
+
+
+def test_clear_singleton_locks(tmp_path):
+    (tmp_path / "Cookies").write_text("x", encoding="utf-8")
+    for n in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        (tmp_path / n).write_text("x", encoding="utf-8")
+    headless_relogin.clear_singleton_locks(tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["Cookies"]
+
+
+def test_headless_login_is_wired_to_clear_locks_and_stale_cookie():
+    """钉 headless_login 接线：起浏览器前自清锁；见死残留先清 cookie 再登录；
+    旧的"见 cookie 存在就 pass"短路不许复活。"""
+    src = (ROOT / "headless_relogin.py").read_text(encoding="utf-8")
+    i = src.index("def headless_login(")
+    seg = src[i:src.index("def login_manual_captcha")]
+    assert "clear_singleton_locks(" in seg, "起浏览器前必须自清 Singleton 锁"
+    assert "need_fresh_login(" in seg, "残留会话必须过新鲜度判定"
+    assert "ctx.clear_cookies()" in seg, "死残留 cookie 必须先清掉"
+    assert 'if any(c["name"] == "sb-rls-auth-token" for c in cookies):' not in seg, \
+        "旧的无条件短路已删，不许复活"

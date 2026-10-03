@@ -38,20 +38,67 @@ def load_config():
     return cfg["email"], cfg["password"]
 
 
+def _decode_session(value: str):
+    """sb-rls-auth-token 的值（可选 `base64-` 前缀的 JSON）→ dict；坏值返回 None。"""
+    try:
+        payload = value[len("base64-"):] if value.startswith("base64-") else value
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.b64decode(payload))
+    except Exception:
+        return None
+
+
+def _session_fresh(value: str, min_remain: int = 300) -> bool:
+    """残留会话的 access_token 本地声明剩余 > min_remain 秒才算新鲜。
+
+    只看本地声明、不问服务端 —— 服务端死活由 renew_token 的业务探针兜底；
+    这里回答的是"profile 里这份 cookie 还值不值得直接用"。
+    """
+    d = _decode_session(value)
+    if not d:
+        return False
+    try:
+        return float(d.get("expires_at", 0)) - time.time() > min_remain
+    except (TypeError, ValueError):
+        return False
+
+
 def check_logged_in(min_remain: int = 300) -> bool:
     """读 token JSON 的 sb-rls-auth-token，验证 expires_at 剩余 > min_remain 秒."""
     sys.path.insert(0, str(ROOT))
     import token_store
     try:
         v = token_store.get_cookie_value("sb-rls-auth-token")
-        if not v:
-            return False
-        payload = v[len("base64-"):] if v.startswith("base64-") else v
-        payload += "=" * (-len(payload) % 4)
-        d = json.loads(base64.b64decode(payload))
-        return d.get("expires_at", 0) - time.time() > min_remain
+        return bool(v) and _session_fresh(v, min_remain)
     except Exception:
         return False
+
+
+def clear_singleton_locks(profile_dir) -> None:
+    """清 Playwright 持久化 profile 的 `Singleton*` 残留锁。
+
+    entrypoint 启动时清过一次，但运行期内登录进程被 kill / 跑满超时后锁会留下
+    （热恢复路径故意不重启容器，等不到下一次 entrypoint）⇒ 下一次 chromium
+    直接拒绝启动。所以每次启动前自己再清一次。
+    """
+    for lock in Path(profile_dir).glob("Singleton*"):
+        try:
+            lock.unlink()
+        except Exception:
+            pass
+
+
+def need_fresh_login(cookies) -> bool:
+    """profile 现有 cookies 不足以直接用（没 token / token 本地已过期）⇒
+    必须走完整账号密码登录。
+
+    2026-10-03 事故形状：pw_login 残留着服务端已作废的旧会话，旧逻辑见
+    cookie 存在就直接写回 —— 写回的是死 token，内联热恢复必败、白白降级
+    emergency。健康会话在页面加载的 4 秒内会被 SPA 自动刷新成新 cookie，
+    那时本地 expires_at 是新鲜的，照旧短路、不做多余登录。
+    """
+    token = next((c for c in cookies if c.get("name") == "sb-rls-auth-token"), None)
+    return token is None or not _session_fresh(token.get("value", ""))
 
 
 def headless_login(email: str, password: str):
@@ -59,6 +106,7 @@ def headless_login(email: str, password: str):
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         proxy_url = env_config.get_proxy_url()
+        clear_singleton_locks(ROOT / PW_PROFILE)
         ctx = p.chromium.launch_persistent_context(
             PW_PROFILE, channel=env_config.get_channel(), headless=True,
             viewport={"width": 1280, "height": 800},
@@ -69,11 +117,14 @@ def headless_login(email: str, password: str):
             page.goto(env_config.get_dzmm_origin() + "/", timeout=40000, wait_until="domcontentloaded")
             page.wait_for_timeout(4000)
 
-            # 已登录（pw_login 残留登录态）则直接取 token
+            # 残留会话本地新鲜（健康会话 SPA 已在上面 4 秒内自动刷新过）⇒ 直接取 cookie；
+            # 没有 / 本地已过期（会话真死时就是这个形状）⇒ 清掉死 cookie 走完整密码登录，
+            # **绝不能把死会话写回 token JSON**（那会让内联热恢复必败、白白降级 emergency）。
             cookies = ctx.cookies()
-            if any(c["name"] == "sb-rls-auth-token" for c in cookies):
-                pass
-            else:
+            if need_fresh_login(cookies):
+                if any(c.get("name") == "sb-rls-auth-token" for c in cookies):
+                    ctx.clear_cookies()
+                    print("残留会话本地已过期，清 cookie 重新密码登录")
                 # 点登录 → 填账号密码 → 提交
                 page.locator("text=登录").first.click(timeout=8000)
                 page.wait_for_timeout(2000)
@@ -109,11 +160,7 @@ def login_manual_captcha(email, password, wait_minutes=10):
     vnc_url = os.environ.get("VNC_URL", "http://47.237.152.187:6080/vnc.html")
     vnc_pass = os.environ.get("VNC_PASS", "dzmm2026")
     # 清理可能的残留 Singleton 锁
-    for lock in ROOT.glob(f"{PW_PROFILE_CAPTCHA}/Singleton*"):
-        try:
-            lock.unlink()
-        except Exception:
-            pass
+    clear_singleton_locks(ROOT / PW_PROFILE_CAPTCHA)
     try:
         sys.path.insert(0, str(ROOT))
         from wx_alert import send_weixin
