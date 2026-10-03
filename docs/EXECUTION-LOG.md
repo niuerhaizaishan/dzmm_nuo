@@ -3271,3 +3271,27 @@ CI 首跑 33 连挂（commit 47120e6 调平，本地绿 ≠ CI 绿的六类根�
   （1m48s，本地与 CI 的 skip 数差 3 个是环境相关 skip，正常）。
 - 教训入库：测试断言要打在**真读口**；环境敏感值（代理/时区/真实数据文件）
   必须在夹具里显式钉死或清空。
+
+
+## 2026-10-03 11:50 · P12-BT：会话真死先走内联重登热恢复，不许同秒降级 emergency
+
+复盘 2026-10-03 09:13 那次 SESSION_DEAD（5 分钟自愈，但重启了 bot 三实例）：
+`_try_password_relogin` 被**耐心闸**（`RELOGIN_MIN_BAD_MIN=2`，当时坏 0 分钟）拦下后，
+调用方**同一秒**落 emergency 重启 bot —— "等 2 分钟别急着重登"的耐心只保护了重登，
+却没保护更重的重启。改法：
+
+- `_try_password_relogin` 返回三态：`"ok"` / `"skip"`（这轮没真试：耐心闸/冷却/锁）/
+  `"fail"`（真试过没成）；
+- unauth 主分支：`skip` ⇒ 本轮到此为止（session_state 保持 unauth 让巡检可见），
+  等下一轮 —— 坏时长过闸 ⇒ 内联重登热恢复（不重启、出站队列保住）；平台瞬时抖动
+  ⇒ 下一轮探针自己变 ok，什么都不用做；`fail` ⇒ 照旧落 emergency（兜底不变）；
+- 退避分支与长未验证分支只改 `== "ok"` 判断，语义不变。
+
+### 验证
+
+- 新增钉点：skip 不写 emergency（09:13 事故形状）、fail 照旧落 emergency、三态各分支、
+  unauth 分支接线次序；全量 **1564 passed / 6 skipped**，CI 绿（37093590127）；
+- 部署（锚点 backup-code-20261003-114217.tar.gz），容器内 renew_token.py 含 P12-BT，
+  11:42 三 Bot 路由就绪、outbox pending=0 failed=0。
+- 遗留：`tests/test_session_lock.py` 单独与 renew 系测试同跑时 import
+  headless_relogin/auto_recover 报 ModuleNotFoundError（存量测试顺序依赖，全量跑正常）。
