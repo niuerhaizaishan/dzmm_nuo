@@ -142,14 +142,14 @@ def test_skip_does_not_consume_relogin_cooldown(rt, monkeypatch):
     21:42 的第二次尝试直接被"冷却期内"挡掉。
     """
     stamped = _prep(monkeypatch, "SKIP: 另一个进程正在续期/重登，放弃本次登录\n")
-    assert R._try_password_relogin() is False
+    assert R._try_password_relogin() == "skip"
     assert stamped == [], "零工作的尝试不该消耗恢复窗口"
 
 
 def test_real_attempt_consumes_relogin_cooldown(rt, monkeypatch):
     """真试过（子进程开始登录了，只是没成）⇒ 必须计冷却，别把风控刷起来。"""
     stamped = _prep(monkeypatch, "token 失效，开始 headless 登录...\n", returncode=1)
-    assert R._try_password_relogin() is False
+    assert R._try_password_relogin() == "fail"
     assert stamped == [1], "真尝试过就要计冷却"
 
 

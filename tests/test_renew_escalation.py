@@ -83,7 +83,7 @@ def test_successful_password_relogin_recovers_without_restart(monkeypatch, env):
     written = []
     monkeypatch.setattr(R, "_write_session_state", lambda p: written.append(p), raising=False)
     env["backoff"].write_text("{}", encoding="utf-8")      # 先造一个退避文件
-    assert R._try_password_relogin() is True
+    assert R._try_password_relogin() == "ok"
     assert any("ESCALATE" in m for m in logged), logged
     assert written == ["ok"], "恢复后要把会话写成 ok"
     assert not env["backoff"].exists(), "登录成功后必须清退避（否则 SIO 白等）"
@@ -97,7 +97,7 @@ def test_relogin_failure_falls_back(monkeypatch, env):
                         raising=False)
     monkeypatch.setattr(R, "_api_probe", lambda: "unauth", raising=False)
     monkeypatch.setattr(R, "_write_session_state", lambda p: None, raising=False)
-    assert R._try_password_relogin() is False
+    assert R._try_password_relogin() == "fail"
     assert any("没成" in m for m in logged), logged
 
 
@@ -107,7 +107,7 @@ def test_relogin_says_ok_but_probe_still_unauth_is_not_recovery(monkeypatch, env
     monkeypatch.setattr(R.subprocess, "run", _fake_run(0), raising=False)
     monkeypatch.setattr(R, "_api_probe", lambda: "unauth", raising=False)
     monkeypatch.setattr(R, "_write_session_state", lambda p: None, raising=False)
-    assert R._try_password_relogin() is False
+    assert R._try_password_relogin() == "fail"
     assert any("不算恢复" in m for m in logged), logged
 
 
@@ -118,7 +118,7 @@ def test_cooldown_blocks_a_second_relogin(monkeypatch, env):
     monkeypatch.setattr(R, "subprocess",
                         type("S", (), {"run": staticmethod(
                             lambda *a, **kw: calls.append(a))}), raising=False)
-    assert R._try_password_relogin() is False
+    assert R._try_password_relogin() == "skip"
     assert calls == [], "冷却期内不许再起浏览器"
     assert any("冷却" in m for m in logged), logged
 
@@ -137,7 +137,7 @@ def test_fresh_session_is_not_escalated(monkeypatch, env):
     monkeypatch.setattr(R, "subprocess",
                         type("S", (), {"run": staticmethod(
                             lambda *a, **kw: calls.append(a))}), raising=False)
-    assert R._try_password_relogin() is False
+    assert R._try_password_relogin() == "skip"
     assert calls == []
     assert any("再自动重登" in m for m in logged), logged
 
@@ -145,7 +145,7 @@ def test_fresh_session_is_not_escalated(monkeypatch, env):
 def test_missing_login_script_is_reported(monkeypatch, env):
     logged = _wire(monkeypatch, env)
     monkeypatch.setattr(R, "LOGIN_SCRIPT", env["dir"] / "nope.py", raising=False)
-    assert R._try_password_relogin() is False
+    assert R._try_password_relogin() == "fail"
     assert any("找不到" in m for m in logged), logged
 
 
@@ -156,7 +156,7 @@ def test_timeout_is_handled(monkeypatch, env):
         raise subprocess.TimeoutExpired(cmd="x", timeout=1)
 
     monkeypatch.setattr(R.subprocess, "run", _boom, raising=False)
-    assert R._try_password_relogin() is False
+    assert R._try_password_relogin() == "fail"
     assert any("超时" in m for m in logged), logged
 
 
@@ -173,10 +173,13 @@ def test_clear_backoffs_is_safe_when_files_are_missing(monkeypatch, env):
 def test_unauth_branch_escalates_before_emergency():
     # P12-BO 之后 `if probe == "unauth":` 有两处（退避分支里也有一处）⇒ 取最后一处
     i = SRC.rindex('if probe == "unauth":')
-    seg = SRC[i:i + 2000]              # P12-BI 之后这里多了"先判墙"的一段
+    # P12-BT 之后这里又多了"skip 不降级"一段 ⇒ 窗口从 2000 放宽到 2800
+    seg = SRC[i:i + 2800]              # P12-BI 之后这里多了"先判墙"的一段
     assert "_try_password_relogin()" in seg, "unauth 必须先试密码重登"
     assert seg.index("_try_password_relogin()") < seg.index("_write_emergency()"), \
         "顺序必须是：先升级重登，再落回 emergency"
+    assert 'if rc == "skip":' in seg and "本轮不降级" in seg, \
+        "耐心闸/冷却拦下重登时不许同秒降级 emergency（P12-BT）"
 
 
 def test_unverified_timeout_branch_also_escalates():
@@ -201,3 +204,53 @@ def test_escalation_uses_the_real_login_script():
         "renew_token 派生子进程时必须带上 DZMM_RELOGIN_UNDER_PARENT_LOCK"
     assert "DZMM_RELOGIN_UNDER_PARENT_LOCK" in login_src, \
         "headless_relogin 必须识别 DZMM_RELOGIN_UNDER_PARENT_LOCK（父进程已持锁）"
+
+
+# ---------------------------------------------------------------- ③ P12-BT：skip 不许降级
+
+@pytest.fixture
+def locked(dbdir, monkeypatch):
+    """把 `_renew_locked` 的所有落盘路径挪到 tmp（rt 夹具的同款纪律）。"""
+    monkeypatch.setattr(R, "ROOT", dbdir, raising=False)
+    monkeypatch.setattr(R, "FAIL_STATE_FILE", dbdir / "fail.json", raising=False)
+    monkeypatch.setattr(R, "EMERGENCY_FILE", dbdir / "token.emergency", raising=False)
+    monkeypatch.setattr(R, "EMERGENCY_STATE_FILE", dbdir / "emerg.json", raising=False)
+    monkeypatch.setattr(R, "BROWSER_BACKOFF_FILE", dbdir / "backoff.json", raising=False)
+    monkeypatch.setattr(R, "SESSION_STATE_FILE", dbdir / "session.json", raising=False)
+    monkeypatch.setattr(R, "RELOGIN_STATE_FILE", dbdir / "relogin.json", raising=False)
+    monkeypatch.setattr(R, "log", lambda *a, **k: None, raising=False)
+    return dbdir
+
+
+def _wire_locked(monkeypatch, relogin):
+    """把 `_renew_locked` 送到 unauth 主分支门口：token 过期 + 回显 401 + 无墙。
+
+    `_try_password_relogin` 按三态桩掉 —— 这条链上真正要钉的是**调用方的次序**。
+    """
+    monkeypatch.setattr(R, "read_token_cookie",
+                        lambda: (object(), {"access_token": "old", "expires_at": 0}))
+    monkeypatch.setattr(R, "get_new_token", lambda: {"error": "未授权"})
+    monkeypatch.setattr(R, "_browser_renew", lambda: 1, raising=False)  # 别真开浏览器
+    monkeypatch.setattr(R, "_api_probe", lambda: "unauth", raising=False)
+    monkeypatch.setattr(R, "_home_status", lambda: "ok", raising=False)
+    monkeypatch.setattr(R, "_try_password_relogin", lambda: relogin, raising=False)
+
+
+def test_patience_gate_skips_emergency_and_waits(locked, monkeypatch):
+    """2026-10-03 09:13 事故形状：unauth + 无墙，但内联重登被耐心闸拦下（"skip"）
+    ⇒ **不许**同秒降级 emergency 重启 bot —— 等下一轮热恢复（P12-BT）。"""
+    _wire_locked(monkeypatch, relogin="skip")
+    assert R._renew_locked() == 1
+    assert not (locked / "token.emergency").exists(), \
+        "skip（这轮没真试过重登）就写 emergency = 三实例白重启"
+    # 会话状态必须保持 unauth：巡检（只认 unauth 为死）要能看见会话已死
+    state = json.loads((locked / "session.json").read_text(encoding="utf-8"))
+    assert state.get("alive") is False
+
+
+def test_relogin_fail_still_falls_back_to_emergency(locked, monkeypatch):
+    """重登**真的试过且失败**（"fail"）⇒ 照旧落 emergency（兜底不许丢）。"""
+    _wire_locked(monkeypatch, relogin="fail")
+    assert R._renew_locked() == 1
+    assert (locked / "token.emergency").exists(), \
+        "fail = 热恢复这条路的希望没了，必须交给 entrypoint 重启重登"

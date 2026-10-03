@@ -132,7 +132,7 @@ def _run(rt, monkeypatch, probe):
     #   · `_try_password_relogin()` 不钉住会真的去 spawn `headless_relogin.py`。
     # 墙那一条分支由 `test_renew_wall.py` 专门覆盖，这里只测"真死 → emergency"。
     monkeypatch.setattr(R, "_home_status", lambda: "ok", raising=False)
-    monkeypatch.setattr(R, "_try_password_relogin", lambda: False, raising=False)
+    monkeypatch.setattr(R, "_try_password_relogin", lambda: "fail", raising=False)
     rc = R._renew_locked()
     log = (rt / "renew_token.log").read_text(encoding="utf-8") if (rt / "renew_token.log").exists() else ""
     return rc, log, (rt / "token.emergency").exists()

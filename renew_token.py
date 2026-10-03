@@ -118,23 +118,29 @@ def _clear_backoffs() -> None:
             log("  清退避文件失败 {}: {}".format(f, str(e)[:40]))
 
 
-def _try_password_relogin() -> bool:
-    """升级链：跑一次**密码登录**并用业务调用验证。成功返回 True。
+def _try_password_relogin() -> str:
+    """升级链：跑一次**密码登录**并用业务调用验证。
 
     为什么必须是密码登录：`/api/auth/token` 是只读回显；浏览器刷新只在 refresh_token
     还有效时管用。会话真死时**只有重新登录**能救回来 —— 这正是今天人工做的那一步。
+
+    返回三态（P12-BT，2026-10-03 09:13 事故）：
+        "ok"   —— 重登成功且业务探针通过，会话已恢复；
+        "skip" —— 这轮**没有真正尝试**（耐心闸 / 30 分钟冷却 / 锁被别人占），
+                  调用方该等下一轮再试，**不许**立刻降级 emergency；
+        "fail" —— 真的试过了、没成（超时 / rc!=0 / 探针仍不通过），调用方可降级。
     """
     if _unverified_min() < RELOGIN_MIN_BAD_MIN:
         log("  （会话才坏 {:.0f} 分钟，到 {:.0f} 分钟再自动重登）".format(
             _unverified_min(), RELOGIN_MIN_BAD_MIN))
-        return False
+        return "skip"
     if not _relogin_allowed():
         log("  密码重登在冷却期内（{} 分钟内试过一次），跳过".format(
             RELOGIN_COOLDOWN_SEC // 60))
-        return False
+        return "skip"
     if not LOGIN_SCRIPT.exists():
         log("  找不到 " + str(LOGIN_SCRIPT) + "，无法自动重登")
-        return False
+        return "fail"
     # ⚠️ 2026-10-01：`_stamp_relogin()` 从"起子进程**之前**"挪到"确认**真的试过**
     # 之后"（见下面两处调用）。原先无论子进程干了什么，都先把 30 分钟冷却打上 ——
     # 21:29 事故里 21:34:43 那次尝试**根本没开始登录**（P0 自锁，子进程被挡在
@@ -162,10 +168,10 @@ def _try_password_relogin() -> bool:
     except subprocess.TimeoutExpired:
         _stamp_relogin()          # 跑满 300 秒 = 确实在尝试，必须计冷却
         log("  密码重登超时（{}s）".format(RELOGIN_TIMEOUT_SEC), to_stdout=True)
-        return False
+        return "fail"
     except Exception as e:                                     # noqa: BLE001
         log("  密码重登起不来: " + str(e)[:80], to_stdout=True)
-        return False
+        return "fail"
     for ln in (p.stdout or "").strip().splitlines()[-5:]:
         log("  [relogin] " + ln[:120])
     if (p.stderr or "").strip():
@@ -174,20 +180,20 @@ def _try_password_relogin() -> bool:
         log("  密码重登被跳过（子进程没真正开始登录，锁被别人占着）→ "
             "不消耗 {} 分钟冷却，下一轮可立刻重试".format(
                 RELOGIN_COOLDOWN_SEC // 60), to_stdout=True)
-        return False
+        return "skip"
     _stamp_relogin()              # 真的试过了（不论成败）⇒ 计冷却，别把风控刷起来
     if p.returncode != 0:
         log("  密码重登没成（rc={}；撞验证码时它会自己拉 noVNC 并发微信）".format(
             p.returncode), to_stdout=True)
-        return False
+        return "fail"
     probe = _api_probe()
     _write_session_state(probe)
     if probe != "ok":
         log("  密码重登说成功，但业务探针仍是 {} → 不算恢复".format(probe), to_stdout=True)
-        return False
+        return "fail"
     _clear_backoffs()
     log("OK: 密码重登成功，会话已恢复（未重启 bot，退避已清）", to_stdout=True)
-    return True
+    return "ok"
 
 
 def read_token_cookie():
@@ -666,7 +672,7 @@ def _renew_locked() -> int:
             # ⚠️ 先写 unauth：这一轮结束时**不许**再用 backoff 盖掉它，
             # 否则巡检（只认 unauth 为死）又看不到会话已经真死。
             _write_session_state("unauth")
-            if _home_status() == "ok" and _try_password_relogin():
+            if _home_status() == "ok" and _try_password_relogin() == "ok":
                 # 真死 + 没有风控墙 ⇒ 密码重登（它自带 30 分钟冷却，不会刷风控）
                 _write_session_state("ok")       # 立刻把"活着"写回去（别等 main 那层）
                 record_success()
@@ -776,11 +782,22 @@ def _renew_locked() -> int:
                     log("  首页探测失败 → 不下结论（等下一轮再判）")
                     _write_session_state("error")
                     return 1
-                # P12-BG：墙是通的 ⇒ 会话真死，**先升级到密码重登**（唯一能救活的手段）。
-                # 成了就不写 emergency、不重启 bot —— 常驻页面和出站队列都保住。
-                if _try_password_relogin():
+                # P12-BG：墙是通的 ⇒ 会话真死，**先升级到密码重登**（唯一不用重启
+                # bot 的恢复手段 —— 成了就不写 emergency，常驻页面和出站队列都保住）。
+                rc = _try_password_relogin()
+                if rc == "ok":
                     record_success()
                     return 0
+                if rc == "skip":
+                    # P12-BT（2026-10-03 09:13 事故）：耐心闸/冷却/锁 ⇒ 本轮**到此为止**，
+                    # 等下一轮再试。原先这里**同秒降级** emergency —— "等 2 分钟别急着
+                    # 重登"的耐心只保护了重登，却没保护更重的重启 bot（三实例重启 +
+                    # 出站中断，而内联重登本可在 +5 分钟内无重启恢复）。两条出路：
+                    #   · 下一轮坏时长过闸（≥2 分钟）⇒ 内联重登热恢复；
+                    #   · 平台瞬时抖动 ⇒ 下一轮探针自己变 ok，什么都不用做。
+                    # emergency 只有在重登**真的试过且失败**（"fail"）后才写。
+                    log("  本轮不降级 emergency：等下一轮先试内联重登（P12-BT）")
+                    return 1
                 log("SESSION_DEAD: 业务调用未授权、首页通（会话真死），密码重登也没救回来"
                     + ("" if _open_bad_window() else "（窗口内，不重复告警）"))
                 log("  落回 emergency 重启路径")
@@ -819,7 +836,9 @@ def _renew_locked() -> int:
                     record_success()
                     return 0
                 # P12-BG：浏览器刷新救不活"已死的会话" —— 再升级到密码重登。
-                if _try_password_relogin():
+                # （这条路径进来时 _unverified_min 已 > RELOGIN_AFTER_MIN=20 > 耐心闸 2，
+                #   所以只会拿到 "fail"/冷却 "skip" —— 两者都该立刻落 emergency，不等待。）
+                if _try_password_relogin() == "ok":
                     record_success()
                     return 0
                 log("  浏览器续期 + 密码重登都没成 → 写 emergency 交给 entrypoint 重登")

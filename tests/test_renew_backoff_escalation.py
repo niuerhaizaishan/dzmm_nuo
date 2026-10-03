@@ -82,7 +82,7 @@ def test_backoff_with_dead_session_escalates_to_relogin(monkeypatch, wire):
     """**这就是 19:52 事故的形状**：退避 + 业务 401 + 首页正常 ⇒ 必须能走到重登。"""
     monkeypatch.setattr(R, "_api_probe", lambda: "unauth", raising=False)
     monkeypatch.setattr(R, "_home_status", lambda: "ok", raising=False)
-    monkeypatch.setattr(R, "_try_password_relogin", lambda: True, raising=False)
+    monkeypatch.setattr(R, "_try_password_relogin", lambda: "ok", raising=False)
     assert R._renew_locked() == 0, "重登成功就该判这轮成功"
     assert "ok" in wire["written"], wire["written"]
 
@@ -93,7 +93,7 @@ def test_backoff_dead_session_and_wall_keeps_unauth(monkeypatch, wire):
     monkeypatch.setattr(R, "_home_status", lambda: "wall", raising=False)
     called = []
     monkeypatch.setattr(R, "_try_password_relogin",
-                        lambda: called.append(1) or True, raising=False)
+                        lambda: called.append(1) or "ok", raising=False)
     assert R._renew_locked() == 1
     assert called == [], "有墙时不该去重登（过不去）"
     assert wire["written"][-1] == "unauth", wire["written"]
