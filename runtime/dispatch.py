@@ -55,6 +55,7 @@ from runtime.memory import (_append_memory_ref, _refresh_profile_latest,
                             is_recall_cmd, is_remember_cmd)
 from runtime.novel import _extract_novel_title, _group_name_cache, _novel_save_path
 from runtime.obs import log
+from runtime import dream as _dream
 from runtime.perf import (OWNER_UID, _get_perf_content, _handle_perf_start,
                           _perf_end_bg, _perf_m_name, _perf_send,
                           is_perf_end_cmd, is_perf_start_cmd)
@@ -563,6 +564,7 @@ def is_dj_command_cmd(cmd: str) -> str:
             or is_profile_cmd(cmd) != "" or is_rank_cmd(cmd)
             or is_fasao_cmd(cmd) or is_insult_cmd(cmd) is not None
             or is_fortune_cmd(cmd) or is_scene_cmd(cmd)
+            or _dream.command_payload(cmd) is not None
             or is_poem_cmd(cmd) is not None
             or is_continue_cmd(cmd) or is_rewrite_cmd(cmd) is not None or is_perf_start_cmd(cmd)
             or is_perf_end_cmd(cmd) or is_dj_end_cmd(cmd) or is_fasao_end_cmd(cmd)
@@ -810,6 +812,7 @@ _CMD_FEATURE_ORDER = (
     (("story",), is_story_start_cmd, None),
     (("vote",), is_vote_start_cmd, None),
     (("help",), lambda c: is_help_cmd(c) or is_guide_cmd(c), None),
+    (("dream",), lambda c: _dream.command_payload(c) is not None, None),
     (("memory_remember",), lambda c: is_remember_cmd(c) is not None, None),
     (("memory_recall",), is_recall_cmd, None),
     (("devil_roast",), lambda c: is_devil_cmd(c) is not None, None),
@@ -1066,6 +1069,14 @@ async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
                     "📊 投票进行中哦～想参与就发 /选 X 或 /X（X=序号），想结束发 /投票结束～")
     elif (is_help_cmd(cmd) or is_guide_cmd(cmd)) and _feat_on(cid, "help"):
         reply = p("help_text", cid) or _personas.fill(HELP_TEXT, cid)
+        if _dream.enabled(cid):
+            if cid == _dream.TEA_CID:
+                dream_command = "#解梦" if _dream.is_hash_request(cid, "#解梦") else "@" + _personas.me_full(cid) + " 解梦"
+            else:
+                dream_command = "/解梦"
+            reply += "\n" + dream_command + " 梦境 - 糯糯看梦（也可 @ 求解）"
+    elif _dream.command_payload(cmd) is not None:
+        reply = await _dream.dream_reply(cid, cmd_sender, cmd) if _feat_on(cid, "dream") else None
     elif (mc := is_remember_cmd(cmd)) is not None and _feat_on(cid, "memory_remember"):
         # 记忆：/记住 内容
         if not mc:

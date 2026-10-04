@@ -259,6 +259,17 @@ _FEATURES_RAW = (
         Param("perf.novel_max_chunks", "单次最多分块", 12, "块", 1, 24,
               note="调大堵死主循环（2026-09-14 堵过 37 分钟）"),
     )),
+    Feature("dream", "小小糯解梦", "content", default=False,
+            note="默认关，不改变现有群聊；按群打开后，仅小小糯的认证群和顶层茶水间可用", params=(
+        Param("dream.hash_cmd", "允许 #解梦", 0, "", 0, 1,
+              note="只在顶层茶水间生效，不放开其他 # 指令"),
+        Param("dream.natural", "@ 自然语言解梦", 1, "", 0, 1),
+        Param("dream.cooldown", "每人冷却", 60, "秒", 10, 3600),
+        Param("dream.max_chars", "回复字数上限", 230, "字", 100, 280,
+              note="茶水间另有 180 字硬上限（不含发送前缀）"),
+        Param("dream.input_limit", "梦境输入上限", 2000, "字", 100, 2000),
+        Param("dream.timeout", "模型等待上限", 20, "秒", 1, 45),
+    )),
     Feature("poem", "写诗", "content"),
     Feature("fortune", "算命/今日运势", "content", params=(
         # P12-AW：`#` 指令入口（默认 **0=关** ⇒ 其他群零变化）。顶层茶水间没有 Bot、
@@ -398,7 +409,7 @@ _WIRED = (
     "scene_rewrite", "scene_end", "diaojiao", "help", "memory_remember",
     "memory_recall", "devil_roast", "intro", "sync", "register", "query",
     "trend", "rank_heat", "recap", "summary", "fortune", "poem", "insult", "chat",
-    "quote_reply", "slash_cmds", "at_only",
+    "quote_reply", "slash_cmds", "at_only", "dream",
     # --- 第三批（房间玩法 / 入群筛查 / @消息子功能 / 告警 / 自动触发）---
     "room_welcome", "room_refuse", "room_order", "room_flower", "room_ghost",
     "room_lewd", "room_owner_cmd", "horoscope",

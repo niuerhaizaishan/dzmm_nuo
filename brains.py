@@ -64,6 +64,7 @@ def _get_deepseek_key() -> str:
 DEFAULT_KEY = _get_deepseek_key()
 
 CMD_PROMPT = _p("CMD_PROMPT", PD["CMD_PROMPT"])
+DREAM_PROMPT = _p("DREAM_PROMPT", PD["DREAM_PROMPT"])
 
 # P12-AP（2026-09-29）：@ 回复的**收尾块**。
 # 为什么需要结构化的一块，而不是把当前这句混在历史里：屋主现场 ——

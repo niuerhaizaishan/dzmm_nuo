@@ -22,6 +22,7 @@ from datetime import datetime  # ⚠️ 必须是类：bot 命名空间 `from da
                                 # 并回滚 last_id（2026-10-01 部署事故二）。
 
 from runtime.obs import log
+from runtime import dream as _dream
 
 
 __all__ = ["run_main_loop", "run_all"]
@@ -494,6 +495,16 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                         if B.is_self(m.get("sent_by")):
                             continue  # 跳过 bot 自己的消息，避免 self-echo
                         t = (m.get("content") or {}).get("text", "").strip()
+                        if _dream.is_hash_request(cid, t):
+                            if B._is_other_bot_noise(cid, t):
+                                continue
+                            if not cmd:
+                                cmd = t
+                                cmd_sender = m.get("sent_by", "")
+                                _cmd_msg = m
+                            else:
+                                _leftover.append(m)
+                            continue
                         # P12-AW：**`#` 指令入口**（只在配了 `fortune.hash_cmd` 的群生效）。
                         # 必须放在下面 `at_only` 闸门**之前** —— 那段会把没 @ 她的消息
                         # 直接 continue 掉，裸 `#运势` 根本走不到指令分支。

@@ -69,6 +69,12 @@ def test_defaults_match_the_code_constants():
         # 默认都是"关/0" ⇒ 其他群一个字不变。
         ("fortune.hash_cmd", 0),
         ("fortune.cooldown", 0),
+        ("dream.hash_cmd", 0),
+        ("dream.natural", 1),
+        ("dream.cooldown", 60),
+        ("dream.max_chars", 230),
+        ("dream.input_limit", 2000),
+        ("dream.timeout", 20),
         ("diaojiao.timeout", 300),
         ("diaojiao.idle_seconds", 30),
         ("dice.timeout", bot.DICE_TIMEOUT_SEC),

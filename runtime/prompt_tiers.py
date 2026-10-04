@@ -51,7 +51,7 @@ TIER_NOTE = {
     "C2": "输出有形状约束（不换行 / 固定行数 / 固定项数），破坏了会被平台截断或把卡片撑坏。",
     "C3": "输出要被程序解析，破坏了不是难看而是**功能报错**。保存时会真调一次模型做契约自测。",
 }
-CONTRACTS = ("json_list", "json_objects", "lines", "three_options")
+CONTRACTS = ("json_list", "json_objects", "lines", "three_options", "dream_card")
 
 
 class PromptSpec(object):
@@ -97,6 +97,11 @@ def _c3(key, title, note="", **kw):
 
 # ---------------------------------------------------------------- 41 个
 _SPECS = [
+    _c3("DREAM_PROMPT", "小小糯解梦",
+        "一次结构化输出；古籍引用由程序核验与插入",
+        must_keep=("JSON", "reading", "advice", "source_id"),
+        contract="dream_card",
+        sample_user='{"dream":"梦见在雨后走出屋子，最后很轻松。","candidates":[],"max_chars":180}'),
     # ============ C3 · 输出被程序解析（6 个） ============
     _c3("HEAT_JUDGE_PROMPT", "发情值评定",
         "输出必须是 JSON 数组；解析失败 ⇒ 发情值不涨（静默失效）",
@@ -300,7 +305,13 @@ def check_contract(key: str, reply: str) -> list:
     txt = (reply or "").strip()
     if not txt:
         return ["模型没有返回任何内容"]
-    if s.contract == "json_list":
+    if s.contract == "dream_card":
+        from runtime.dream import parse_card
+        try:
+            parse_card(txt)
+        except (ValueError, TypeError):
+            out.append("解梦必须返回 reading、advice、source_id 三个字符串；解读与建议不能为空，来源必须有效")
+    elif s.contract == "json_list":
         data = _extract_json(txt)
         if not isinstance(data, list):
             out.append("解析不出 JSON 数组（程序会当成空列表 ⇒ 功能静默失效）")
