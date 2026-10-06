@@ -27,6 +27,7 @@ import env_config
 import token_store
 from dzmm import get_messages
 from runtime import ctx as _ctx
+from runtime import session_obs as _session_obs
 from runtime.ctx import PRIMARY_CID
 from runtime.identity import is_self, NUO_UID
 from runtime.obs import log
@@ -300,9 +301,11 @@ class Sender:
         * 任何异常都不影响发送（返回 False 即可）。
         """
         if not self.ctx:
+            _session_obs.harvest("no_context")
             return False
         _now = time.time()
         if _now - getattr(self, "_last_harvest", 0) < TOKEN_HARVEST_SEC:
+            _session_obs.harvest("throttled")
             return False
         self._last_harvest = _now
         # P12-BO / S2：**写凭据必须和续期/重登抢同一把锁**。
@@ -315,9 +318,11 @@ class Sender:
             from session_guard import guard as _guard
             with _guard("token_harvest", timeout=0) as _got:
                 if not _got:
+                    _session_obs.harvest("lock_busy")
                     return False
                 return await self._harvest_token_locked()
         except Exception as e:                                 # noqa: BLE001
+            _session_obs.harvest("error", error_type=type(e).__name__)
             log("  token 抄回失败（不影响发送）: " + str(e)[:60])
             return False
 
@@ -329,9 +334,13 @@ class Sender:
             brow = next((c.get("value", "") for c in ck
                          if c.get("name") == "sb-rls-auth-token"), "")
             if not brow:
+                _session_obs.harvest("missing_browser_cookie", browser=ck, origin=ORIGIN)
                 return False
-            cur = (token_store.get_cookie("sb-rls-auth-token") or {}).get("value", "")
+            stored_cookie = token_store.get_cookie("sb-rls-auth-token") or {}
+            cur = stored_cookie.get("value", "")
             if not cur or brow == cur:
+                _session_obs.harvest("same" if cur else "missing_file_cookie",
+                                     browser=ck, stored=[stored_cookie], origin=ORIGIN)
                 return False
 
             def _exp(v: str) -> float:
@@ -343,11 +352,17 @@ class Sender:
                     return 0.0
 
             if _exp(brow) <= _exp(cur):
+                _session_obs.harvest("expiry_not_later", browser=ck,
+                                     stored=[stored_cookie], origin=ORIGIN)
                 return False
-            token_store.update_cookie("sb-rls-auth-token", brow)
+            saved = token_store.update_cookie("sb-rls-auth-token", brow)
+            browser_cookie = next(cookie for cookie in ck if cookie.get("name") == "sb-rls-auth-token")
+            _session_obs.harvest_written(saved, browser_cookie,
+                lambda: token_store.get_cookie("sb-rls-auth-token"), ORIGIN)
             log("🔑 浏览器里的 token 比 JSON 新 → 已抄回（SPA 自己刷新过）")
             return True
         except Exception as e:                                 # noqa: BLE001
+            _session_obs.harvest("error", error_type=type(e).__name__)
             log("  token 抄回失败（不影响发送）: " + str(e)[:60])
             return False
 
@@ -364,8 +379,10 @@ class Sender:
         因此检测到 token 值变化（或页面存活超 2 小时兜底）时 reload 页面，让 JS 重读新 cookie。
         返回是否成功。
         """
+        observation = _session_obs.begin_sync()
         try:
             if not self.ctx:
+                _session_obs.event("cookie_sync_skipped", result="no_context", important=False)
                 return True  # dry 模式无浏览器上下文，跳过
             await self._harvest_token()      # P12-BK：先看浏览器那边有没有更新（内部节流）
             cookies = token_store.get_cookies_for_playwright()
@@ -374,6 +391,7 @@ class Sender:
             token_changed = bool(new_token) and new_token != self._last_token_value
             page_old = time.time() - self._last_reload > PAGE_MAX_AGE_SEC
             token_expired = self._access_expired()
+            before = await _session_obs.sync_before(self.ctx, cookies, ORIGIN)
             await self.ctx.add_cookies(cookies)
             # token 变了才标记「需重载」（防假成功）；改成惰性：下次用到哪张页面就只重载那一张，
             # 不再无条件重载主群页（多群常驻后，无条件重载会白等一次整页导航）。
@@ -382,10 +400,14 @@ class Sender:
             if token_changed or (page_old and not token_expired):
                 self._token_dirty = True
                 self._last_token_value = new_token
+            await _session_obs.sync_after(self.ctx, before, ORIGIN)
             return True
         except Exception as e:
+            _session_obs.event("cookie_sync_failed", error_type=type(e).__name__)
             log("  token 刷新失败: " + str(e)[:60])
             return False
+        finally:
+            _session_obs.end_sync(observation)
 
     def _access_expired(self) -> bool:
         """读 token JSON 判断 access_token 是否已过期（本地判断，不打网络）。"""

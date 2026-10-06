@@ -23,6 +23,7 @@ from datetime import datetime  # ⚠️ 必须是类：bot 命名空间 `from da
 
 from runtime.obs import log
 from runtime import dream as _dream
+from runtime import session_obs as _session_obs
 
 
 __all__ = ["run_main_loop", "run_all"]
@@ -55,6 +56,7 @@ TOKEN_HARVEST_INTERVAL = 600.0
 # 结尾**无条件 `restart_bot()`** ⇒ 变成连续重启 bot 4 次。
 AUTO_RECOVER_MIN_GAP = 300.0
 _auto_recover_last_spawn = 0.0
+_auto_recover_trace = ""
 
 
 def _is_unauth_error(err) -> bool:
@@ -68,25 +70,34 @@ def _is_unauth_error(err) -> bool:
             or "未授权" in s)
 
 
-def _spawn_auto_recover(B, reason: str) -> bool:
+def _spawn_auto_recover(B, reason: str, *, trace="", cid="", source="") -> bool:
     """拉起 `auto_recover.py`（进程级去重）。返回 True = 这次真的起了进程。"""
-    global _auto_recover_last_spawn
+    global _auto_recover_last_spawn, _auto_recover_trace
+    trace = trace or _session_obs.new_trace()
     now = time.time()
     if now - _auto_recover_last_spawn < AUTO_RECOVER_MIN_GAP:
+        _session_obs.event("recovery_spawn_skipped", trace=trace, cid=cid, source=source,
+                           result="debounced", parent_trace=_auto_recover_trace)
         log("🔄 " + reason + "（本进程刚拉过 auto_recover，跳过重复拉起）")
         return False
     try:
-        subprocess.Popen(
+        process = subprocess.Popen(
             [B.HERMES_PY, "auto_recover.py"],
             cwd=str(B.ROOT),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
+            env=_session_obs.recovery_env(trace),
         )
     except Exception as _e:
+        _session_obs.event("recovery_spawn_failed", trace=trace, cid=cid,
+                           source=source, error_type=type(_e).__name__)
         log("🔄 自动恢复触发失败: " + str(_e)[:60])
         return False
     _auto_recover_last_spawn = now
+    _auto_recover_trace = trace
+    _session_obs.event("recovery_spawned", trace=trace, cid=cid, source=source,
+                       child_pid=getattr(process, "pid", None))
     log("🔄 " + reason)
     return True
 
@@ -108,6 +119,7 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
     groups = list(groups or B.GROUPS)
     log("start  dry=" + str(dry) + " interval=" + str(interval)
         + " groups=" + str(len(groups)) + ("（从实例）" if not is_primary else ""))
+    _session_obs.event("group_loop_started", cid=groups[0] if len(groups) == 1 else "")
 
     captcha_cooldown_until = 0.0  # captcha 冷却截止时间戳
     http_backoff_until = 0.0  # 撞验证码后 HTTP 兜底退避截止时间戳（收发不受影响，继续）
@@ -124,6 +136,11 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
         """
         nonlocal _unauth_streak, _alerted_unauthorized, _recovering
         _unauth_streak += 1
+        trace = _session_obs.new_trace()
+        source = "read" if where.startswith("读消息被拒") else "generation"
+        from runtime.ctx import get_active_cid
+        observation_cid = get_active_cid()
+        _session_obs.event("unauthorized", trace=trace, cid=observation_cid, source=source)
         log("⚠️ UNAUTHORIZED（" + where + "）（连续第 " + str(_unauth_streak) + " 次）")
         # 事件驱动告警：cookie 失效发微信（防重，cookie 恢复后重置）
         if not _alerted_unauthorized and B._feat_on("", "alert_cookie"):
@@ -139,7 +156,8 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
         if not _recovering and B._feat_on("", "auto_recover"):
             _recovering = True
             _spawn_auto_recover(
-                B, "连续 " + str(_unauth_streak) + " 次 unauthorized，触发自动登录恢复")
+                B, "连续 " + str(_unauth_streak) + " 次 unauthorized，触发自动登录恢复",
+                trace=trace, cid=observation_cid, source=source)
 
     HTTP_FALLBACK_INTERVAL = 600  # HTTP 兜底对账间隔（秒）；断线补拉不受此限
     # P12-J：socket 抖动时的"补拉"最少间隔 —— 抖动一次就补拉一次会把平台读打成风暴

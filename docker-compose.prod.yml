@@ -31,6 +31,7 @@ services:
         max-size: "10m"
         max-file: "3"
     environment:
+      DZMM_SESSION_OBS: "on"
       CONTAINER_MODE: "1"
       # 本地走宿主机 Clash；云端香港/新加坡直连设空字符串（.env 里 DZMM_PROXY=）
       DZMM_PROXY: "${DZMM_PROXY:-}"
