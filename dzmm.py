@@ -104,11 +104,12 @@ def get_messages_all(chat_id: str, cookies: dict | None = None,
 
 
 def get_messages_since(chat_id: str, since_time: str,
-                       cookies: dict | None = None, max_count: int = 1000) -> list[dict]:
-    """增量拉取：拉取 sent_at > since_time 的消息（从新往旧翻，翻过 since_time 停）."""
+                       cookies: dict | None = None, max_count: int = 1000,
+                       until_time: str | None = None) -> list[dict]:
+    """增量拉取窗口内消息；有终点时从终点向前翻页。"""
     if cookies is None:
         cookies = get_cookies()
-    all_msgs, cursor = [], None
+    all_msgs, cursor = [], until_time
     for _ in range(100):
         msgs = get_messages(chat_id, 50, cursor, cookies)
         if not msgs:
@@ -120,8 +121,10 @@ def get_messages_since(chat_id: str, since_time: str,
         cursor = msgs[0]["sent_at"]
         if len(all_msgs) >= max_count:
             break
-    # 过滤出严格晚于 since_time 的消息
-    return [m for m in all_msgs if m["sent_at"] > since_time]
+    # 过滤出窗口内的消息；终点由 API 游标限制后仍在这里兜底。
+    return [m for m in all_msgs
+            if m["sent_at"] > since_time
+            and (not until_time or m["sent_at"] < until_time)]
 
 
 def get_user(chat_id: str, user_id: str,

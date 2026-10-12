@@ -65,6 +65,21 @@ class RoutingSender:
             except Exception:                     # 审计失败绝不影响发送
                 pass
 
+    async def send_with_id(self, text: str, cid: str) -> str:
+        """返回确定的消息编号；确认提示禁止模糊失败后换通道重发。
+
+        ⚠️ **一律走账号通道**（屋主 2026-10-12）：本方法目前只有 Rose 管理链路在用
+        （提示/结果 + 绑定编号），而撤回/踢出**只能**由账号连接执行
+        （官方 Bot 没有撤回/踢出权限）——整条链必须是同一个执行者
+        （侧车账号「小小糯～」）。原先"有 Bot 就走 Bot"会让提示以薇丝的身份出现、
+        与实际动手的账号身份劈叉，屋主明确不许。
+
+        失败语义不变：这里抛出的异常由 OutboxSender 记 failed，**绝不回退 Bot**
+        （换个身份重发比丢一条提示更糟）。
+        """
+        self._note("account", cid)
+        return await self._account.send_with_id(text, cid)
+
     async def send(self, text: str, cid: str, allow_fallback: bool = True) -> bool:
         bot = self._bots.get(cid)
         if bot is not None:

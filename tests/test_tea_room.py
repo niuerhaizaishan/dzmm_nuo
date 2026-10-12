@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import brains                                                  # noqa: E402
+import dzmm                                                    # noqa: E402
 import personas as P                                           # noqa: E402
 import pytest                                                  # noqa: E402
 from runtime import features as F                              # noqa: E402
@@ -179,6 +180,32 @@ def test_explicit_window_still_wins(tea, monkeypatch):
     monkeypatch.setattr(RC.state_store, "load_state", lambda: {})
     since, _u, label = RC._recap_window(CID, "u1", "我不在的时候两小时发生了啥")
     assert label == "最近 2 小时"
+
+
+def test_bounded_message_fetch_starts_at_window_end(monkeypatch):
+    """有明确终点时不能先取最新消息，否则新消息会吃完分页额度。"""
+    calls = []
+    pages = {
+        "2026-10-08 00:00:00+00": [
+            _m("u1", "昨天的消息", sent_at="2026-10-07 12:00:00+00"),
+        ],
+        "2026-10-07 12:00:00+00": [
+            _m("u2", "昨天更早的消息", sent_at="2026-10-07 03:00:00+00"),
+        ],
+    }
+
+    def fake_get_messages(chat_id, limit, before, cookies):
+        calls.append(before)
+        return pages.get(before, [])
+
+    monkeypatch.setattr(dzmm, "get_messages", fake_get_messages)
+    result = dzmm.get_messages_since(
+        CID, "2026-10-07 00:00:00+00", max_count=50,
+        until_time="2026-10-08 00:00:00+00")
+
+    assert calls[0] == "2026-10-08 00:00:00+00"
+    assert [item["content"]["text"] for item in result] == [
+        "昨天更早的消息", "昨天的消息"]
 
 
 # ---------------------------------------------------------------- ③ 输入更完整

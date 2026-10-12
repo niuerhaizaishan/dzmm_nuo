@@ -1448,6 +1448,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._require_session():
             return
+        if u.path == "/messages":
+            from admin import messages_ui
+            parameters = {key: values[0] for key, values in parse_qs(u.query or "").items()}
+            self._send(200, messages_ui.render(parameters), "text/html; charset=utf-8")
+            return
         if u.path in ("/edit", "/config"):
             self._send(200, self._render_edit_page(), "text/html; charset=utf-8")
             return

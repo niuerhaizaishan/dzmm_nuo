@@ -24,6 +24,8 @@ from datetime import datetime  # ⚠️ 必须是类：bot 命名空间 `from da
 from runtime.obs import log
 from runtime import dream as _dream
 from runtime import session_obs as _session_obs
+from runtime import chat_archive as _chat_archive
+from runtime import rose_moderation as _rose_moderation
 
 
 __all__ = ["run_main_loop", "run_all"]
@@ -378,6 +380,7 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                 else:
                     msgs = []
                 if msgs:
+                    await _chat_archive.capture(cid, msgs, source="live_push" if from_sio else "live_http")
                     # P12-I 延迟自证：起点 + "消息在路上等了多久"
                     _t_round = time.time()
                     _lag = B.message_lag(msgs)
@@ -513,6 +516,14 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                         if B.is_self(m.get("sent_by")):
                             continue  # 跳过 bot 自己的消息，避免 self-echo
                         t = (m.get("content") or {}).get("text", "").strip()
+                        if _rose_moderation.is_command(cid, t):
+                            if not cmd:
+                                cmd = t
+                                cmd_sender = m.get("sent_by", "")
+                                _cmd_msg = m
+                            else:
+                                _leftover.append(m)
+                            continue
                         if _dream.is_hash_request(cid, t):
                             if B._is_other_bot_noise(cid, t):
                                 continue
@@ -622,7 +633,7 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
 
                     # 房间群：客人发 / 指令 → 变成一次"婉拒"的房间回应（只有主人能下命令）。
                     # 例外：`/查` 一族对所有人开放（2026-09-27 屋主要求），照常走命令分支。
-                    if B._room_cmd_refused(cid, cmd, cmd_sender):
+                    if not _rose_moderation.is_command(cid, cmd) and B._room_cmd_refused(cid, cmd, cmd_sender):
                         room_hit = (cmd_sender, cmd)
                         cmd = ""
                         at_msg = ""

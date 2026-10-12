@@ -86,8 +86,8 @@ def test_registry_has_69_features():
     屋主要"只有 @ 小小糯 的时候才触发回复"，是**新增的触发约束**（关掉一切非 @ 触发），
     所以默认关（见 `_DELIBERATE_OFF`）。
     """
-    assert len(F.FEATURES) == 69
-    assert len(set(F.keys())) == 69, "key 必须唯一"
+    assert len(F.FEATURES) == 73
+    assert len(set(F.keys())) == 73, "key 必须唯一"
 
 
 def test_every_feature_is_well_formed():
@@ -109,8 +109,8 @@ def test_category_counts_match_the_plan():
     people 再多 1 = P12-AL 新增 `at_only`（只 @ 才回复）。
     """
     got = {c: len(v) for c, v in F.by_category().items()}
-    assert got == {"game": 15, "content": 13, "people": 14, "screen": 7,
-                   "schedule": 9, "room": 7, "alert": 4}
+    assert got == {"game": 15, "content": 16, "people": 14, "screen": 7,
+                   "schedule": 9, "room": 8, "alert": 4}
 
 
 # 唯一允许 default=False 的功能，且必须写明理由（别让它悄悄变长）。
@@ -123,6 +123,13 @@ _DELIBERATE_OFF = {
     # 全掐掉（认证群的骰子/发骚/排行/问候都靠非 @ 消息），那是灾难。
     "at_only",
     "dream",
+    "personal_story",
+    "personal_portrait",
+    # 2026-10-07：同样是一条**新增的触发入口**（`/致 某某`、`@小小糯 给某某写封信`）。
+    # 默认打开等于在所有群多出一整类回答时机，而且它是**代发起者写给别人的公开信**，
+    # 更该按群显式打开。
+    "personal_letter",
+    "rose_moderation",
 }
 
 

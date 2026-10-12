@@ -62,6 +62,9 @@ def test_defaults_match_the_code_constants():
         ("scene.timeout", 15 * 60),
         # 发骚正文长度上限（2026-09-27 屋主："有截断""内容太少" → 700 → 1800）
         ("scene.max_tokens", brains.SCENE_MAX_TOKENS),
+        # 2026-10-07 屋主：「发骚的过程中，/继续 后输出的字数调整为现在的一半」
+        # ⇒ 续写单独一条上限（1800 → 900），首段不变
+        ("scene.continue_max_tokens", brains.SCENE_CONTINUE_MAX_TOKENS),
         # P12-AX：按群的正文长度话术（空 = 用提示词默认档 700-1100 字）。
         # 认证群要"一半"→ 配 350-550 字；上班群不配 =一个字不变。
         ("scene.length", ""),
@@ -75,6 +78,15 @@ def test_defaults_match_the_code_constants():
         ("dream.max_chars", 230),
         ("dream.input_limit", 2000),
         ("dream.timeout", 20),
+        ("personal_story.cooldown", 300),
+        ("personal_story.timeout", 45),
+        ("personal_portrait.cooldown", 300),
+        ("personal_portrait.timeout", 45),
+        # 2026-10-07：/致某某（代发起者写给群友的一封信）
+        # 目标级冷却默认 **0 = 关**（屋主口径「不设冷却」）；真正兜底的是全群单在途
+        ("personal_letter.cooldown", 300),
+        ("personal_letter.timeout", 45),
+        ("personal_letter.target_cooldown", 0),
         ("diaojiao.timeout", 300),
         ("diaojiao.idle_seconds", 30),
         ("dice.timeout", bot.DICE_TIMEOUT_SEC),

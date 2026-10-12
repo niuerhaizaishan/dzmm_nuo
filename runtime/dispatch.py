@@ -56,6 +56,10 @@ from runtime.memory import (_append_memory_ref, _refresh_profile_latest,
 from runtime.novel import _extract_novel_title, _group_name_cache, _novel_save_path
 from runtime.obs import log
 from runtime import dream as _dream
+from runtime import personal_story as _personal_story
+from runtime import personal_portrait as _personal_portrait
+from runtime import personal_letter as _personal_letter
+from runtime import rose_moderation as _rose_moderation
 from runtime.perf import (OWNER_UID, _get_perf_content, _handle_perf_start,
                           _perf_end_bg, _perf_m_name, _perf_send,
                           is_perf_end_cmd, is_perf_start_cmd)
@@ -456,7 +460,7 @@ def continue_last(cid: str, cmd: str = "", sender_uid: str = "") -> str:
             # combo 去括号再传给续写 prompt，避免签名里的「裳姐姐」串角色
             combo_clean = _strip_parenthesis(fs.get("combo", ""))
             text = generate_scene_continue(combo_clean, history, custom,
-                                           max_tokens=int(_tune("scene.max_tokens", cid)))
+                                           max_tokens=int(_tune("scene.continue_max_tokens", cid)))
         except Exception:
             text = ""
         if not (text or "").strip():
@@ -464,7 +468,7 @@ def continue_last(cid: str, cmd: str = "", sender_uid: str = "") -> str:
             try:
                 combo_clean = _strip_parenthesis(fs.get("combo", ""))
                 text = generate_scene_continue(combo_clean, history, custom,
-                                               max_tokens=int(_tune("scene.max_tokens", cid)))
+                                               max_tokens=int(_tune("scene.continue_max_tokens", cid)))
             except Exception:
                 text = ""
         text = (text or "").strip()
@@ -565,6 +569,9 @@ def is_dj_command_cmd(cmd: str) -> str:
             or is_fasao_cmd(cmd) or is_insult_cmd(cmd) is not None
             or is_fortune_cmd(cmd) or is_scene_cmd(cmd)
             or _dream.command_payload(cmd) is not None
+            or _personal_story.command_payload(cmd) is not None
+            or _personal_portrait.command_payload(cmd) is not None
+            or _personal_letter.command_payload(cmd) is not None
             or is_poem_cmd(cmd) is not None
             or is_continue_cmd(cmd) or is_rewrite_cmd(cmd) is not None or is_perf_start_cmd(cmd)
             or is_perf_end_cmd(cmd) or is_dj_end_cmd(cmd) or is_fasao_end_cmd(cmd)
@@ -813,6 +820,9 @@ _CMD_FEATURE_ORDER = (
     (("vote",), is_vote_start_cmd, None),
     (("help",), lambda c: is_help_cmd(c) or is_guide_cmd(c), None),
     (("dream",), lambda c: _dream.command_payload(c) is not None, None),
+    (("personal_story",), lambda c: _personal_story.command_payload(c) is not None, None),
+    (("personal_portrait",), lambda c: _personal_portrait.command_payload(c) is not None, None),
+    (("personal_letter",), lambda c: _personal_letter.command_payload(c) is not None, None),
     (("memory_remember",), lambda c: is_remember_cmd(c) is not None, None),
     (("memory_recall",), is_recall_cmd, None),
     (("devil_roast",), lambda c: is_devil_cmd(c) is not None, None),
@@ -878,6 +888,10 @@ async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
     state[cid] = group_state
     _save_group(cid, group_state)
     _mark_inflight(cid, (_cmd_msg or msgs[-1]).get("message_id"))   # P12-BC：被硬杀也能补
+
+    if _rose_moderation.is_command(cid, cmd):
+        await _rose_moderation.handle(sender, cid, _cmd_msg or msgs[-1], dry)
+        return
 
     perf = _get_perf_state(cid)
     perf_active = perf.get("active")
@@ -1075,8 +1089,20 @@ async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
             else:
                 dream_command = "/解梦"
             reply += "\n" + dream_command + " 梦境 - 糯糯看梦（也可 @ 求解）"
+        if _personal_story.enabled(cid):
+            reply += "\n/我的故事 - 按日期回顾自己的聊天（也可 @ 小小糯 我的故事）"
+        if _personal_portrait.enabled(cid):
+            reply += "\n/我的画像 - 从多个维度看看自己（也可 @ 小小糯 我的画像）"
+        if _personal_letter.enabled(cid):
+            reply += "\n/致 某某 - 给群里某个人写一封信（也可 @ 小小糯 给某某写封信）"
     elif _dream.command_payload(cmd) is not None:
         reply = await _dream.dream_reply(cid, cmd_sender, cmd) if _feat_on(cid, "dream") else None
+    elif _personal_story.command_payload(cmd) is not None:
+        reply = await _personal_story.story_reply(cid, cmd_sender, cmd) if _feat_on(cid, "personal_story") else None
+    elif _personal_portrait.command_payload(cmd) is not None:
+        reply = await _personal_portrait.portrait_reply(cid, cmd_sender, cmd) if _feat_on(cid, "personal_portrait") else None
+    elif _personal_letter.command_payload(cmd) is not None:
+        reply = await _personal_letter.letter_reply(cid, cmd_sender, cmd) if _feat_on(cid, "personal_letter") else None
     elif (mc := is_remember_cmd(cmd)) is not None and _feat_on(cid, "memory_remember"):
         # 记忆：/记住 内容
         if not mc:

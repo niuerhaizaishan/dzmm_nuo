@@ -363,8 +363,11 @@ async def recap_absent(cid: str, uid: str, text: str = "",
         return "这一段刚给你说完呢～换个时间段问（比如「昨天」「上午」），或者过一会儿再问嘛～"
     try:
         since_utc = datetime.utcfromtimestamp(since).strftime("%Y-%m-%d %H:%M:%S")
+        fetch_until = until if until and until < time.time() - 60 else None
+        until_utc = (datetime.utcfromtimestamp(fetch_until).strftime("%Y-%m-%d %H:%M:%S")
+                     if fetch_until else None)
         msgs = await asyncio.to_thread(get_messages_since, cid, since_utc,
-                                       max_count=600)
+                                       max_count=600, until_time=until_utc)
     except Exception as e:
         log("回顾拉取失败: " + str(e)[:60])
         return (_pp("recap_fail", cid)

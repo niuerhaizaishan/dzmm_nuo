@@ -365,6 +365,25 @@ class OutboxSender:
                     getattr(self._inner, "last_failure", "") or "unknown"))
             return bool(ok)
 
+    async def send_with_id(self, text: str, cid: str) -> str:
+        """确认提示持久记录平台编号；失败不加入自动重试。"""
+        if self._dry:
+            return ""
+        oid = self._store.enqueue(chatroom_id=cid, text=text)
+        async with self._lock(cid):
+            if not self._store.lease(oid, self._worker_id, self._lease_ttl):
+                self._store.mark_failed(oid, "确认提示领取失败")
+                return ""
+            try:
+                message_id = await self._inner.send_with_id(text, cid)
+                if not isinstance(message_id, str) or not message_id:
+                    raise RuntimeError("缺少平台消息编号")
+            except Exception as error:
+                self._store.mark_failed(oid, "确认提示未确认：" + type(error).__name__)
+                raise
+            self._store.mark_sent(oid, platform_sent_id=message_id)
+            return message_id
+
     # ------------------------------------------------------------ 安全重试（P12-J）
     async def retry_worker(self) -> None:
         """后台：把**明确被拒**的失败记录在官方通道上重试几次。

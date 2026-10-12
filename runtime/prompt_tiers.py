@@ -51,7 +51,7 @@ TIER_NOTE = {
     "C2": "输出有形状约束（不换行 / 固定行数 / 固定项数），破坏了会被平台截断或把卡片撑坏。",
     "C3": "输出要被程序解析，破坏了不是难看而是**功能报错**。保存时会真调一次模型做契约自测。",
 }
-CONTRACTS = ("json_list", "json_objects", "lines", "three_options", "dream_card")
+CONTRACTS = ("json_list", "json_objects", "lines", "three_options", "dream_card", "personal_story", "personal_portrait", "personal_letter")
 
 
 class PromptSpec(object):
@@ -97,6 +97,21 @@ def _c3(key, title, note="", **kw):
 
 # ---------------------------------------------------------------- 41 个
 _SPECS = [
+    _c3("PERSONAL_PORTRAIT_PROMPT", "我的画像",
+        "按维度归纳本人聊天；引文由程序核验，不推断完整人格",
+        must_keep=("JSON", "dimensions", "title", "text", "ending", "[[message_id]]"),
+        contract="personal_portrait",
+        sample_user='{"target_chars":400,"messages":[{"message_id":"m1","day":"2026-08-01","text":"相声十级爱好者在此，最近还想试试写角色卡。","clipped":false,"chars":22},{"message_id":"m2","day":"2026-08-02","text":"大家好久不见，最近身体好些了吗？","clipped":false,"chars":16},{"message_id":"m3","day":"2026-08-03","text":"第一次尝试写团本，姐妹们可以给提提意见。","clipped":false,"chars":20}]}'),
+    _c3("PERSONAL_LETTER_PROMPT", "致某某（一封信）",
+        "发起人口吻、收信人原话核验；段落式信件（称呼与落款由程序生成）",
+        must_keep=("JSON", "paragraphs", "ending", "[[message_id]]"),
+        contract="personal_letter",
+        sample_user='{"to":"某人","from":"另一位","start":"2026-08-16","end":"2026-09-30","target_chars":750,"messages":[{"message_id":"m1","day":"2026-08-16","text":"今天开始上夜班，想攒钱去看海。","clipped":false,"chars":14},{"message_id":"m2","day":"2026-09-20","text":"这周终于把夜班调成了白班。","clipped":false,"chars":13}]}'),
+    _c3("PERSONAL_STORY_PROMPT", "我的故事",
+        "按时间先后分段、每段自取短标题（编号由程序加）、不写日期；原话占位符核验",
+        must_keep=("JSON", "opening", "stages", "title", "text", "ending", "[[message_id]]"),
+        contract="personal_story",
+        sample_user='{"start":"2026-08-16","end":"2026-09-30","target_chars":600,"messages":[{"message_id":"m1","day":"2026-08-16","text":"今天开始上夜班，想攒钱去看海。","clipped":false,"chars":14},{"message_id":"m2","day":"2026-09-20","text":"这周终于把夜班调成了白班。","clipped":false,"chars":13}]}'),
     _c3("DREAM_PROMPT", "小小糯解梦",
         "一次结构化输出；古籍引用由程序核验与插入",
         must_keep=("JSON", "reading", "advice", "source_id"),
@@ -305,7 +320,27 @@ def check_contract(key: str, reply: str) -> list:
     txt = (reply or "").strip()
     if not txt:
         return ["模型没有返回任何内容"]
-    if s.contract == "dream_card":
+    if s.contract == "personal_letter":
+        from runtime.personal_letter import parse_letter, render_letter
+        try:
+            evidence = json.loads(s.sample_user)
+            render_letter(parse_letter(txt), evidence, "某人", "—— 代笔：小小糯 · 受「另一位」所托")
+        except (ValueError, TypeError, KeyError):
+            out.append("信必须返回 2～4 段正文和一段寄语，引用真实消息，段落与字数须符合约定")
+    elif s.contract == "personal_portrait":
+        from runtime.personal_portrait import parse_portrait, render_portrait
+        try:
+            render_portrait(parse_portrait(txt), json.loads(s.sample_user))
+        except (ValueError, TypeError, KeyError):
+            out.append("画像必须包含3～5个不同维度和收尾，引用真实消息，字数须符合约定")
+    elif s.contract == "personal_story":
+        from runtime.personal_story import parse_story, render_story
+        try:
+            evidence = json.loads(s.sample_user)
+            render_story(parse_story(txt), evidence)
+        except (ValueError, TypeError, KeyError):
+            out.append("故事必须返回时间顺序的阶段和温情收尾，引用真实消息，阶段与字数须符合约定")
+    elif s.contract == "dream_card":
         from runtime.dream import parse_card
         try:
             parse_card(txt)

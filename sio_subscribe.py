@@ -14,6 +14,12 @@
     3. 连接后服务端自动推送 connected（含 groupChatLimits）→ message:joined（syncMode）→ message:new
     4. 监听 message:new → {chatroomId, message:{message_id, chatroom_id, sent_by, sent_at, content{text,type}, metadata}}
     5. python-socketio 自带 reconnection 断线重连；重连成功后置 resync 标记，主循环据此补拉
+    6. 2026-10-12：连接/重连成功后对本群 `message:join-room` —— 推送虽不需要 join，
+       但**房间动作**（message:recall，管理确认链的撤回）需要；不 join 会被平台拒
+       （CANNOT_RECALL），网页客户端打开聊天就会 join（实测对照）
+
+HTTP 模式的 namespace 未确认时，改用携带会话 Cookie 的普通 WebSocket 握手。
+该兼容通道已只读验证可收到加入通知与自然到达的群消息。
 """
 import asyncio
 import inspect
@@ -54,6 +60,8 @@ class SioSubscriber:
         # 主循环那边原有的去重只认"上一条 last_id"，挡不住这种重复。
         self._seen_ids: "OrderedDict[str, float]" = OrderedDict()
         self._seen_cap = 500
+        self._action_lock = asyncio.Lock()
+        self._compat_connect = False
 
     # ---------- 对外接口 ----------
     def _dup(self, msg: dict) -> bool:
@@ -153,6 +161,41 @@ class SioSubscriber:
             return ""
         return mid
 
+    async def confirmed_action(self, event: str, payload: dict):
+        """仅接受明确成功 ACK；超时或断线不重发。"""
+        if not self._sio or not self._connected.is_set():
+            raise RuntimeError("账号连接不可用")
+        async with self._action_lock:
+            acknowledgement = await self._sio.call(event, payload, timeout=10)
+        if not isinstance(acknowledgement, dict) or acknowledgement.get("success") is not True:
+            # 平台拒绝的原始 ACK（含 error/errorCode）只进 docker 日志 ——
+            # 群消息与任务库里只留异常类型名（防敏感信息外泄）。
+            # 2026-10-12 实测：撤回别人消息被平台拒时 ACK 是
+            # {'success': False, 'error': '您不能撤回该消息', 'errorCode': 'CANNOT_RECALL'}，
+            # 没有这条日志就无法区分"权限拒绝"和"连接问题"。
+            print("[sio] ⚠️ {} 被平台拒绝: {}".format(event, repr(acknowledgement)[:200]),
+                  flush=True)
+            raise RuntimeError("平台未确认操作成功")
+
+    async def recall_message(self, cid: str, message_id: str):
+        """删除群消息（管理确认链用）。
+
+        ⚠️ 2026-10-12 实测：事件必须是 **message:delete**（管理员删别人的消息）；
+        旧协议 message:recall 只能撤**自己**的消息——撤别人的永远被平台拒
+        （{'success': False, 'error': '您不能撤回该消息', 'errorCode': 'CANNOT_RECALL'}），
+        与消息新旧、管理员身份、join 与否都无关。载荷两者相同 {chatroomId, messageId}。
+        """
+        await self.confirmed_action("message:delete", {
+            "chatroomId": cid, "messageId": message_id})
+
+    async def send_text_confirmed(self, cid: str, user_id: str, text: str) -> str:
+        message_id = str(uuid.uuid4())
+        message = {"message_id": message_id, "chatroom_id": cid, "sent_by": user_id,
+                   "sent_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                   "content": {"type": "text", "text": text}}
+        await self.confirmed_action("message:send", {"chatroomId": cid, "message": message})
+        return message_id
+
     # ---------- 内部 ----------
     def _get_token(self) -> str:
         # 优先从 token JSON 直接 decode access_token（renew_token 持续写回，是新鲜的），
@@ -245,7 +288,8 @@ class SioSubscriber:
             try:
                 await asyncio.wait_for(self._connected.wait(), timeout=10)
             except asyncio.TimeoutError:
-                print("[sio] namespace 连接超时，清理后重试")
+                print("[sio] namespace 连接超时，清理后使用兼容握手")
+                self._compat_connect = True
                 await self._cleanup()
                 continue
             # 连接稳定，等断开（on_disconnect → _connected.clear()）
@@ -272,7 +316,21 @@ class SioSubscriber:
             # （bot 重启时 Socket.IO 首次连接可能超时重连，期间发的消息会漏，靠这次 HTTP 补拉兜住）
             for cid in self.groups:
                 self._resync.add(cid)
-            print("[sio] ✅ 已连接（服务端自动推送所属群消息，无需 join）")
+            # ⚠️ 房间动作（message:recall / 管理确认链的撤回）要求本会话已 join 该群房间
+            # —— 网页客户端打开聊天就会 message:join-room；2026-10-12 实测：不 join 的
+            # 裸连接做 recall，1 秒新的消息也被平台拒（CANNOT_RECALL），join 后与网页
+            # 行为一致。每次连接/重连都重 join（DDZM 参考实现同款）。
+            for cid in self.groups:
+                try:
+                    ack = await self._sio.call("message:join-room",
+                                               {"chatroomId": cid}, timeout=10)
+                    ok = isinstance(ack, dict) and ack.get("success") is True
+                    print("[sio] join {} -> {}".format(
+                        cid[:8], "ok" if ok else repr(ack)[:80]), flush=True)
+                except Exception as e:                          # noqa: BLE001
+                    # join 失败不阻塞连接：推送照常，仅房间动作会再等下次重连补 join
+                    print("[sio] join {} 失败: {}".format(cid[:8], str(e)[:60]), flush=True)
+            print("[sio] ✅ 已连接（已 join 全部群房间）")
 
         @self._sio.on("disconnect")
         async def _on_disconnect():
@@ -300,16 +358,22 @@ class SioSubscriber:
             except Exception:
                 pass
 
-        # 关键：必须走 polling transport + syncMode=http query，服务端才会推送
-        # connected / message:joined / message:new。纯 websocket 会连上但收不到推送。
         ts = str(int(time.time() * 1000))
         url = ORIGIN + "/?timestamp=" + ts + "&syncMode=http"
+        headers = {"Origin": ORIGIN, "User-Agent": "Mozilla/5.0 DZMM-Agent/1.0"}
+        transports = ["polling", "websocket"]
+        if self._compat_connect:
+            url = ORIGIN
+            transports = ["websocket", "polling"]
+            cookie = token_store.get_cookie_string()
+            if cookie:
+                headers["Cookie"] = cookie
         await self._sio.connect(
             url,
             socketio_path="/ws/matching",
-            transports=["polling", "websocket"],
+            transports=transports,
             auth={"token": token},
-            headers={"Origin": ORIGIN, "User-Agent": "Mozilla/5.0 DZMM-Agent/1.0"},
+            headers=headers,
             wait=False,  # 不等待 namespace 连接（后台连接），避免 wait_timeout 超时抛异常
         )
 

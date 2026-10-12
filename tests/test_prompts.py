@@ -76,7 +76,7 @@ REG = rp.registry()
 
 def test_brains_has_prompts():
     # 39 → 40（P12-AP 加了 AT_FRAME_PROMPT：@ 回复的收尾块）
-    assert len(ASSIGNS) == 41, "brains.py 里的 prompt 数量变了：{}".format(len(ASSIGNS))
+    assert len(ASSIGNS) == 44, "brains.py 里的 prompt 数量变了：{}".format(len(ASSIGNS))
 
 
 def test_pd_module_covers_exactly_brains_prompts():
@@ -86,7 +86,7 @@ def test_pd_module_covers_exactly_brains_prompts():
 
 def test_registry_has_all_prompts():
     """40 个在 brains + 1 个在 runtime/memory = 41（第 41 个是 MEMORY_FILTER_PROMPT）。"""
-    assert len(REG) == 42, sorted(REG)
+    assert len(REG) == 45, sorted(REG)
     assert "MEMORY_FILTER_PROMPT" in REG
     assert REG["MEMORY_FILTER_PROMPT"]["module"] == "runtime.memory"
     assert REG["AT_FRAME_PROMPT"]["module"] == "brains"
@@ -195,7 +195,7 @@ def test_stats_reports_files(monkeypatch):
     assert st["enabled"] is True
     # total = **登记册**里的提示词数（41）；
     # `sources()` 里可能还有测试自己读过的临时名字，所以不能拿它当分母。
-    assert st["total"] == len(rp.registry()) == 42
+    assert st["total"] == len(rp.registry()) == 45
     assert st["from_file"] + st["from_code"] == st["total"]
     assert st["files_on_disk"] >= st["from_file"]
 

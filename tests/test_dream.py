@@ -327,7 +327,8 @@ def _scan(cid, texts):
         _quote_reply_on=lambda cid: False, _quotes_self=lambda message: False,
         _is_other_bot_noise=lambda cid, text: "记忆考核" in text,
         _chat_cooling=lambda cid, uid: 0, _is_room_trigger=lambda *args: False)
-    env = {"B": bridge, "_dream": dream, "cid": cid, "log": lambda *args: None,
+    env = {"B": bridge, "_dream": dream, "_rose_moderation": mainloop._rose_moderation,
+           "cid": cid, "log": lambda *args: None,
            "pending": [{"message_id": str(index), "sent_by": "guest", "content": {"text": text}}
                        for index, text in enumerate(texts)],
            "cmd": "", "cmd_sender": "", "at_msg": "", "at_sender": "",

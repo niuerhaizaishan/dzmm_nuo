@@ -114,6 +114,9 @@ _FEATURES_RAW = (
                       note="原先写死 700，实测会把正文掐在半句话上"
                            "（2026-09-27 屋主报「发骚有截断/内容太少」）；"
                            "被截断时还会自动续写接上"),
+                Param("scene.continue_max_tokens", "续写长度上限", 900, "token", 150, 4000,
+                      note="/继续 单独的上限。屋主 2026-10-07：「/继续 后输出的字数调整为"
+                           "现在的一半」—— 首段仍是 scene.max_tokens（1800），续写减半"),
                 # P12-AX：**按群的正文长度话术**（空 = 用提示词里的默认档 700-1100 字）。
                 # 2026-09-29 屋主："妹子认证群发骚输出太长了，一半就行" —— 但上班群
                 # 09-27 提的是"内容太少"，所以不能改提示词默认档一刀切；
@@ -259,6 +262,27 @@ _FEATURES_RAW = (
         Param("perf.novel_max_chunks", "单次最多分块", 12, "块", 1, 24,
               note="调大堵死主循环（2026-09-14 堵过 37 分钟）"),
     )),
+    Feature("personal_story", "我的故事", "content", default=False,
+            note="默认关；按群打开后，仅小小糯在认证群生成发起者本人的归档故事", params=(
+        Param("personal_story.cooldown", "每人冷却", 300, "秒", 30, 86400),
+        Param("personal_story.timeout", "模型等待上限", 45, "秒", 1, 60),
+    )),
+    Feature("personal_portrait", "我的画像", "content", default=False,
+            note="默认关；按群打开后，仅小小糯在认证群整理发起者本人的多维度聊天画像", params=(
+        Param("personal_portrait.cooldown", "每人冷却", 300, "秒", 30, 86400),
+        Param("personal_portrait.timeout", "模型等待上限", 45, "秒", 1, 60),
+    )),
+    Feature("personal_letter", "致某某（一封信）", "content", default=False,
+            note="默认关；按群打开后，仅小小糯在认证群可用。**代发起者**写给某位群友，"
+                 "读的是**收信人**的归档（不是发起者的）；称呼与落款由程序生成", params=(
+        Param("personal_letter.cooldown", "每人冷却", 300, "秒", 30, 86400),
+        Param("personal_letter.timeout", "模型等待上限", 45, "秒", 1, 60,
+              note="两次模型调用（首次 + 带原因重试）共用这个预算"),
+        Param("personal_letter.target_cooldown", "同一收信人冷却", 0, "秒", 0, 86400,
+              note="0 = 关（屋主 2026-10-07 口径）。真正兜底的是「全群单在途」——"
+                   "同一时刻只有一封信在生成，所以刷不起来；这个参数只是留着，"
+                   "万一有人反复给同一个人写，后台改个数字就能开，不用重新部署"),
+    )),
     Feature("dream", "小小糯解梦", "content", default=False,
             note="默认关，不改变现有群聊；按群打开后，仅小小糯的认证群和顶层茶水间可用", params=(
         Param("dream.hash_cmd", "允许 #解梦", 0, "", 0, 1,
@@ -377,6 +401,9 @@ _FEATURES_RAW = (
             note="3h 兜底只在收到房间消息时检查，冷清房间不自愈"),
     Feature("room_lewd", "调戏三级递进", "room", resets=("rose_strikes",)),
     Feature("room_owner_cmd", "屋主指令", "room"),
+    Feature("rose_moderation", "Rose 管理确认", "room", default=False,
+            note="关：不处理管理指令。开：仅 Rose 群管理员可确认撤回和踢出；"
+                 "需执行账号具备群管理权限，不设有效期，模糊失败不自动重试。"),
 
     # ---- G. 告警（4）
     Feature("alert_send_fail", "连续发送失败告警", "alert"),
@@ -409,10 +436,11 @@ _WIRED = (
     "scene_rewrite", "scene_end", "diaojiao", "help", "memory_remember",
     "memory_recall", "devil_roast", "intro", "sync", "register", "query",
     "trend", "rank_heat", "recap", "summary", "fortune", "poem", "insult", "chat",
-    "quote_reply", "slash_cmds", "at_only", "dream",
+    "quote_reply", "slash_cmds", "at_only", "dream", "personal_story", "personal_portrait",
+    "personal_letter",
     # --- 第三批（房间玩法 / 入群筛查 / @消息子功能 / 告警 / 自动触发）---
     "room_welcome", "room_refuse", "room_order", "room_flower", "room_ghost",
-    "room_lewd", "room_owner_cmd", "horoscope",
+    "room_lewd", "room_owner_cmd", "rose_moderation", "horoscope",
     "screen", "screen_tourist", "screen_gender", "screen_welcome",
     "screen_captcha_notice", "screen_pending",
     "person_summary", "profile_card", "archive_build",

@@ -27,6 +27,9 @@ from brains import AT_FRAME_PROMPT, generate_reply
 from personas import p
 from runtime import features as _features
 from runtime import dream as _dream
+from runtime import personal_story as _personal_story
+from runtime import personal_portrait as _personal_portrait
+from runtime import personal_letter as _personal_letter
 from runtime import intro_photo as _intro_photo
 from runtime.dispatch import _ph
 from runtime.fortune import fortune_reply, is_fortune_ask
@@ -223,6 +226,9 @@ async def handle_at_chat(sender, cid, at_msg, at_sender, dry, group_state, state
     # 搬成函数后语义等价：本分支每批至多走一次）。
     _no_decor = False
     _dream_hit = False
+    _story_hit = False
+    _portrait_hit = False
+    _letter_hit = False
 
     # 独占玩法进行中时，@ 提示进行中（打断保护）
     active_hint = _active_play_hint(cid)
@@ -250,11 +256,28 @@ async def handle_at_chat(sender, cid, at_msg, at_sender, dry, group_state, state
         except Exception:                                      # noqa: BLE001
             _noisy = False
         _dream_hit = _dream.request_payload(q) is not None
+        _story_hit = _personal_story.request_payload(q) is not None
+        _portrait_hit = _personal_portrait.request_payload(q) is not None
+        _letter_hit = _personal_letter.request_payload(q) is not None
         mem_content = _extract_remember(q) \
-            if (_feat_on(cid, "memory_remember") and not _noisy and not _dream_hit) else None
+            if (_feat_on(cid, "memory_remember") and not _noisy
+                and not _dream_hit and not _story_hit and not _portrait_hit
+                and not _letter_hit) else None
         if _dream_hit:
             reply = await _dream.dream_reply(cid, at_sender, q, via_at=True) \
                 if not _noisy and _feat_on(cid, "dream") else None
+            _no_decor = True
+        elif _story_hit:
+            reply = await _personal_story.story_reply(cid, at_sender, q, via_at=True) \
+                if not _noisy and _feat_on(cid, "personal_story") else None
+            _no_decor = True
+        elif _portrait_hit:
+            reply = await _personal_portrait.portrait_reply(cid, at_sender, q, via_at=True) \
+                if not _noisy and _feat_on(cid, "personal_portrait") else None
+            _no_decor = True
+        elif _letter_hit:
+            reply = await _personal_letter.letter_reply(cid, at_sender, q, via_at=True) \
+                if not _noisy and _feat_on(cid, "personal_letter") else None
             _no_decor = True
         elif mem_content is not None:
             # 自然语言记忆请求：@小小糯 记住 XXX
@@ -383,7 +406,7 @@ async def handle_at_chat(sender, cid, at_msg, at_sender, dry, group_state, state
                         generate_reply, ctx,
                         max_tokens=int(_tune("reply.max_tokens", cid)),
                         context_msgs=_ctxn)
-        if reply is None and _dream_hit:
+        if reply is None and (_dream_hit or _story_hit or _portrait_hit or _letter_hit):
             return
         reply = (reply or "").strip()
         if reply:
@@ -447,7 +470,7 @@ async def handle_at_chat(sender, cid, at_msg, at_sender, dry, group_state, state
                     # P12-BQ D1：只有真发出去了才起冷却（别把失败也算进去）
                     _chat_mark_replied(cid, at_sender)
                 # P12-L：@ 提问里问"你是谁"，同样补一张立绘
-                if ok and q and not _dream_hit:
+                if ok and q and not _dream_hit and not _story_hit and not _portrait_hit and not _letter_hit:
                     await _intro_photo.maybe_send(
                         sender, cid, q, reason="@提问")
         else:

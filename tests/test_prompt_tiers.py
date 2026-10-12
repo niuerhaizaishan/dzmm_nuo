@@ -22,7 +22,7 @@ import runtime.memory  # noqa: E402,F401  （第 40 个）
 from runtime import prompt_tiers as PT  # noqa: E402
 from runtime import prompts as RP  # noqa: E402
 
-C3 = ("DREAM_PROMPT", "HEAT_JUDGE_PROMPT", "VOTE_OPTIONS_PROMPT", "XP_PROMPT",
+C3 = ("PERSONAL_PORTRAIT_PROMPT", "PERSONAL_STORY_PROMPT", "PERSONAL_LETTER_PROMPT", "DREAM_PROMPT", "HEAT_JUDGE_PROMPT", "VOTE_OPTIONS_PROMPT", "XP_PROMPT",
       "MEMORY_FILTER_PROMPT", "STORY_START_PROMPT", "STORY_STEP_PROMPT")
 
 
@@ -31,14 +31,14 @@ C3 = ("DREAM_PROMPT", "HEAT_JUDGE_PROMPT", "VOTE_OPTIONS_PROMPT", "XP_PROMPT",
 def test_every_registered_prompt_has_a_tier():
     reg = set(RP.registry())
     specs = set(PT.SPECS)
-    assert len(reg) == 42, "登记册里应当是 42 个（41 + MEMORY_FILTER）"
+    assert len(reg) == 45, "登记册里应当是 45 个（44 + MEMORY_FILTER）"
     assert reg - specs == set(), "这些 prompt 没有分档：{}".format(sorted(reg - specs))
     assert specs - reg == set(), "这些分档没有对应 prompt：{}".format(sorted(specs - reg))
 
 
 def test_tier_counts_are_pinned():
     """数量钉死：加/减一个 prompt 必须同时改这里（提醒作者想清楚分档）。"""
-    assert PT.tier_counts() == {"C1": 23, "C2": 12, "C3": 7}
+    assert PT.tier_counts() == {"C1": 23, "C2": 12, "C3": 10}
 
 
 def test_c3_are_exactly_the_machine_parsed_ones():

@@ -157,6 +157,12 @@ class Sender:
         self._last_token_value = ""  # 上次记录的 token 值（检测变化触发页面 reload）
         self._last_reload = 0.0      # 上次页面 reload 时间（兜底防会话老化）
 
+    async def send_with_id(self, text: str, cid: str) -> str:
+        """需要绑定确认提示时，使用当前账号连接的成功回执。"""
+        if _LIVE_SIO is None:
+            raise RuntimeError("账号连接不可用")
+        return await _LIVE_SIO.send_text_confirmed(cid, NUO_UID, text)
+
     async def start(self):
         from playwright.async_api import async_playwright
         cookies = token_store.get_cookies_for_playwright()

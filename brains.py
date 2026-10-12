@@ -65,6 +65,9 @@ DEFAULT_KEY = _get_deepseek_key()
 
 CMD_PROMPT = _p("CMD_PROMPT", PD["CMD_PROMPT"])
 DREAM_PROMPT = _p("DREAM_PROMPT", PD["DREAM_PROMPT"])
+PERSONAL_STORY_PROMPT = _p("PERSONAL_STORY_PROMPT", PD["PERSONAL_STORY_PROMPT"])
+PERSONAL_LETTER_PROMPT = _p("PERSONAL_LETTER_PROMPT", PD["PERSONAL_LETTER_PROMPT"])
+PERSONAL_PORTRAIT_PROMPT = _p("PERSONAL_PORTRAIT_PROMPT", PD["PERSONAL_PORTRAIT_PROMPT"])
 
 # P12-AP（2026-09-29）：@ 回复的**收尾块**。
 # 为什么需要结构化的一块，而不是把当前这句混在历史里：屋主现场 ——
@@ -491,6 +494,9 @@ def generate_devil_roast(context_text: str, target_text: str = "", api_key: str 
 # （`extend=True`）。700 的实测后果：认证群有一段正文停在「往裳手心里」。
 # 上限本身可调（tuning `scene.max_tokens`），调用方按群传进来。
 SCENE_MAX_TOKENS = 1800
+# 2026-10-07 屋主：「发骚的过程中，/继续 后输出的字数调整为现在的一半」。
+# 首段（/发骚）保持 1800，**续写单独减半** —— 走 tuning `scene.continue_max_tokens`。
+SCENE_CONTINUE_MAX_TOKENS = 900
 SCENE_TIMEOUT = 90
 
 
@@ -516,7 +522,7 @@ def generate_insult_continue(material_text: str, last_output: str, custom: str =
 
 def generate_scene_continue(combo_text: str, history: list, custom: str = "",
                             api_key: str = DEFAULT_KEY,
-                            max_tokens: int = SCENE_MAX_TOKENS) -> str:
+                            max_tokens: int = SCENE_CONTINUE_MAX_TOKENS) -> str:
     """继续涩涩场景：场景信息 + 最近几段已写内容 + 可选自定义方向."""
     hist_text = "\n\n".join(history[-8:])  # 最近 8 段，长剧情更连贯
     content = "场景信息：\n" + combo_text + "\n\n已写内容（最近几段，接着写）：\n" + hist_text
