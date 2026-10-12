@@ -22,6 +22,16 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# CI/收集期防污染（2026-10-12）：sio_subscribe 在 **import 时**会调
+# set_process_proxy_env()，DZMM_PROXY 未设时按默认把 HTTP(S)_PROXY 写成
+# 127.0.0.1:7890。收集期被污染的环境会被**模块级 opener**（如
+# test_personas_ui._OPENER，build_opener 在收集期快照代理表）固化，
+# 之后 per-test 的清理救不回来 —— CI 上表现为某模块的用例整批拒连
+# （本轮 13 个：test_personas_ui 全军覆没，local 有 Clash 测不出）。
+# 测试进程一律视为直连：DZMM_PROXY 置空串（setdefault，尊重外部显式设置），
+# 这样任何测试模块再 import sio_subscribe 也只会清代理、不会写 7890。
+os.environ.setdefault("DZMM_PROXY", "")
+
 import bot  # noqa: E402
 
 TMP_ROOT = ROOT / "tests" / "_tmp"
