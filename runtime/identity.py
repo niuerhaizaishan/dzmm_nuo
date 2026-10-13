@@ -322,11 +322,14 @@ def self_names_longest_first(cid: str = None) -> list:
     return sorted(self_names_for(cid), key=len, reverse=True)
 
 
-def _load_member_names(cid: str = None):
+def _load_member_names(cid: str = None) -> int:
     """批量加载成员昵称到缓存（一次 API，替代逐个 get_user）.
 
     ⚠️ 这是**阻塞**调用（平台 HTTP），必须在工作线程里跑
     （主循环每 10 分钟 `await asyncio.to_thread(_load_member_names, cid)`）。
+
+    返回本次拉到的成员数（失败 0）—— P12-CC 观测用：
+    `/查` 未命中时日志靠它分辨"成员表没拉全"还是"名字对不上"。
 
     P12-AO（2026-09-28）：平台 `chatroom.getMembers` 默认只回 101 人，所以
     `dzmm.get_members` 现在显式带 `limit`（见 `dzmm.MEMBER_FETCH_LIMIT`）。
@@ -345,10 +348,12 @@ def _load_member_names(cid: str = None):
                 "加载成员昵称截断",
                 RuntimeError("成员表可能被截断：只拿到 {} 人（limit={}）".format(
                     len(members), MEMBER_FETCH_LIMIT)))
+        return len(members)
     except Exception as e:                                     # noqa: BLE001
         # P12-AB：原来是静默 pass —— 后果是"昵称缓存一直补不上"，
         # 之后每次取名字都退化成档案名/uid 前缀，而没人知道是这次拉取失败了。
         _warn_once("加载成员昵称", e)
+        return 0
 
 
 def _on_event_loop() -> bool:

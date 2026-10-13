@@ -46,11 +46,12 @@ from runtime.group_state import (_get_dj_state, _get_fasao_state, _get_last_acti
                                  _get_vote_state, _remember, _set_dj_state,
                                  _set_fasao_state, _set_last_action, _set_perf_state)
 from runtime.heat import _add_heat
-from runtime.identity import get_full_name, get_name, is_self
+from runtime.identity import _load_member_names, get_full_name, get_name, is_self
 from runtime import intro_photo as _intro_photo
 from runtime.members import (_archive_text_from_profile, _find_in_profiles,
-                             _find_user_in_msgs, _gender_of, _get_msgs_by_uid,
-                             _history_lines, _member_profile_text, _random_member_uid)
+                             _find_uid_by_name, _find_user_in_msgs, _gender_of,
+                             _get_msgs_by_uid, _history_lines,
+                             _member_profile_text, _random_member_uid)
 from runtime.memory import (_append_memory_ref, _refresh_profile_latest,
                             is_recall_cmd, is_remember_cmd)
 from runtime.novel import _extract_novel_title, _group_name_cache, _novel_save_path
@@ -65,6 +66,7 @@ from runtime.perf import (OWNER_UID, _get_perf_content, _handle_perf_start,
                           is_perf_end_cmd, is_perf_start_cmd)
 from runtime.poem import is_poem_cmd, poem
 from runtime.recap import is_recap_cmd, recap_absent
+from runtime.absent import absent_reply, is_absent_cmd
 from runtime.story import (_finish_story, _record_story_vote,
                            is_story_end_cmd, is_story_start_cmd, start_story)
 from runtime.text import _is_stop_word, _spice_emoji, _strip_parenthesis
@@ -365,17 +367,36 @@ def _record_insult(uid: str, style: str, text: str) -> None:
 
 
 def archive_query(query: str):
-    """查询某人，返回 (文本, 是否已注册). 已注册读档案（零 API），未注册实时查."""
+    """查询某人，返回 (文本, 是否已注册). 已注册读档案（零 API），未注册实时查.
+
+    P12-CC（2026-10-13）：未注册路径原先**只在最近 200 条消息的发送者里找人**——
+    rose 两个群 295/445 人、消息窗口只够到最近一小撮人（实测 200 条里才 14 个
+    发送者），潜水几天的人必然"查不到这个人"。现在先拉**全群成员表**按名字匹配
+    （`_find_uid_by_name`：精确→简化→前缀→子串，单字不模糊），命中后照样取
+    最近发言拼卡片；消息窗口匹配降级为成员表拉取失败时的兜底。
+    """
     uid, profile = _find_in_profiles(query)
     if uid:
         _refresh_profile_latest(uid, profile)
         return _archive_text_from_profile(profile), True
-    # 未注册：实时查（fallback）
+    # 未注册：先刷本群成员昵称缓存，再按成员表找（覆盖全群，含最近没发言的人）
     msgs = get_messages_all(_active_cid())
-    uid2, full = _find_user_in_msgs(query, msgs)
-    if not uid2:
+    roster_n = _load_member_names(_active_cid())
+    uid2 = _find_uid_by_name(query)
+    if uid2:
+        return _member_profile_text(uid2, get_full_name(uid2), msgs), False
+    # 成员表没找到（API 抖动 / 名字对不上）→ 退回消息窗口匹配
+    uid3, full = _find_user_in_msgs(query, msgs)
+    if not uid3:
+        # P12-CC：miss 要留痕 —— 一次日志分辨全部假设：
+        #   active_cid 错（= bd7fe6a4）/ 消息窗口空（msgs=0）/
+        #   成员表没拉全（roster 很小）/ 名字对不上（roster 正常仍 miss）
+        from runtime.identity import _name_cache as _nc
+        log("🔍 [" + _active_cid()[:8] + "] /查 未命中: " + str(query)[:24]
+            + " | msgs=" + str(len(msgs)) + " roster=" + str(roster_n)
+            + " cache=" + str(len(_nc)))
         return "", False
-    return _member_profile_text(uid2, full, msgs), False
+    return _member_profile_text(uid3, full, msgs), False
 
 
 def _insult_resolve(query: str, sender_uid: str):
@@ -580,7 +601,8 @@ def is_dj_command_cmd(cmd: str) -> str:
             or is_vote_choice_cmd(cmd) is not None
             or is_vote_start_cmd(cmd)
             or is_summary_cmd(cmd) or is_devil_cmd(cmd) is not None
-            or is_remember_cmd(cmd) is not None or is_recall_cmd(cmd)):
+            or is_remember_cmd(cmd) is not None or is_recall_cmd(cmd)
+            or is_absent_cmd(cmd) is not None):
         return None
     return body
 
@@ -833,6 +855,7 @@ _CMD_FEATURE_ORDER = (
     (("trend",), is_trend_board_cmd, None),
     (("rank_heat",), is_rank_cmd, None),
     (("recap",), lambda c: is_recap_cmd(c) is not None, None),
+    (("absent",), lambda c: is_absent_cmd(c) is not None, None),
     (("trend",), lambda c: is_trend_cmd(c) is not None, None),
     (("summary",), is_summary_cmd, None),
     (("fortune",), is_fortune_cmd, None),
@@ -1188,6 +1211,10 @@ async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
             (_cmd_msg or {}).get("message_id"))
         if not reply:
             reply = p("unknown_cmd", cid)  # 非认证群：当成"不认识这个指令"
+    elif (absent_q := is_absent_cmd(cmd)) is not None and _feat_on(cid, "absent"):
+        # P12-CB：缺席名册（裸=列表零 API；带昵称=单人卡+一次 LLM 小传）。
+        # 数据全走认证群归档只读 SQL；成员表一次调用判退群/潜水。见 runtime/absent.py
+        reply = await asyncio.to_thread(absent_reply, cid, absent_q)
     elif (tr_days := is_trend_cmd(cmd)) is not None and _feat_on(cid, "trend"):
         # 过去 N 天运势趋势（必须排在 is_fortune_cmd 之前，否则 /运势趋势 会被 /运势 吃掉）
         reply = await week_trend(cid, cmd_sender, tr_days)

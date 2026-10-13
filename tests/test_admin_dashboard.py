@@ -630,13 +630,14 @@ def test_prompts_section_reports_real_counts_not_zeros():
     生产镜像预检时才发现。字段存在 ≠ 数值有意义。
 
     P12-G：第 40 个（`MEMORY_FILTER`，在 `runtime/memory.py`）外置之后是 **40 个**；
-    P12-AP 又加了 `AT_FRAME_PROMPT`（@ 回复的收尾块）→ **41 个**。
+    P12-AP 又加了 `AT_FRAME_PROMPT`（@ 回复的收尾块）→ **41 个**；
+    P12-CB 又加了 `ABSENT_MEMOIR_PROMPT`（缺席名册 /寻人 的小传）→ **46 个**。
     `section_prompts()` 会主动 import 所有持有常量的模块，所以后台进程也数得对。
     """
     d = dash.section_prompts()
-    assert d["total"] == 45, d
-    assert d["from_file"] == 45, d
-    assert d["files_on_disk"] == 45, d
+    assert d["total"] == 46, d
+    assert d["from_file"] == 46, d
+    assert d["files_on_disk"] == 46, d
     assert "warning" not in d, d
 
 

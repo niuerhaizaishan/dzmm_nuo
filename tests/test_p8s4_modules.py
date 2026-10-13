@@ -20,6 +20,53 @@ import runtime.members as members  # noqa: E402
 import runtime.text as textmod  # noqa: E402
 
 
+# ---------------------------------------------------------------- /查 实时路径（P12-CC）
+
+def test_archive_query_member_roster_covers_quiet_members(monkeypatch):
+    """`/查` 未注册者要先按**全群成员表**找人，不能只看最近 200 条消息窗口。
+
+    rose 两个群 295/445 人，消息窗口只够到最近一小撮发送者（实测 200 条里才
+    14 个）—— 旧路径对潜水几天的人一律"查不到这个人"。成员表命中后必须
+    用 get_full_name 的全名拼卡片，并复用同一次拉的消息（不多拉一次）。
+    """
+    from runtime import dispatch
+    calls = []
+
+    monkeypatch.setattr(dispatch, "_find_in_profiles", lambda q: (None, None))
+    monkeypatch.setattr(dispatch, "get_messages_all",
+                        lambda cid: calls.append("msgs") or [{"sent_by": "u-x"}])
+    monkeypatch.setattr(dispatch, "_load_member_names",
+                        lambda cid: calls.append(("names", cid)))
+    monkeypatch.setattr(dispatch, "_find_uid_by_name", lambda q: "u-diver")
+    monkeypatch.setattr(dispatch, "get_full_name", lambda uid: "潜水者")
+    monkeypatch.setattr(dispatch, "_member_profile_text",
+                        lambda uid, full, msgs=None: "CARD:" + uid)
+
+    text, registered = dispatch.archive_query("潜水者")
+    assert (text, registered) == ("CARD:u-diver", False)
+    assert ("names", dispatch._active_cid()) in calls, "必须按当前群刷成员昵称缓存"
+    assert calls.count("msgs") == 1, "消息只许拉一次，成员表命中后不许再拉"
+
+
+def test_archive_query_message_window_is_the_fallback(monkeypatch):
+    """成员表没找到（API 抖动/名字对不上）才退回消息窗口匹配；两边都空 = 查无此人。"""
+    from runtime import dispatch
+
+    monkeypatch.setattr(dispatch, "_find_in_profiles", lambda q: (None, None))
+    monkeypatch.setattr(dispatch, "get_messages_all", lambda cid: [])
+    monkeypatch.setattr(dispatch, "_load_member_names", lambda cid: None)
+    monkeypatch.setattr(dispatch, "_find_uid_by_name", lambda q: "")
+    monkeypatch.setattr(dispatch, "_find_user_in_msgs",
+                        lambda q, msgs: ("u-win", "窗口哥"))
+    monkeypatch.setattr(dispatch, "_member_profile_text",
+                        lambda uid, full, msgs=None: "CARD:" + uid)
+    text, registered = dispatch.archive_query("窗口哥")
+    assert (text, registered) == ("CARD:u-win", False)
+
+    monkeypatch.setattr(dispatch, "_find_user_in_msgs", lambda q, msgs: (None, None))
+    assert dispatch.archive_query("查无此人") == ("", False)
+
+
 # ---------------------------------------------------------------- 昵称归一化
 
 def test_normalize_cn_folds_width_space_and_case():

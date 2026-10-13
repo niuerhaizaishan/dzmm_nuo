@@ -213,7 +213,9 @@ _SPECS = [
         must_keep=("宁长勿缺",),
         max_newlines=None, max_chars=None),
 
-    # ============ C1 · 自由文案（23 个） ============
+    # ============ C1 · 自由文案（24 个） ============
+    _c1("ABSENT_MEMOIR_PROMPT", "缺席名册小传（/寻人 单人卡）",
+        "第三人称一段话小传；只用归档发言当证据，失败不拦卡片（P12-CB）"),
     _c1("GREETING_PROMPT", "新人进群问候"),
     _c1("CUTE_ROAST_PROMPT", "可爱吐槽（主动冒泡）"),
     _c1("DEVIL_ROAST_PROMPT", "恶魔吐槽（主动冒泡）"),

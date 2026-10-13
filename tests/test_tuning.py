@@ -155,6 +155,11 @@ def test_defaults_match_the_code_constants():
         # P12-AK：默认回退窗口（原来在 recap.py 里写死 6 小时）+ 要忽略的内容关键词
         ("recap.default_hours", 6),
         ("recap.ignore_kw", ""),
+        # P12-CB：缺席名册 /寻人（判定口径与刷屏保护，2026-10-13 屋主定档）
+        ("absent.days", 15),
+        ("absent.min_msgs", 5),
+        ("absent.max_show", 8),
+        ("absent.max_tokens", 500),
     ]
     wrong = [(k, T.get(k), ref) for k, ref in pairs if T.get(k) != ref]
     assert not wrong, "参数默认值与原常量不一致：{}".format(wrong)

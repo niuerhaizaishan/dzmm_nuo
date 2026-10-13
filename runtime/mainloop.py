@@ -556,7 +556,15 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                             # P12-BM B：at_only 群里"引用她"**天然算触发**（见 `_quote_reply_on`）
                             _by_quote = (not _by_at) and B._quote_reply_on(cid) \
                                 and B._quotes_self(m)
-                            if not (_by_at or _by_quote):
+                            # P12-CA（2026-10-13）：at_only 群开了查档/注册时，裸 `/查`
+                            # `/注册`（不带 @）也要放行到下方斜杠识别 —— 否则指令在进
+                            # dispatch 前就被本闸门静默吞掉（Mr.橘/瑞雯两群实测"/查没反应"）。
+                            # 只白名单这两族：其他 /xxx（别家 bot 的游戏语法）照旧吞，
+                            # 避免落到 dispatch 兜底的 AI 接话在群里刷屏。
+                            # 前缀必须与 dispatch.is_profile_cmd/is_register_cmd 保持同步。
+                            _by_roster_cmd = t.startswith(
+                                ("/查", "/whois", "/资料", "/注册", "/register"))
+                            if not (_by_at or _by_quote or _by_roster_cmd):
                                 continue
                         if t.startswith("/"):
                             # P12-AK：这个群不接 `/` 指令（顶层茶水间那种群里跑着别家 bot 的
