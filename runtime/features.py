@@ -294,7 +294,13 @@ _FEATURES_RAW = (
         Param("dream.input_limit", "梦境输入上限", 2000, "字", 100, 2000),
         Param("dream.timeout", "模型等待上限", 20, "秒", 1, 45),
     )),
-    Feature("poem", "写诗", "content"),
+    # P12-CF（2026-10-15 屋主）：茶水间开写诗，命令用 `#` 不用 `/` ——
+    # 那边 `slash_cmds=off`（别家 bot 的游戏语法多）、`at_only=on`，`/` 路不通；
+    # 跟 `fortune.hash_cmd` 同一个模式：按群开关的 `#` 裸指令入口。
+    Feature("poem", "写诗", "content", params=(
+        Param("poem.hash_cmd", "允许 #写诗", 0, "", 0, 1,
+              note="1=本群接受裸 `#写诗/#作诗/#赋诗`（不用 @）；其他 #xxx 不理会"),
+    )),
     Feature("fortune", "算命/今日运势", "content", params=(
         # P12-AW：`#` 指令入口（默认 **0=关** ⇒ 其他群零变化）。顶层茶水间没有 Bot、
         # 又只接 @（`at_only`），`/` 那条路被 `slash_cmds=off` 关着（防别家 bot 的游戏

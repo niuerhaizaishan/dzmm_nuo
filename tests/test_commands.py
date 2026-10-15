@@ -102,6 +102,17 @@ def test_profile_payload():
     assert bot.is_profile_cmd("/whois 清歌") == "清歌"
 
 
+def test_poem_hash_prefix_payload():
+    """P12-CF（茶水间 `#` 入口）：写诗族认 `#` 前缀，载荷剥前缀。
+    `#写诗游戏` 命中且按主题"游戏"写 —— 与 `/写诗游戏` 的既有前缀语义一致。"""
+    assert bot.is_poem_cmd("#写诗") == ""
+    assert bot.is_poem_cmd("#写诗 宋词 清歌") == "宋词 清歌"
+    assert bot.is_poem_cmd("#作诗 林九鹓") == "林九鹓"
+    assert bot.is_poem_cmd("#赋诗") == ""
+    assert bot.is_poem_cmd("#写诗游戏") == "游戏", "前缀语义与 / 写诗一致"
+    assert bot.is_poem_cmd("/写诗 清歌") == "清歌", "/ 老入口保持不变"
+
+
 def test_devil_on_off_payload():
     assert bot.is_devil_cmd("/吐槽开") == "on"
     assert bot.is_devil_cmd("/吐槽关") == "off"

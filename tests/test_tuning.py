@@ -160,6 +160,8 @@ def test_defaults_match_the_code_constants():
         ("absent.min_msgs", 5),
         ("absent.max_show", 8),
         ("absent.max_tokens", 500),
+        # P12-CF：茶水间写诗的 `#` 裸指令入口（默认关=零回归）
+        ("poem.hash_cmd", 0),
     ]
     wrong = [(k, T.get(k), ref) for k, ref in pairs if T.get(k) != ref]
     assert not wrong, "参数默认值与原常量不一致：{}".format(wrong)

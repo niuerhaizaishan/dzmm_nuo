@@ -36,8 +36,9 @@ POEM_STYLE_KEYWORDS = {
 
 
 def is_poem_cmd(cmd: str) -> str:
-    """识别写诗指令，返回目标（空串=给自己），None=不是写诗。"""
-    for prefix in ["/写诗", "/作诗", "/赋诗"]:
+    """识别写诗指令，返回目标（空串=给自己），None=不是写诗。
+    P12-CF：茶水间的 `#` 入口（`#写诗/#作诗/#赋诗`）也认。"""
+    for prefix in ["/写诗", "/作诗", "/赋诗", "#写诗", "#作诗", "#赋诗"]:
         if cmd.startswith(prefix):
             return cmd[len(prefix):].strip()
     return None

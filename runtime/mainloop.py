@@ -548,6 +548,19 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                             else:
                                 _leftover.append(m)
                             continue
+                        # P12-CF：`#写诗` 入口（茶水间，poem.hash_cmd 按群开）。
+                        # 与 fortune 的 `#` 入口同款：放在 at_only 闸门**之前**放行，
+                        # 只认诗族前缀，其他 `#xxx` 原样走原逻辑（别吞别家 bot 的语法）。
+                        if t.startswith("#") and B._feat_on(cid, "poem") \
+                                and B._tune("poem.hash_cmd", cid) \
+                                and B.is_poem_cmd(t):
+                            if not cmd:
+                                cmd = t
+                                cmd_sender = m.get("sent_by", "")
+                                _cmd_msg = m
+                            else:
+                                _leftover.append(m)
+                            continue
                         # P12-AL：`at_only` 的群里，**只有 @ 到她的消息**才继续往下走
                         # （指令、房间触发、定时播报一并免掉）。顶层茶水间（779 人、
                         # 里面有别家 bot 的游戏）要的就是这个保证。
