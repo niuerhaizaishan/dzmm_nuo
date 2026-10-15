@@ -27,7 +27,10 @@ from profiles import get_profile
 from runtime import ctx
 
 # ---------------------------------------------------------------- 身份
-NUO_UID = "503e3cb9-ee6f-4e17-be51-e4ca399b4515"  # 侧车账号（登录态持有者）
+# NUO_UID（侧车账号=登录态持有者）：默认值是 A 实例（小小糯本体）的 uid；
+# 账号分群方案（2026-10-14）起，B/C 实例用 `DZMM_NUO_UID` 指到各自的账号 uid。
+NUO_UID = (os.environ.get("DZMM_NUO_UID") or "").strip() \
+    or "503e3cb9-ee6f-4e17-be51-e4ca399b4515"
 BOT_UID = (os.environ.get("DZMM_BOT_ID") or "").strip()
 BOT_NAME = (os.environ.get("DZMM_BOT_NAME") or "小小糯").strip()
 BOT_NAME_SHORT = (os.environ.get("DZMM_BOT_SHORT") or "小小糯").strip()

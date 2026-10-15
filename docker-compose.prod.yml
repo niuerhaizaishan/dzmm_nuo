@@ -172,3 +172,84 @@ services:
       - ./.dzmm_login.json:/app/.dzmm_login.json
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # ---- 小小糯账号分群（2026-10-14 方案 A）：B 实例 = 账号② ----
+  # 管 rose（4a56be71）+ mr.橘/瑞雯（13a7287a / ade37d32），薇丝-bot 跟着这实例。
+  # 凭据/状态/浏览器 profile 全部走 /opt/dzmm/b/ 下的独立挂载（env 隔离，零核心代码改动）。
+  # ⚠️ 首次启动前：宿主机 ./b/ 下必须已放好 state.json / profiles.json（从 A 拷贝），
+  #    否则 Docker 会把不存在的单文件挂载源建**目录**顶在文件路径上（见 A 的注释）。
+  # 启动：docker compose up -d dzmm-bot-b（手动控制，切换窗口时才起）
+  dzmm-bot-b:
+    build: .
+    image: dzmm-bot:latest
+    container_name: dzmm-bot-b
+    restart: unless-stopped
+    mem_limit: 900m
+    shm_size: 384m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      DZMM_INSTANCE: "b"
+      # B 实例的侧车账号 = 账号②（Λʌ）；identity.NUO_UID 由它覆盖
+      DZMM_NUO_UID: "e43e941b-cc75-4611-8972-880a1de1facb"
+      DZMM_SESSION_OBS: "on"
+      DZMM_CHAT_ARCHIVE: "${DZMM_CHAT_ARCHIVE:-off}"
+      CONTAINER_MODE: "1"
+      DZMM_PROXY: "${DZMM_PROXY:-}"
+      PLAYWRIGHT_CHANNEL: ""
+      TZ: "Asia/Shanghai"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      DZMM_TOKEN_FILE: "/app/secrets/token.json"
+      DZMM_LOGIN_FILE: "/app/secrets/login.json"
+      DZMM_CONFIG: "/app/config/config.json"
+      FEISHU_WEBHOOK: "${FEISHU_WEBHOOK:-}"
+      FEISHU_SECRET: "${FEISHU_SECRET:-}"
+      DZMM_HOST: "${DZMM_HOST:-www.dzmm.ai}"
+      DISPLAY: ":99"
+      VNC_URL: "${VNC_URL:-http://47.237.152.187:6080/vnc.html}"
+      VNC_PASS: "${VNC_PASS:-dzmm2026}"
+      CAPTCHA_WAIT_MIN: "${CAPTCHA_WAIT_MIN:-30}"
+      DZMM_OUTBOX: "${DZMM_OUTBOX:-on}"
+      DZMM_PARALLEL_GROUPS: "${DZMM_PARALLEL_GROUPS:-off}"
+      DZMM_BOT_ROUTING: "${DZMM_BOT_ROUTING:-off}"
+      # 薇丝-bot（rose 群官方 Bot）—— token 与 A 共用 .env 里的同一份值
+      DZMM_BOT_TOKEN_ROSE: "${DZMM_BOT_TOKEN_ROSE:-}"
+      DZMM_BOT_SECRET_ROSE: "${DZMM_BOT_SECRET_ROSE:-}"
+      DZMM_WEBHOOK_PORT: "8094"
+      DZMM_SESSION_LOCK: "${DZMM_SESSION_LOCK:-on}"
+      DZMM_THROTTLE: "${DZMM_THROTTLE:-on}"
+      DZMM_RATE_PER_MIN: "${DZMM_RATE_PER_MIN:-90}"
+      DZMM_ADMIN: "${DZMM_ADMIN:-on}"
+      DZMM_ADMIN_PORT: "8090"
+      DZMM_ADMIN_HOST: "0.0.0.0"
+      DZMM_ADMIN_PUBLIC: "${DZMM_ADMIN_PUBLIC:-on}"
+      DZMM_ADMIN_USER: "${DZMM_ADMIN_USER_B:-${DZMM_ADMIN_USER:-admin}}"
+      DZMM_ADMIN_PASSWORD: "${DZMM_ADMIN_PASSWORD_B:-${DZMM_ADMIN_PASSWORD:-}}"
+    ports:
+      - "${DZMM_ADMIN_BIND_B:-0.0.0.0}:8092:8090"
+      - "127.0.0.1:8094:8094"
+    volumes:
+      - ./b/state.json:/app/state.json
+      - ./b/profiles.json:/app/profiles.json
+      - ./b/profile_scan.json:/app/profile_scan.json
+      - ./b/novels:/app/novels
+      - ./b/prompts:/app/prompts
+      - ./b/config:/app/config
+      - ./b/data:/app/data
+      - ./b/bot.log:/app/bot.log
+      - ./b/check_health.log:/app/check_health.log
+      - ./b/renew_token.log:/app/renew_token.log
+      - ./b/check_health_state.json:/app/check_health_state.json
+      - ./b/renew_fail_state.json:/app/renew_fail_state.json
+      - ./b/renew_emergency_state.json:/app/renew_emergency_state.json
+      - ./b/pw_profile:/app/pw_profile
+      - ./b/pw_profile_greet:/app/pw_profile_greet
+      - ./b/pw_login:/app/pw_login
+      - ./b/pw_captcha:/app/pw_captcha
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ./b/secrets:/app/secrets
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
