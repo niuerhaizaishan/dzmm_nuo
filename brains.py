@@ -1,5 +1,6 @@
 """AI reply generation via DeepSeek API."""
 import json, os, random, requests
+import urllib.request, urllib.error
 from runtime.tuning import get as _tune          # P12-B：可调参数（唯一读口）
 from prompt_defaults import PD               # P3-5：提示词默认值住 prompt_defaults.py（覆盖安全网语义不变）
 
@@ -231,22 +232,38 @@ def _call_llm_raw(system_prompt: str, user_content: str,
     2026-09-27 实测（屋主："妹子群发骚有截断"）：认证群一段发骚正文停在
     「屁股却不受控制地往裳手心里」—— 700 token 的额度用完了，
     而模型本来还要往下写。`_call_llm(extend=True)` 会据此自动续写。
+
+    2026-10-15：HTTP 客户端从 requests 换成 **stdlib urllib** ——
+    服务器上 requests/urllib3 2.8 打到 api.deepseek.com（CloudFront+governor 边缘）
+    稳定 Read timeout（裸 urllib 同 URL 同 key 0.2s 返回 200，双实例同时中招）。
+    urllib 是已验证可用的路径；错误响应也按 JSON 解析成空 reply（与旧语义一致）。
     """
     payload = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
-    resp = requests.post(DEEPSEEK_URL, json={
+    body = json.dumps({
         "model": model or DEEPSEEK_MODEL,
         "messages": payload,
         "max_tokens": max_tokens,
         "temperature": 0.7,
         "thinking": {"type": "disabled"},
-    }, headers={
-        "Authorization": "Bearer " + api_key,
-        "Content-Type": "application/json",
-    }, timeout=timeout)
-    data = resp.json()
+    }, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        DEEPSEEK_URL, data=body, method="POST",
+        headers={
+            "Authorization": "Bearer " + api_key,
+            "Content-Type": "application/json",
+        })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # 非 200（401/429/5xx）：响应体仍是 JSON —— 解析成空 reply，语义与旧版一致
+        try:
+            data = json.loads(e.read().decode("utf-8"))
+        except Exception:
+            raise
     try:
         reply = data["choices"][0]["message"]["content"]
         finish = str(data["choices"][0].get("finish_reason") or "")
