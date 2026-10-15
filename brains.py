@@ -41,7 +41,9 @@ except Exception:                                          # noqa: BLE001
         return default
 
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-DEEPSEEK_MODEL = "deepseek-v4-flash"
+# 2026-10-15：平台模型列表换血（/models 只认 deepseek-flash / deepseek-v4-pro），
+# 旧名 deepseek-v4-flash 的请求会被网关挂起到超时——这就是当天双实例 LLM 全挂的根因。
+DEEPSEEK_MODEL = "deepseek-flash"
 PERF_NOVEL_MODEL = "deepseek-v4-pro"  # 公演小说用更强模型保证忠实度/一致性
 
 
