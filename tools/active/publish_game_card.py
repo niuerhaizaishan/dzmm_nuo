@@ -1,4 +1,4 @@
-"""把构建好的游戏单文件发布到 Gamefy 工坊（登录 → 上传 zip → 核验 → 发布）。
+﻿"""把构建好的游戏单文件发布到 Gamefy 工坊（登录 → 上传 zip → 核验 → 发布）。
 
 为什么需要它：图集这类游戏的前端是平台侧托管的单文件，机器人部署和服务器重启都不会
 更新它；只有「工坊发布」才会换掉线上版本。手工点的工作坊每次都要重复同一串动作，
@@ -32,6 +32,8 @@
   * 上传对话框要等出现「拖入 .zip 文件」再投递文件；点「发布」后的确认框出现得比刷新慢，
     必须先等「确认发布」再点。
   * 预览是从「已保存的 Git 版本」加载的，所以核验要在导入完成后刷新预览再读文本。
+  * 竖屏预览里分区标签显示短名（私密），宽屏才是私密相册；--expect 用 | 分隔多个候选。
+  * 光看文本标记不够：私密图漏传身份头时列表照样正常、图片全 401，要用 --preview-private。
 """
 import argparse
 import http.cookiejar
@@ -116,6 +118,47 @@ def open_workbench(browser, args):
     return ctx, page
 
 
+def check_preview_private(page, wait_ms=9000):
+    """在工坊预览里切到私密相册，确认缩略图真的请求回来了（成员视角）。
+
+    只核验文本标记不够：私密图走成员鉴权路由，前端漏传身份头时列表照样能出来、
+    图片却 401，所以这里直接数 naturalWidth 大于 0 的图。
+    """
+    frame = None
+    for item in page.frames:
+        try:
+            if item.evaluate("() => !!document.querySelector('.category[data-category]')"):
+                frame = item
+                break
+        except Exception:
+            continue
+    if frame is None:
+        return {"ok": False, "why": "找不到预览帧"}
+    if not frame.evaluate("""() => {
+        const tab = [...document.querySelectorAll('.category')].find(n => n.dataset.category === '私密相册');
+        if (!tab) return false;
+        tab.click();
+        return true;
+    }"""):
+        return {"ok": False, "why": "预览里没有私密相册标签（不是成员视角？）"}
+    page.wait_for_timeout(4000)
+    # 列表是懒加载的，先滚到底把可见区以外的图也触发一下，再判定。
+    frame.evaluate("() => { const s = document.querySelector('#app-shell'); if (s) s.scrollTop = s.scrollHeight; }")
+    page.wait_for_timeout(wait_ms // 2)
+    result = frame.evaluate("""() => {
+        const images = [...document.querySelectorAll('#gallery img')];
+        const loaded = images.filter(i => i.complete && i.naturalWidth > 0);
+        const errors = [...document.querySelectorAll('.card-image-button')]
+            .filter(b => b.dataset.loadState === 'error').length;
+        return {total: images.length, loaded: loaded.length, errors,
+                first: loaded.length ? [loaded[0].naturalWidth, loaded[0].naturalHeight] : null,
+                statuses: [...document.querySelectorAll('.image-status')].slice(0, 3).map(s => s.textContent)};
+    }""")
+    # 懒加载下「全部加载完」不现实：只要有一张拿到字节、且没有失败态就算通过。
+    result["ok"] = result["loaded"] > 0 and result["errors"] == 0
+    return result
+
+
 def cmd_upload(args):
     payload = make_zip(args.html)
     Path("/tmp/upload.zip").write_bytes(payload)
@@ -144,19 +187,26 @@ def cmd_upload(args):
 
             page.get_by_role("button", name="刷新").first.click()
             page.wait_for_timeout(12000)
+            # 竖屏预览里分区标签显示短名（私密），宽屏才是私密相册；用 | 分隔给多个候选。
+            markers = [m for m in (args.expect or "").split("|") if m]
             texts = []
             for frame in page.frames:
                 try:
                     text = frame.evaluate("() => document.body ? document.body.innerText : ''")
                 except Exception:
                     continue
-                if text and ("图集" in text or args.expect in text):
+                if text and ("图集" in text or any(m in text for m in markers)):
                     texts.append(text)
             merged = max(texts, key=len) if texts else ""
-            if args.expect and args.expect not in merged:
-                die(f"预览里没找到「{args.expect}」，未发布：" + merged[:200].replace("\n", " "))
-            print("预览核验通过，含标记:", args.expect)
+            if markers and not any(m in merged for m in markers):
+                die(f"预览里没找到「{' 或 '.join(markers)}」，未发布：" + merged[:200].replace("\n", " "))
+            print("预览核验通过，命中标记之一:", args.expect)
             print("预览片段:", merged.replace("\n", " ")[:220])
+            if args.preview_private:
+                result = check_preview_private(page)
+                print("私密相册预览核验:", json.dumps(result, ensure_ascii=False))
+                if not result.get("ok"):
+                    die("私密相册图片在预览里没加载出来，未发布")
             ctx.storage_state(path=args.state)
         finally:
             ctx.close()
@@ -214,10 +264,11 @@ def main():
         if name != "login":
             node.add_argument("--game-id", required=True)
         if name in ("upload", "verify"):
-            node.add_argument("--html")
+            node.add_argument("--html", required=(name == "upload"))
             node.add_argument("--expect", default="")
         if name == "upload":
-            node.add_argument("--html", required=True)
+            node.add_argument("--preview-private", action="store_true",
+                              help="发布前在工坊预览里核验私密相册的缩略图真的加载出来")
         if name == "publish":
             node.add_argument("--confirm", action="store_true")
     args = parser.parse_args()

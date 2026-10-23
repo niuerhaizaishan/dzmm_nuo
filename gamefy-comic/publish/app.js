@@ -118,7 +118,7 @@ async function sourceURL(source,thumbnail=false){
   const key=`${source}:${thumbnail?"thumb":"original"}`;
   if(!sourceCache.has(key))sourceCache.set(key,(async()=>{
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),25000);
-    try{const prefix=privateIds.has(source)?"/private-images/":"/images/";const response=await api(`${prefix}${source}${thumbnail?"?size=thumb":""}`,{signal:controller.signal});const url=URL.createObjectURL(await response.blob());objectURLs.add(url);return url;}
+    try{const secret=privateIds.has(source);const response=await api(`${secret?"/private-images/":"/images/"}${source}${thumbnail?"?size=thumb":""}`,{signal:controller.signal},secret);const url=URL.createObjectURL(await response.blob());objectURLs.add(url);return url;}
     finally{clearTimeout(timer);}
   })().catch(error=>{sourceCache.delete(key);throw error;}));
   return sourceCache.get(key);
