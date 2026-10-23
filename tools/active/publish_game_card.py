@@ -1,4 +1,4 @@
-﻿"""把构建好的游戏单文件发布到 Gamefy 工坊（登录 → 上传 zip → 核验 → 发布）。
+"""把构建好的游戏单文件发布到 Gamefy 工坊（登录 → 上传 zip → 核验 → 发布）。
 
 为什么需要它：图集这类游戏的前端是平台侧托管的单文件，机器人部署和服务器重启都不会
 更新它；只有「工坊发布」才会换掉线上版本。手工点的工作坊每次都要重复同一串动作，
@@ -118,6 +118,21 @@ def open_workbench(browser, args):
     return ctx, page
 
 
+def preview_state(page):
+    """读工坊预览帧里的分区标签与正文。"""
+    for item in page.frames:
+        try:
+            if not item.evaluate("() => !!document.querySelector('.category[data-category]')"):
+                continue
+            labels = item.evaluate(
+                "() => [...document.querySelectorAll('.category')].map(n => n.innerText.trim())")
+            text = item.evaluate("() => document.body ? document.body.innerText : ''")
+            return [x for x in labels if x], text
+        except Exception:
+            continue
+    return [], ""
+
+
 def check_preview_private(page, wait_ms=9000):
     """在工坊预览里切到私密相册，确认缩略图真的请求回来了（成员视角）。
 
@@ -186,21 +201,32 @@ def cmd_upload(args):
                 print("未捕获导入成功提示，继续刷新预览核验")
 
             page.get_by_role("button", name="刷新").first.click()
-            page.wait_for_timeout(12000)
-            # 竖屏预览里分区标签显示短名（私密），宽屏才是私密相册；用 | 分隔给多个候选。
+            page.wait_for_timeout(4000)
+            # 导入是否落库，唯一可靠的判据是「刷新预览后内容变了」：平台的成功提示会一闪而过，
+            # 而旧版本同样有私密分区，所以必须核验具体标签文字，不能只找关键词。
+            expected = [m for m in (args.expect_tabs or "").split(",") if m]
             markers = [m for m in (args.expect or "").split("|") if m]
-            texts = []
-            for frame in page.frames:
-                try:
-                    text = frame.evaluate("() => document.body ? document.body.innerText : ''")
-                except Exception:
-                    continue
-                if text and ("图集" in text or any(m in text for m in markers)):
-                    texts.append(text)
-            merged = max(texts, key=len) if texts else ""
+            matched, merged = False, ""
+            for attempt in range(12):
+                if page.locator("[role=dialog]").count():
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(500)
+                page.get_by_role("button", name="刷新").first.click()
+                page.wait_for_timeout(4000)
+                labels, merged = preview_state(page)
+                if expected and labels == expected:
+                    matched = True
+                    print(f"[{attempt}] 预览标签已更新: {labels}")
+                    break
+                if not expected and markers and any(m in merged for m in markers):
+                    matched = True
+                    break
+                print(f"[{attempt}] 预览还是旧内容，标签={labels}")
+            if not matched:
+                die("刷新 12 次后预览仍未变成新内容（导入可能没落库），未发布：" + str(labels))
             if markers and not any(m in merged for m in markers):
                 die(f"预览里没找到「{' 或 '.join(markers)}」，未发布：" + merged[:200].replace("\n", " "))
-            print("预览核验通过，命中标记之一:", args.expect)
+            print("预览核验通过:", expected or args.expect)
             print("预览片段:", merged.replace("\n", " ")[:220])
             if args.preview_private:
                 result = check_preview_private(page)
@@ -267,6 +293,8 @@ def main():
             node.add_argument("--html", required=(name == "upload"))
             node.add_argument("--expect", default="")
         if name == "upload":
+            node.add_argument("--expect-tabs", default="",
+                              help="预览里分区标签的精确序列，逗号分隔，例如 立绘,日常,美图,脑洞,私密")
             node.add_argument("--preview-private", action="store_true",
                               help="发布前在工坊预览里核验私密相册的缩略图真的加载出来")
         if name == "publish":

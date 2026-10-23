@@ -110,7 +110,6 @@ body{background:#eeeee8}
 .viewer-actions{flex-wrap:wrap}.delete-dialog{width:min(420px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;border:1px solid var(--line);border-radius:14px;padding:25px;background:var(--bg);color:var(--ink)}
 .delete-dialog::backdrop{background:#2228}.delete-dialog h2{font-size:21px}.delete-dialog p{font-size:13px;line-height:1.8;margin-top:14px;overflow-wrap:anywhere}.delete-dialog-actions{display:flex;justify-content:flex-end;gap:12px;margin-top:22px}
 
-/* 私密相册：手机上只显示「私密」，第五个分区才不会挤行。 */
-.category .label-short{display:none}
-@container gallery (max-width:600px){.category .label-full{display:none}.category .label-short{display:inline}}
+/* 分区标签统一用短名（立绘/日常/美图/脑洞/私密），五个并排也不挤；完整分区名放在 aria-label 与 title 里。 */
+.category{letter-spacing:0}
 .move-editor{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}.move-editor label{font-size:12px;color:#71766d;flex-basis:100%}.move-editor select{min-width:0;flex:1 1 130px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);padding:10px;font:inherit;font-size:13px;min-height:42px}.move-editor .upload-button{flex:0 0 auto;min-height:42px}.move-editor p{flex-basis:100%;margin:0;font-size:12px;overflow-wrap:anywhere}.move-editor [role=status]{color:#527247}button:disabled{opacity:.55;cursor:default}
