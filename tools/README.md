@@ -25,6 +25,7 @@ tools/
 | `cfg_bots.py` / `cfg_scope.py` | Bot 注册表、按群集合 |
 | `config_gen.py` | 由代码生成首份 config.json |
 | `merge_json_into_store.py` | JSON 兜底文件对账回 SQLite |
+| `publish_game_card.py` | 图集前端发布到 Gamefy 工坊（登录 → 上传 zip → 核验 → 发布 → 线上核对） |
 
 ## probes/ —— 取证用
 
