@@ -135,7 +135,7 @@ def test_public_reads_and_member_only_upload_rename(dbdir):
                 response = await client.put(server.make_url(f"/api/gallery/images/{image_id}/favorite"),json={"saved":True},headers=headers)
                 assert response.status == 200
                 response = await client.get(server.make_url("/api/gallery/me"),headers=headers)
-                assert (await response.json()) == {"can_edit":True,"mine":[image_id],"saved":[image_id]}
+                assert (await response.json()) == {"can_edit":True,"can_view_private":True,"mine":[image_id],"saved":[image_id]}
                 platform.allowed = False
                 response = await client.get(server.make_url("/api/gallery/me"),headers=headers)
                 assert (await response.json())["can_edit"] is False
@@ -255,10 +255,12 @@ def test_delete_permissions_public_reads_cache_and_group_restore(dbdir):
                 response = await client.get(server.make_url("/api/gallery/items"))
                 assert (await response.json())["items"] == []
                 response = await client.get(server.make_url("/api/gallery/me"), headers=headers)
-                assert (await response.json()) == {"can_edit":True,"mine":[],"saved":[]}
-                for suffix in ("/title", "/favorite"):
-                    response = await client.put(str(path)+suffix, headers=headers, json={"title":"不可改","saved":True})
-                    assert response.status == 403
+                assert (await response.json()) == {"can_edit":True,"can_view_private":True,"mine":[],"saved":[]}
+                response = await client.put(str(path)+"/title", headers=headers, json={"title":"不可改"})
+                assert response.status == 403
+                # 收藏接口对已删除／不存在／私密一律 404，不能靠状态码判断编号是否存在。
+                response = await client.put(str(path)+"/favorite", headers=headers, json={"saved":True})
+                assert response.status == 404
                 service = G.Service(Store(store.path), GroupPlatform())
                 assert "已恢复" in await service.reply(G.PRIMARY_CID,"member",f"/恢复图片 {image_id}",{})
                 assert (await client.get(path)).status == 200
@@ -288,3 +290,61 @@ def test_jwt_requires_our_game_signature_issuer_expiry_and_member_id(game_id):
     for invalid in ("", "0", "any-game", "*"):
         with pytest.raises(ValueError):
             PlayerAuth(invalid)
+
+
+def test_private_album_endpoints_gate_on_current_membership(dbdir):
+    """私密相册：未登录 401、非成员 403；公开路由对私密图片 404，不泄露编号是否存在。"""
+    async def scenario():
+        store, platform = Store(dbdir / "gallery.db"), Platform()
+        private_id, _ = store.save("私密相册", png(), uploader=UID, name="群友", title="只给姐妹")
+        public_id, _ = store.save("姐妹日常", png(), uploader=UID, name="群友", title="公开的")
+        server = TestServer(create_app(store=store, platform=platform, auth=Auth(), origins=("null",)))
+        await server.start_server()
+        headers = {"Authorization":"Bearer member-token","Origin":"null"}
+        base = lambda path: server.make_url("/api/gallery/" + path)
+        try:
+            async with ClientSession() as client:
+                public = (await (await client.get(base("items"))).json())["items"]
+                assert [row["title"] for row in public] == ["公开的"]
+                assert (await client.get(base(f"images/{private_id}"))).status == 404
+                assert (await client.get(base(f"images/{private_id}?size=thumb"))).status == 404
+                assert (await client.get(base("private-items"))).status == 401
+                assert (await client.get(base(f"private-images/{private_id}"))).status == 401
+                platform.allowed = False
+                assert (await client.get(base("private-items"), headers=headers)).status == 403
+                assert (await client.get(base(f"private-images/{private_id}"), headers=headers)).status == 403
+                response = await client.put(base(f"images/{private_id}/favorite"), json={"saved":True}, headers=headers)
+                assert response.status == 403
+                me = await (await client.get(base("me"), headers=headers)).json()
+                assert me["can_view_private"] is False and me["can_edit"] is False
+                platform.allowed = True
+                data = await (await client.get(base("private-items"), headers=headers)).json()
+                assert [row["title"] for row in data["items"]] == ["只给姐妹"]
+                assert data["categories"] == ["私密相册"]
+                response = await client.get(base(f"private-images/{private_id}"), headers=headers)
+                assert response.status == 200 and await response.read() == png()
+                response = await client.get(base(f"private-images/{private_id}?size=thumb"), headers=headers)
+                assert response.status == 200
+                me = await (await client.get(base("me"), headers=headers)).json()
+                assert me["can_view_private"] is True and sorted(me["mine"]) == sorted([private_id, public_id])
+                assert (await client.put(base(f"images/{private_id}/favorite"),
+                                         json={"saved":True}, headers=headers)).status == 200
+                assert (await client.put(base(f"images/{public_id}/favorite"),
+                                         json={"saved":True}, headers=headers)).status == 200
+                saved = (await (await client.get(base("me"), headers=headers)).json())["saved"]
+                assert sorted(saved) == sorted([private_id, public_id])
+                def private_form():
+                    form = FormData()
+                    form.add_field("category", "私密相册")
+                    form.add_field("title", "新私密")
+                    form.add_field("images", png(), filename="p.png", content_type="image/png")
+                    return form
+                response = await client.post(base("upload"), data=private_form(), headers=headers)
+                assert response.status == 201, await response.text()
+                assert len((await (await client.get(base("items"))).json())["items"]) == 1
+                platform.allowed = False
+                response = await client.post(base("upload"), data=private_form(), headers=headers)
+                assert response.status == 403
+        finally:
+            await server.close()
+    asyncio.run(scenario())

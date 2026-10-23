@@ -9,7 +9,7 @@ from uuid import UUID
 
 from aiohttp import web
 
-from runtime.gallery import CATEGORIES, GalleryError, GalleryConflict, GalleryUnavailable, GalleryPlatform, MAX_BYTES, Store, download_name, picture_title
+from runtime.gallery import ALL_CATEGORIES, CATEGORIES, PRIVATE_CATEGORY, GalleryError, GalleryConflict, GalleryUnavailable, GalleryPlatform, MAX_BYTES, Store, download_name, picture_title
 
 UID_KEY = web.RequestKey("gallery_uid", str)
 
@@ -94,12 +94,15 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
             public_read = request.method in ("GET", "HEAD") and (
                 request.path == "/api/gallery/items" or
                 re.fullmatch(r"/api/gallery/images/\d+", request.path))
+            private_read = request.method in ("GET", "HEAD") and (
+                request.path == "/api/gallery/private-items" or
+                re.fullmatch(r"/api/gallery/private-images/\d+", request.path))
             if request.path.startswith("/api/gallery/") and not public_read:
                 bearer = request.headers.get("Authorization", "")
                 if not bearer.startswith("Bearer ") or len(bearer) > 8192:
                     raise web.HTTPUnauthorized(text="请从 DZMM 登录后打开图集。")
                 request[UID_KEY] = await auth.verify(bearer[7:])
-                if request.method not in ("GET", "HEAD") and not request.path.endswith("/favorite"):
+                if private_read or (request.method not in ("GET", "HEAD") and not request.path.endswith("/favorite")):
                     await platform.member(request[UID_KEY])
             response = await handler(request)
         except GalleryUnavailable as exc:
@@ -123,25 +126,33 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
     thumbnail_bytes = 0
     thumbnail_workers = asyncio.Semaphore(2)
 
-    async def listing(request):
-        rows = await asyncio.to_thread(store.list, "")
+    async def listing(request, *, private=False):
+        rows = await asyncio.to_thread(store.list, "", only_private=private)
         # 公开图集不公布上传者 ID/昵称、来源消息或个人收藏状态。
         items = [{key: row[key] for key in ("id", "category", "title", "width", "height", "caption", "created", "saves")}
                  | {"filename": download_name(row["title"], row["mime"])} for row in rows]
-        return web.json_response({"items": items, "categories": CATEGORIES})
+        return web.json_response({"items": items, "categories": ([PRIVATE_CATEGORY] if private else CATEGORIES)})
+
+    async def private_listing(request):
+        return await listing(request, private=True)
 
     async def session(request):
         rows = await asyncio.to_thread(store.list, request[UID_KEY])
+        can_view_private = False
         try:
             await platform.member(request[UID_KEY])
             can_edit = True
+            can_view_private = True
         except GalleryError:
             can_edit = False
+        if can_view_private:
+            rows = await asyncio.to_thread(store.list, request[UID_KEY], include_private=True)
         return web.json_response({"can_edit": can_edit,
+            "can_view_private": can_view_private,
             "mine": [row["id"] for row in rows if row["uploader"] == request[UID_KEY]],
             "saved": [row["id"] for row in rows if row["saved"]]})
 
-    async def image(request):
+    async def image(request, *, private=False):
         nonlocal thumbnail_bytes
         size = request.query.get("size", "original")
         if size not in ("original", "thumb"):
@@ -150,7 +161,7 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
             image_id = int(request.match_info["image_id"])
         except ValueError as exc:
             raise web.HTTPNotFound() from exc
-        row = await asyncio.to_thread(store.image, image_id)
+        row = await asyncio.to_thread(store.image, image_id, include_private=private)
         if row is None:
             raise web.HTTPNotFound()
         if size == "thumb":
@@ -169,6 +180,9 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
         return web.Response(body=row["data"], content_type=row["mime"], headers={
             "Content-Disposition": "inline; filename*=UTF-8''" + quote(download_name(row["title"], row["mime"])),
             "Access-Control-Expose-Headers": "Content-Disposition"})
+
+    async def private_image(request):
+        return await image(request, private=True)
 
     async def rename(request):
         try:
@@ -189,6 +203,11 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
                 raise ValueError
         except (ValueError, KeyError, TypeError) as exc:
             raise web.HTTPBadRequest(text="收藏参数无效。") from exc
+        if not await asyncio.to_thread(store.exists, image_id):
+            # 收藏不要求成员身份，但私密图片只对成员存在；对其他人一律按不存在处理，不暴露编号。
+            await platform.member(request[UID_KEY])
+            if not await asyncio.to_thread(store.exists, image_id, include_private=True):
+                raise web.HTTPNotFound()
         await asyncio.to_thread(store.favorite, request[UID_KEY], image_id, saved)
         return web.json_response({"saved": saved})
 
@@ -197,7 +216,7 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
             payload = await request.json()
             image_id = int(request.match_info["image_id"])
             category = payload["category"]
-            if image_id <= 0 or image_id > 9223372036854775807 or category not in CATEGORIES:
+            if image_id <= 0 or image_id > 9223372036854775807 or category not in ALL_CATEGORIES:
                 raise ValueError
         except (ValueError, KeyError, TypeError) as exc:
             raise web.HTTPBadRequest(text="请选择有效图片编号和目标图集。") from exc
@@ -249,7 +268,7 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
                 files.append((field.filename, bytes(data)))
             else:
                 raise web.HTTPBadRequest(text="上传字段无效。")
-        if category not in CATEGORIES or not files or len(caption) > 160:
+        if category not in ALL_CATEGORIES or not files or len(caption) > 160:
             raise web.HTTPBadRequest(text="请选择图集和图片，配文最多 160 字。")
         title = picture_title(title, "")
         from runtime.gallery import inspect_image
@@ -265,6 +284,8 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
         return web.json_response({"ids": ids}, status=201)
 
     root = Path(__file__).resolve().parent.parent / "gamefy-comic" / "publish"
+    # 生产镜像只跑 API 时不一定带前端目录；缺了就不挂静态路由，别让进程起不来。
+    has_publish = root.is_dir()
 
     async def index(request):
         return web.Response(text=(root / "index.html").read_text(encoding="utf-8"), content_type="text/html")
@@ -274,16 +295,19 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
                             content_type="application/javascript")
 
     app.router.add_get("/api/gallery/items", listing)
+    app.router.add_get("/api/gallery/private-items", private_listing)
     app.router.add_get("/api/gallery/me", session)
     app.router.add_get("/api/gallery/images/{image_id}", image)
+    app.router.add_get("/api/gallery/private-images/{image_id}", private_image)
     app.router.add_delete("/api/gallery/images/{image_id}", remove)
     app.router.add_put("/api/gallery/images/{image_id}/favorite", favorite)
     app.router.add_put("/api/gallery/images/{image_id}/title", rename)
     app.router.add_put("/api/gallery/images/{image_id}/category", move)
     app.router.add_post("/api/gallery/upload", upload)
-    app.router.add_get("/", index)
-    app.router.add_get("/config.js", config)
-    app.router.add_static("/", root, show_index=False)
+    if has_publish:
+        app.router.add_get("/", index)
+        app.router.add_get("/config.js", config)
+        app.router.add_static("/", root, show_index=False)
     return app
 
 

@@ -87,7 +87,7 @@ body{background:#eeeee8}
 @container gallery (max-width:600px){
  .header{height:64px;position:sticky;top:0;z-index:20}.header-inner{padding:0 16px;gap:8px}.brand{font-size:18px;letter-spacing:0;gap:6px}.brand-flower{font-size:27px}.header-right{gap:7px}.brand-sub,.user-avatar{display:none}.header-right .upload-button{padding:7px 10px;font-size:11px;min-height:40px;gap:3px}
  .main{padding:0 16px}.intro{padding:22px 0 19px}.intro h1{font-size:24px;line-height:1.5}.intro p{font-size:12px}.intro-note{display:none}
- .gallery-tools{position:sticky;top:64px;background:var(--bg);z-index:9;padding:9px 0 11px;gap:9px}.categories{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));width:100%;gap:2px}.category{font-size:12px;padding:10px 2px;gap:3px}.category>.ph{font-size:17px}.gallery-options{width:100%;justify-content:space-between}.search input{font-size:12px;width:140px}.sort select{font-size:12px}
+ .gallery-tools{position:sticky;top:64px;background:var(--bg);z-index:9;padding:9px 0 11px;gap:9px}.categories{display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));width:100%;gap:2px}.category{font-size:12px;padding:10px 2px;gap:3px}.category>.ph{font-size:17px}.gallery-options{width:100%;justify-content:space-between}.search input{font-size:12px;width:140px}.sort select{font-size:12px}
  .picture-title{font-size:13px}.section-note{font-size:11px}.sample-badge{font-size:10px}.mobile-nav{min-height:65px}.mobile-nav button{font-size:12px;gap:4px}.mobile-nav button .ph{font-size:22px}
  .viewer{width:min(100vw,480px);max-width:100vw;margin:auto;height:100dvh;max-height:100dvh}.viewer-stage{height:54dvh;min-height:180px}.viewer-bottom{padding:16px}.viewer-author strong{font-size:17px}.viewer-author p{font-size:13px}.viewer-actions{justify-content:space-between}.save-action,.download-button{font-size:13px;min-height:44px}.upload-dialog{max-width:96vw}.title-label{font-size:13px}
 }
@@ -110,4 +110,7 @@ body{background:#eeeee8}
 .viewer-actions{flex-wrap:wrap}.delete-dialog{width:min(420px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;border:1px solid var(--line);border-radius:14px;padding:25px;background:var(--bg);color:var(--ink)}
 .delete-dialog::backdrop{background:#2228}.delete-dialog h2{font-size:21px}.delete-dialog p{font-size:13px;line-height:1.8;margin-top:14px;overflow-wrap:anywhere}.delete-dialog-actions{display:flex;justify-content:flex-end;gap:12px;margin-top:22px}
 
+/* 私密相册：手机上只显示「私密」，第五个分区才不会挤行。 */
+.category .label-short{display:none}
+@container gallery (max-width:600px){.category .label-full{display:none}.category .label-short{display:inline}}
 .move-editor{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}.move-editor label{font-size:12px;color:#71766d;flex-basis:100%}.move-editor select{min-width:0;flex:1 1 130px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);padding:10px;font:inherit;font-size:13px;min-height:42px}.move-editor .upload-button{flex:0 0 auto;min-height:42px}.move-editor p{flex-basis:100%;margin:0;font-size:12px;overflow-wrap:anywhere}.move-editor [role=status]{color:#527247}button:disabled{opacity:.55;cursor:default}

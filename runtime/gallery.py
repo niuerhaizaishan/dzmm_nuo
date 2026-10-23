@@ -21,14 +21,16 @@ from runtime.obs import log
 CARD_ID = "3799187"
 CARD_URL = "https://www.dzmm.ai/character/" + CARD_ID
 CATEGORIES = ("个人立绘", "姐妹日常", "高清美图", "大开脑洞")
+PRIVATE_CATEGORY = "私密相册"
+ALL_CATEGORIES = CATEGORIES + (PRIVATE_CATEGORY,)
 CATEGORY_ALIASES = {"脑洞大开": "大开脑洞"}
 MAX_BYTES = 10 * 1024 * 1024
 MAX_PIXELS = 40_000_000
 COMMAND = re.compile(r"^/(漫画|保存|删除图片|恢复图片|移动图片)(?=$|\s)(.*)$", re.S)
-USAGE = "回复群里的一张图片，发送 /保存 个人立绘 图片名称\n名称可不填。可选图集：" + "、".join(CATEGORIES)
-MOVE_USAGE = "移动：/移动图片 图片编号 目标图集\n例如：/移动图片 123 姐妹日常\n可选图集：" + "、".join(CATEGORIES)
+USAGE = "回复群里的一张图片，发送 /保存 个人立绘 图片名称\n名称可不填。可选图集：" + "、".join(ALL_CATEGORIES)
+MOVE_USAGE = "移动：/移动图片 图片编号 目标图集\n例如：/移动图片 123 姐妹日常\n可选图集：" + "、".join(ALL_CATEGORIES)
 MANAGE_USAGE = "删除：/删除图片 图片编号\n误删恢复：/恢复图片 图片编号\n" + MOVE_USAGE + "\n编号可在图集大图或保存回复中查看，仅妹子群成员可操作。"
-CARD_INTRO = "姐妹图集 · 好图一起存\n所有人可查看，妹子群成员可上传、编辑和删除。\n" + USAGE + "\n" + MANAGE_USAGE
+CARD_INTRO = "姐妹图集 · 好图一起存\n公开图集所有人可查看；私密相册仅妹子群成员可查看和操作。\n" + USAGE + "\n" + MANAGE_USAGE
 
 
 class GalleryError(ValueError):
@@ -143,7 +145,7 @@ class Store:
         return conn
 
     def save(self, category, data, *, uploader, name, filename="", caption="", source="", title=""):
-        if category not in CATEGORIES or not uploader:
+        if category not in ALL_CATEGORIES or not uploader:
             raise GalleryError("图集名称无效。\n" + USAGE)
         width, height, mime, extension = inspect_image(data)
         digest = hashlib.sha256(data).hexdigest()
@@ -165,18 +167,34 @@ class Store:
                 raise GalleryError("这张图片已删除，如需恢复请发送 /恢复图片 " + str(row["id"]))
             return row["id"], bool(cursor.rowcount)
 
-    def list(self, uid):
+    def list(self, uid, *, include_private=False, only_private=False):
+        # 私密相册只认成员身份：默认不含私密，only_private 只取私密，include_private 全取。
+        if only_private:
+            scope, extra = "category=?", (PRIVATE_CATEGORY,)
+        elif include_private:
+            scope, extra = "1", ()
+        else:
+            scope, extra = "category<>?", (PRIVATE_CATEGORY,)
         with closing(self.connect()) as conn:
             rows = conn.execute("""SELECT i.id,category,filename,width,height,uploader,name,title,mime,
                 caption,created, (SELECT count(*) FROM gallery_favorites f WHERE f.image_id=i.id) saves,
                 EXISTS(SELECT 1 FROM gallery_favorites f WHERE f.image_id=i.id AND f.uid=?) saved
-                FROM gallery_images i WHERE deleted_at=0 ORDER BY i.id DESC""", (uid,)).fetchall()
+                FROM gallery_images i WHERE deleted_at=0 AND """ + scope + """ ORDER BY i.id DESC""",
+                (uid,) + extra).fetchall()
             return [dict(row) for row in rows]
 
-    def image(self, image_id):
+    def image(self, image_id, *, include_private=False):
         with closing(self.connect()) as conn:
-            row = conn.execute("SELECT data,mime,title FROM gallery_images WHERE id=? AND deleted_at=0", (image_id,)).fetchone()
+            row = conn.execute("SELECT data,mime,title,category FROM gallery_images WHERE id=? AND deleted_at=0 AND (? OR category<>?)",
+                               (image_id, 1 if include_private else 0, PRIVATE_CATEGORY)).fetchone()
             return dict(row) if row else None
+
+    def exists(self, image_id, *, include_private=False):
+        """只查存在性，不读原图数据；私密图片默认视为不存在。"""
+        with closing(self.connect()) as conn:
+            row = conn.execute("SELECT 1 FROM gallery_images WHERE id=? AND deleted_at=0 AND (? OR category<>?)",
+                               (image_id, 1 if include_private else 0, PRIVATE_CATEGORY)).fetchone()
+            return row is not None
 
     def rename(self, image_id, title):
         title = picture_title(title)
@@ -195,7 +213,7 @@ class Store:
                 conn.execute("DELETE FROM gallery_favorites WHERE uid=? AND image_id=?", (uid, image_id))
 
     def move(self, image_id, category):
-        if category not in CATEGORIES:
+        if category not in ALL_CATEGORIES:
             raise GalleryError("目标图集无效。\n" + MOVE_USAGE)
         with closing(self.connect()) as conn, conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -307,7 +325,7 @@ class Service:
                 parts = argument.split()
                 if len(parts) == 2:
                     parts[1] = CATEGORY_ALIASES.get(parts[1], parts[1])
-                if len(parts) != 2 or not re.fullmatch(r"[1-9][0-9]{0,17}", parts[0]) or parts[1] not in CATEGORIES:
+                if len(parts) != 2 or not re.fullmatch(r"[1-9][0-9]{0,17}", parts[0]) or parts[1] not in ALL_CATEGORIES:
                     return MOVE_USAGE
                 if dry:
                     return "[dry] 已核验成员权限，本次没有移动图片。"
@@ -327,7 +345,7 @@ class Service:
             parts = argument.split(maxsplit=1)
             category = CATEGORY_ALIASES.get(parts[0], parts[0]) if parts else ""
             title = picture_title(parts[1], "") if len(parts) > 1 else ""
-            if category not in CATEGORIES:
+            if category not in ALL_CATEGORIES:
                 return USAGE
             content = message.get("content") or {}
             quoted = content.get("reference") or content.get("quote") or content.get("reply") or {}

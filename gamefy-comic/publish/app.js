@@ -3,10 +3,10 @@
 // 未接服务的本地页面仍是预览；Gamefy 内验权失败时保持空白，不回退示例数据。
 const apiBase=(window.GALLERY_API_BASE||"").replace(/\/$/,"");
 const liveMode=Boolean(apiBase||window.dzmm?.user?.info);
-let memberReady=!liveMode,canEdit=!liveMode,authenticated=!liveMode;
+let memberReady=!liveMode,canEdit=!liveMode,authenticated=!liveMode,canViewPrivate=!liveMode;
 let accessMessage="正在加载画廊…";
 const sections=["个人立绘","姐妹日常","高清美图","大开脑洞"];
-const categoryCopy={"个人立绘":"换个造型，换个心情。","姐妹日常":"今天也一起做点可爱的小事。","高清美图":"好看的，当然要存一份。","大开脑洞":"不管合不合理，先快乐一下。"};
+const categoryCopy={"个人立绘":"换个造型，换个心情。","姐妹日常":"今天也一起做点可爱的小事。","高清美图":"好看的，当然要存一份。","大开脑洞":"不管合不合理，先快乐一下。","私密相册":"只有妹子群的姐妹能看到这里。"};
 const authors=[{name:"桃桃",avatar:"桃",color:"#efd6c3"},{name:"眠眠",avatar:"眠",color:"#e4dce6"},{name:"小芽",avatar:"芽",color:"#d9e1cc"},{name:"糯米",avatar:"糯",color:"#e8dfc6"}];
 const samples=[
   ["个人立绘","i","portrait","今天想换一个清清爽爽的头像",28,["i","a"],"35% 50%"],
@@ -33,6 +33,9 @@ const samples=[
 const items=liveMode?[]:samples.map((row,index)=>({id:`sample-${index}`,category:row[0],cover:`assets/gallery/${row[1]}.jpg`,ratio:row[2],caption:row[3],title:row[3],saves:row[4],images:row[5].map(id=>`assets/gallery/${id}.jpg`),position:row[6],...authors[index%authors.length],order:samples.length-index,mine:false}));
 const $=selector=>document.querySelector(selector);
 const favorites=new Set(),objectURLs=new Set();
+// 私密相册的图片编号单列一份：缩略图与原图必须走成员鉴权路由，公开路由对它们一律 404。
+const privateIds=new Set(),PRIVATE_CATEGORY="私密相册";
+let myIds=new Set();
 let view="shared",category=sections[0],current=null,imageIndex=0,selectedFiles=[],adding=false,toastTimer;
 const sourceCache=new Map();
 const pause=milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds));
@@ -78,18 +81,36 @@ async function loadSession(){
   if(!liveMode)return;
   try{
     const result=await(await api("/me",{},true)).json();
-    authenticated=true;canEdit=result.can_edit;
-    favorites.clear();result.saved.forEach(id=>favorites.add(id));
-    items.forEach(item=>{item.mine=result.mine.includes(item.id);});
-  }catch{authenticated=false;canEdit=false;favorites.clear();items.forEach(item=>item.mine=false);}
+    authenticated=true;canEdit=result.can_edit;canViewPrivate=Boolean(result.can_view_private);
+    myIds=new Set(result.mine);favorites.clear();result.saved.forEach(id=>favorites.add(id));
+    applyOwnership();
+  }catch{authenticated=false;canEdit=false;canViewPrivate=false;myIds=new Set();favorites.clear();items.forEach(item=>item.mine=false);}
   render();updatePermissions();
+}
+function applyOwnership(){items.forEach(item=>{item.mine=myIds.has(item.id);});}
+function toItem(row){
+  return {id:row.id,category:row.category,cover:row.id,images:[row.id],filenames:[row.filename],ratio:row.width/row.height<.9?"portrait":row.width/row.height>1.5?"wide":"landscape",caption:row.caption,title:row.title,mine:false,order:row.created,saves:row.saves};
+}
+async function loadPrivateItems(){
+  if(!canViewPrivate)return;
+  const result=await(await api("/private-items",{},true)).json();
+  privateIds.clear();result.items.forEach(row=>privateIds.add(String(row.id)));
+  const known=new Set(items.map(item=>item.id));
+  items.push(...result.items.filter(row=>!known.has(row.id)).map(toItem));
+  applyOwnership();render();
 }
 function updatePermissions(){
   $("#title-editor").hidden=!canEdit;
   $("#move-editor").hidden=!canEdit;
   $("#viewer-delete").hidden=!canEdit;
   $("#viewer-readonly").hidden=canEdit;
+  syncPrivateTabs();
   if(current)updateSave();
+}
+// 私密相册入口（分区标签、上传分区、移动目标）只在成员身份核验通过后出现。
+function syncPrivateTabs(){
+  document.querySelectorAll("[data-private]").forEach(node=>{node.hidden=!canViewPrivate;});
+  if(!canViewPrivate&&category===PRIVATE_CATEGORY){category=sections[0];render();}
 }
 async function sourceURL(source,thumbnail=false){
   if(!liveMode)return source;
@@ -97,7 +118,7 @@ async function sourceURL(source,thumbnail=false){
   const key=`${source}:${thumbnail?"thumb":"original"}`;
   if(!sourceCache.has(key))sourceCache.set(key,(async()=>{
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),25000);
-    try{const response=await api(`/images/${source}${thumbnail?"?size=thumb":""}`,{signal:controller.signal});const url=URL.createObjectURL(await response.blob());objectURLs.add(url);return url;}
+    try{const prefix=privateIds.has(source)?"/private-images/":"/images/";const response=await api(`${prefix}${source}${thumbnail?"?size=thumb":""}`,{signal:controller.signal});const url=URL.createObjectURL(await response.blob());objectURLs.add(url);return url;}
     finally{clearTimeout(timer);}
   })().catch(error=>{sourceCache.delete(key);throw error;}));
   return sourceCache.get(key);
@@ -136,13 +157,18 @@ function loadVisibleImages(){
 }
 async function loadGallery(){
   const result=await (await api("/items")).json();memberReady=true;
-  items.splice(0,items.length,...result.items.map(row=>({id:row.id,category:row.category,cover:row.id,images:[row.id],filenames:[row.filename],ratio:row.width/row.height<.9?"portrait":row.width/row.height>1.5?"wide":"landscape",caption:row.caption,title:row.title,mine:false,order:row.created,saves:row.saves})));
+  privateIds.clear();
+  items.splice(0,items.length,...result.items.map(toItem));
   favorites.clear();render();
 }
 async function refreshGallery(){
   const retry=$("#gallery-retry");if(retry.disabled)return;
   retry.disabled=true;retry.textContent="正在加载…";
-  try{await loadGallery();await loadSession();}
+  try{
+    await loadGallery();await loadSession();
+    // 私密相册单独失败不该拖垮整个画廊：只在成员可见时加载，失败仅提示。
+    try{await loadPrivateItems();}catch(error){showToast("私密相册暂时打不开，公开分区不受影响。");}
+  }
   catch(error){lockGallery(error.message);showToast(error.message);}
   finally{retry.disabled=false;retry.textContent="重试加载";}
 }
@@ -176,7 +202,7 @@ function render(){
   document.querySelectorAll("#gallery img").forEach(image=>setImage(image,image.dataset.source,true));
   if(liveMode)requestAnimationFrame(loadVisibleImages);
   $("#empty").hidden=matches.length>0;
-  $("#empty-message").textContent=view!=="shared"&&!authenticated?"从 DZMM 登录后，可以查看你的收藏和上传。":view==="saved"?"在这个分区遇到喜欢的图，点一下爱心就留下啦。":view==="mine"?"这个分区还没有你上传的图。":"换个词找找，或者来传第一张。";
+  $("#empty-message").textContent=view!=="shared"&&!authenticated?"从 DZMM 登录后，可以查看你的收藏和上传。":view==="saved"?"在这个分区遇到喜欢的图，点一下爱心就留下啦。":view==="mine"?"这个分区还没有你上传的图。":category===PRIVATE_CATEGORY?"私密相册还空着，传一张只给姐妹看的。":"换个词找找，或者来传第一张。";
   $("#empty-upload").hidden=view==="saved"||!canEdit;
   $("#empty h2").textContent=liveMode&&!memberReady?"画廊暂时没加载出来":"这里还空着呢";
   $("#gallery-retry").hidden=!liveMode||memberReady;
@@ -247,7 +273,10 @@ async function moveCurrent(){
   $("#move-status").hidden=true;$("#move-error").hidden=true;
   try{
     if(liveMode)await api(`/images/${item.id}/category`,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({category:target})},true);
-    item.category=target;category=target;render();
+    item.category=target;category=target;
+    // 换区后缩略图与原图要走对应的鉴权路由，否则刚移进私密相册的图会 404。
+    if(target===PRIVATE_CATEGORY)privateIds.add(String(item.id));else privateIds.delete(String(item.id));
+    render();
     if(current?.id===item.id){$("#viewer-category").textContent=target;$("#move-status").textContent=`已移到「${target}」`;$("#move-status").hidden=false;}
     showToast(liveMode?`已移到「${target}」`:`已移到「${target}」，本地预览刷新后重置`);
   }catch(error){if(current?.id===item.id){$("#move-error").textContent=error.message;$("#move-error").hidden=false;}}
@@ -384,13 +413,14 @@ window.addEventListener("beforeunload",()=>objectURLs.forEach(url=>URL.revokeObj
 $("#app-shell").addEventListener("scroll",()=>{if(liveMode)requestAnimationFrame(loadVisibleImages);},{passive:true});
 window.addEventListener("resize",()=>{if(liveMode)requestAnimationFrame(loadVisibleImages);});
 render();
+syncPrivateTabs();
 if(liveMode){
   $(".sample-badge").textContent="所有人可查看";
   $(".upload-footer span").textContent="保存到妹子群的共享图集";
   $("#footer-info").textContent="所有人可看 · 妹子群可传图";
   $("#info-open").setAttribute("aria-label","查看图集说明");
   $("#preview-heading span:last-child").textContent="每张图片分别收进所选分区";
-  $("#info-dialog p:last-of-type").textContent="所有人可查看和保存原图；当前妹子群成员可上传、编辑图片名称和删除图片。大图中可查看图片编号，群里发送 /删除图片 编号，误删发送 /恢复图片 编号。群里回复原图发送 /保存 分区名 图片名称，名称可不填。";
+  $("#info-dialog p:last-of-type").textContent="公开图集所有人可查看和保存原图；私密相册只有当前妹子群成员能查看和操作。当前妹子群成员可上传、编辑图片名称和删除图片。大图中可查看图片编号，群里发送 /删除图片 编号，误删发送 /恢复图片 编号；发送 /移动图片 编号 分区名 可换分区（含私密相册）。群里回复原图发送 /保存 分区名 图片名称，名称可不填。";
   $("#empty-message").textContent="正在加载画廊…";
   refreshGallery();
 }

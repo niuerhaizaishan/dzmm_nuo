@@ -10,7 +10,7 @@
 #   DZMM_BOT_TOKEN / DZMM_BOT_ID / DZMM_BOT_CID / DZMM_BOT_ROUTING
 services:
   dzmm-gallery:
-    image: dzmm-bot:gallery-20261020
+    image: dzmm-bot:gallery-20261023
     container_name: dzmm-gallery
     entrypoint: ["python", "-m", "runtime.gallery_api"]
     restart: unless-stopped

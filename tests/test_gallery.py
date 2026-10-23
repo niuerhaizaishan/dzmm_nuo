@@ -519,3 +519,41 @@ def test_mainloop_image_reply_bypasses_at_only_only_in_enabled_primary_group(mon
             assert sent == [] and not service.store.path.exists()
         assert buffer == []
     asyncio.run(scenario())
+
+
+def test_private_album_is_member_only_for_view_and_operations(dbdir):
+    """私密相册：成员可存可取；公开列表、公开原图和存在性探测一律看不到。"""
+    path = dbdir / "gallery.db"
+    platform = Platform()
+    service = G.Service(G.Store(path), platform)
+    assert "已保存到「" + G.PRIVATE_CATEGORY in run(service, "/保存 私密相册 只给自己")
+    rows = G.Store(path).list("member", include_private=True)
+    assert len(rows) == 1 and rows[0]["category"] == G.PRIVATE_CATEGORY
+    image_id = rows[0]["id"]
+    assert G.Store(path).list("") == [] and G.Store(path).list("member") == []
+    assert G.Store(path).image(image_id) is None
+    assert G.Store(path).image(image_id, include_private=True)["data"] == png()
+    assert not G.Store(path).exists(image_id)
+    assert G.Store(path).exists(image_id, include_private=True)
+    assert run(service, "/保存 私密相册 只给自己", uid="outsider").startswith("姐妹图集仅限")
+    assert run(service, "/移动图片 " + str(image_id) + " 姐妹日常", uid="outsider").startswith("姐妹图集仅限")
+    assert run(service, "/删除图片 " + str(image_id), uid="outsider").startswith("姐妹图集仅限")
+    assert G.Store(path).list("member", include_private=True)[0]["category"] == G.PRIVATE_CATEGORY
+
+
+def test_private_album_move_both_ways_and_usage_messages(dbdir):
+    path = dbdir / "gallery.db"
+    service = G.Service(G.Store(path), Platform())
+    assert "已保存到「姐妹日常」" in run(service, "/保存 姐妹日常 先公开")
+    image_id = G.Store(path).list("member", include_private=True)[0]["id"]
+    assert "移动到「" + G.PRIVATE_CATEGORY + "」" in run(service, "/移动图片 " + str(image_id) + " 私密相册")
+    assert G.Store(path).list("member") == []
+    assert G.Store(path).list("member", include_private=True)[0]["category"] == G.PRIVATE_CATEGORY
+    assert "移动到「姐妹日常」" in run(service, "/移动图片 " + str(image_id) + " 姐妹日常")
+    assert G.Store(path).list("member")[0]["category"] == "姐妹日常"
+    assert run(service, "/移动图片 " + str(image_id) + " 私密相册集") == G.MOVE_USAGE
+    assert run(service, "/保存 私人相册 写错名字") == G.USAGE
+    assert len(G.Store(path).list("member", include_private=True)) == 1
+    # 私密相册与公开分区各自去重，同一张图可以两边各留一份。
+    assert "已保存到「" + G.PRIVATE_CATEGORY in run(service, "/保存 私密相册 再存一份")
+    assert len(G.Store(path).list("member", include_private=True)) == 2
