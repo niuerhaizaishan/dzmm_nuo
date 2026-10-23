@@ -163,6 +163,37 @@ class Sender:
             raise RuntimeError("账号连接不可用")
         return await _LIVE_SIO.send_text_confirmed(cid, NUO_UID, text)
 
+    async def send_reply_with_id(self, text: str, cid: str, reference: dict, *, guard=None) -> str:
+        from runtime.reply_delivery import ReplyNotSent
+        if _LIVE_SIO is None:
+            raise ReplyNotSent("账号连接不可用")
+        lock = self._send_locks.setdefault(cid, asyncio.Lock())
+        async with lock:
+            mid = await _LIVE_SIO.send_reply_confirmed(cid, NUO_UID, text, reference, guard=guard)
+            if not mid:
+                return ""
+            # ACK 只证明平台接受消息；还需确认平台保留了原生引用，没有静默忽略。
+            for attempt in range(3):
+                rows = await asyncio.to_thread(get_messages, cid, 30)
+                for row in rows or ():
+                    if row.get("message_id") != mid:
+                        continue
+                    content = row.get("content") or {}
+                    actual_ref = content.get("reference") or {}
+                    if (row.get("sent_by") == NUO_UID and content.get("text") == text
+                            and actual_ref.get("id") == reference.get("id")):
+                        return mid
+                    raise RuntimeError("引用回复读回不一致，不自动重发")
+                if attempt < 2:
+                    await asyncio.sleep(0.4 * (attempt + 1))
+            raise RuntimeError("引用回复未能读回，不自动重发")
+
+    async def send_character_with_id(self, resource_id: str, cid: str) -> str:
+        """分享卡走当前账号连接，禁止当文本发送或模糊失败后换通道。"""
+        if _LIVE_SIO is None:
+            raise RuntimeError("账号连接不可用")
+        return await _LIVE_SIO.send_character_confirmed(cid, NUO_UID, resource_id)
+
     async def start(self):
         from playwright.async_api import async_playwright
         cookies = token_store.get_cookies_for_playwright()
@@ -454,10 +485,16 @@ class Sender:
     async def send(self, text: str, cid: str, allow_fallback: bool = True) -> bool:
         """按群串行化发送（后台任务和主循环可能同时往同一个群发，共用一张页面，
         并发打字会串行错乱）."""
+        from runtime import lambda_bot
+        control = lambda_bot.is_control_send()
+        created_at = time.time()
+        text = lambda_bot.render_text(text, cid)
         lock = self._send_locks.get(cid)
         if lock is None:
             lock = self._send_locks[cid] = asyncio.Lock()
         async with lock:
+            if not control and lambda_bot.suppress_outbound(cid, created_at):
+                return False
             return await self._send_locked(text, cid, allow_fallback)
 
     async def _send_locked(self, text: str, cid: str, allow_fallback: bool = True) -> bool:

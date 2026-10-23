@@ -8,9 +8,15 @@
 from .nuo import DEFAULT_NAME_FULL, DEFAULT_NAME_SHORT, NUO_PHRASES
 from .rose_butler import ROSE_BUTLER_EXTRA, ROSE_PHRASES
 from .ruojin import RUOJIN_EXTRA, RUOJIN_PHRASES
+from .lambda_persona import LAMBDA_CIDS, LAMBDA_EXTRA, LAMBDA_PHRASES
 
 
 PERSONAS = {
+    "lambda": {
+        "name_full": "Λʌ",
+        "name_short": "Λʌ",
+        "extra": LAMBDA_EXTRA,
+    },
     "nuo": {  # 默认（所有未注册的群）
         "name_full": DEFAULT_NAME_FULL,
         "name_short": DEFAULT_NAME_SHORT,
@@ -57,6 +63,7 @@ ROOMS = {
 
 # 群 → 人设
 CID_PERSONA = {cid: cfg["persona"] for cid, cfg in ROOMS.items()}
+CID_PERSONA.update({cid: "lambda" for cid in LAMBDA_CIDS})
 
 
 # 话术的中文标签（页面用；新增 key 必须同时补这里，测试会拦住）
@@ -145,6 +152,7 @@ PHRASE_LABELS = {
 # （P3-6：三份正文各住 nuo.py / rose_butler.py / ruojin.py，这里只做汇总 —— 值逐字不变。）
 
 PHRASES = {
+    "lambda": LAMBDA_PHRASES,
     "nuo": NUO_PHRASES,
     "rose_butler": ROSE_PHRASES,
     # P12-T：若瑾那份（纯 S 口吻；只覆盖看得见的那几条，其余沿用默认）

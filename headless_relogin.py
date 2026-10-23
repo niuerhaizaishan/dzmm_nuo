@@ -158,7 +158,7 @@ def login_manual_captcha(email, password, wait_minutes=10):
     import os
     from playwright.sync_api import sync_playwright
     vnc_url = os.environ.get("VNC_URL", "http://47.237.152.187:6080/vnc.html")
-    vnc_pass = os.environ.get("VNC_PASS", "dzmm2026")
+    vnc_pass = os.environ.get("VNC_PASS", "")
     # 清理可能的残留 Singleton 锁
     clear_singleton_locks(ROOT / PW_PROFILE_CAPTCHA)
     try:

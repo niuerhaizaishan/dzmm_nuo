@@ -1,4 +1,4 @@
-"""认证群消息归档；独立 SQLite，无保留期或自动删除。"""
+"""认证群和茶水间消息归档；独立 SQLite，无保留期或自动删除。"""
 import asyncio
 import hashlib
 import json
@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from runtime.ctx import PRIMARY_CID
+from runtime.office_store import TEA_CID
+
+ARCHIVE_GROUPS = {PRIMARY_CID: "认证妹子群", TEA_CID: "顶层茶水间"}
 
 _warned_at = float("-inf")
 _SCHEMA = """
@@ -29,7 +32,7 @@ CREATE TABLE IF NOT EXISTS messages (
   source_file_sha256 TEXT NOT NULL,
   archived_at REAL NOT NULL,
   PRIMARY KEY (group_id, message_id),
-  CHECK (group_id = '""" + PRIMARY_CID + """')
+  CHECK (group_id IN ('""" + PRIMARY_CID + """','""" + TEA_CID + """'))
 );
 CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(group_id, sent_at, message_id);
 CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(group_id, sender_id, sent_at);
@@ -86,7 +89,7 @@ def _string(value, field, required=False):
 
 
 def normalize(message, *, group_id, source, names=None, source_file_sha256=""):
-    if group_id != PRIMARY_CID:
+    if group_id not in ARCHIVE_GROUPS:
         raise ValueError("outside_archive_scope")
     if not isinstance(message, dict):
         raise ValueError("invalid_message")
@@ -133,6 +136,20 @@ def _connect(path, timeout):
     connection = sqlite3.connect(str(path), timeout=timeout)
     try:
         connection.execute("PRAGMA journal_mode=WAL")
+        # SQLite 不能原地修改 CHECK。事务重建旧表，失败即回滚，绝不清空原归档。
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            old = connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'").fetchone()
+            if old and "CHECK (group_id = '" in old[0]:
+                create = _SCHEMA.split(";")[0].replace("messages (", "messages_v2 (")
+                connection.execute(create)
+                before = connection.execute("SELECT count(*) FROM messages").fetchone()[0]
+                connection.execute("INSERT INTO messages_v2 SELECT * FROM messages")
+                after = connection.execute("SELECT count(*) FROM messages_v2").fetchone()[0]
+                if before != after:
+                    raise RuntimeError("archive_migration_count_mismatch")
+                connection.execute("DROP TABLE messages")
+                connection.execute("ALTER TABLE messages_v2 RENAME TO messages")
         connection.executescript(_SCHEMA)
         if os.name != "nt":
             for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
@@ -145,7 +162,7 @@ def _connect(path, timeout):
 
 
 def append_batch(messages, *, group_id, source, names=None, path=None):
-    if group_id != PRIMARY_CID:
+    if group_id not in ARCHIVE_GROUPS:
         return {"inserted": 0, "duplicates": 0, "invalid": 0}
     rows = []
     invalid = 0
@@ -164,7 +181,7 @@ def append_batch(messages, *, group_id, source, names=None, path=None):
 
 
 def import_jsonl(file_path, *, group_id, path=None):
-    if group_id != PRIMARY_CID:
+    if group_id not in ARCHIVE_GROUPS:
         raise ValueError("outside_archive_scope")
     file_path = Path(file_path)
     digest = hashlib.sha256()
@@ -205,7 +222,7 @@ def _warn(reason):
 
 
 async def capture(group_id, messages, *, source):
-    if not enabled() or group_id != PRIMARY_CID or not messages:
+    if not enabled() or group_id not in ARCHIVE_GROUPS or not messages:
         return
     try:
         from runtime.identity import _name_cache

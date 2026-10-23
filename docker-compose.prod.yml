@@ -9,6 +9,31 @@
 # 需要存在于 /opt/dzmm/.env 的键（本文件只做透传，不写死值）：
 #   DZMM_BOT_TOKEN / DZMM_BOT_ID / DZMM_BOT_CID / DZMM_BOT_ROUTING
 services:
+  dzmm-gallery:
+    image: dzmm-bot:gallery-20261020
+    container_name: dzmm-gallery
+    entrypoint: ["python", "-m", "runtime.gallery_api"]
+    restart: unless-stopped
+    network_mode: host
+    mem_limit: 512m
+    environment:
+      DZMM_PROXY: ""
+      DZMM_HOST: "${DZMM_HOST:-www.dzmm.ai}"
+      DZMM_TOKEN_FILE: /app/secrets/token.json
+      DZMM_GALLERY_GAME_ID: "${DZMM_GALLERY_GAME_ID}"
+      DZMM_GALLERY_ORIGINS: "${DZMM_GALLERY_ORIGINS}"
+      DZMM_GALLERY_DB: /app/data/gallery.db
+      DZMM_GALLERY_PORT: "8775"
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data:/app/data
+      - ./secrets:/app/secrets:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
   dzmm-bot:
     build: .
     image: dzmm-bot:latest
@@ -55,7 +80,7 @@ services:
       DISPLAY: ":99"
       # noVNC 远程桌面连接信息（撞验证码时人工处理用，从 .env 读）
       VNC_URL: "${VNC_URL:-http://47.237.152.187:6080/vnc.html}"
-      VNC_PASS: "${VNC_PASS:-dzmm2026}"
+      VNC_PASS: "${VNC_PASS:-}"
       CAPTCHA_WAIT_MIN: "${CAPTCHA_WAIT_MIN:-30}"
 
       # ---- P3/P4/P5：以下键原先**没有透传**，所以配了也不生效 ----
@@ -208,7 +233,7 @@ services:
       DZMM_HOST: "${DZMM_HOST:-www.dzmm.ai}"
       DISPLAY: ":99"
       VNC_URL: "${VNC_URL:-http://47.237.152.187:6080/vnc.html}"
-      VNC_PASS: "${VNC_PASS:-dzmm2026}"
+      VNC_PASS: "${VNC_PASS:-}"
       CAPTCHA_WAIT_MIN: "${CAPTCHA_WAIT_MIN:-30}"
       DZMM_OUTBOX: "${DZMM_OUTBOX:-on}"
       DZMM_PARALLEL_GROUPS: "${DZMM_PARALLEL_GROUPS:-off}"
@@ -289,7 +314,7 @@ services:
       DZMM_HOST: "${DZMM_HOST:-www.dzmm.ai}"
       DISPLAY: ":99"
       VNC_URL: "${VNC_URL:-http://47.237.152.187:6080/vnc.html}"
-      VNC_PASS: "${VNC_PASS:-dzmm2026}"
+      VNC_PASS: "${VNC_PASS:-}"
       CAPTCHA_WAIT_MIN: "${CAPTCHA_WAIT_MIN:-30}"
       DZMM_OUTBOX: "${DZMM_OUTBOX:-on}"
       DZMM_PARALLEL_GROUPS: "${DZMM_PARALLEL_GROUPS:-off}"

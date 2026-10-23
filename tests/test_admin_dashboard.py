@@ -635,9 +635,9 @@ def test_prompts_section_reports_real_counts_not_zeros():
     `section_prompts()` 会主动 import 所有持有常量的模块，所以后台进程也数得对。
     """
     d = dash.section_prompts()
-    assert d["total"] == 46, d
-    assert d["from_file"] == 46, d
-    assert d["files_on_disk"] == 46, d
+    assert d["total"] == 47, d
+    assert d["from_file"] == 47, d
+    assert d["files_on_disk"] == 47, d
     assert "warning" not in d, d
 
 

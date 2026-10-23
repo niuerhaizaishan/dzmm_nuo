@@ -4,7 +4,7 @@ from contextlib import closing
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
-from runtime.chat_archive import archive_path
+from runtime.chat_archive import archive_path, ARCHIVE_GROUPS
 from runtime.ctx import PRIMARY_CID
 from runtime.text import _normalize_cn
 
@@ -32,6 +32,9 @@ _ADULT_KEYWORDS = ("骚", "发骚", "母狗", "母狗化", "调教", "主人", "
 
 def filters(parameters):
     result = {key: str(parameters.get(key, "")).strip() for key in ("q", "name", "uid", "start", "end")}
+    result["group_id"] = str(parameters.get("group_id", PRIMARY_CID)).strip()
+    if result["group_id"] not in ARCHIVE_GROUPS:
+        raise ValueError("不支持查询这个群的归档")
     if len(result["q"]) > 256 or len(result["name"]) > 128 or len(result["uid"]) > 128:
         raise ValueError("查询条件过长")
     try:
@@ -56,7 +59,7 @@ def search(parameters=None, *, path=None):
     if not result["available"]:
         return result
     clauses = ["group_id = ?"]
-    values = [PRIMARY_CID]
+    values = [selected["group_id"]]
     for key, column in (("q", "text"), ("name", "sender_name")):
         if selected[key]:
             clauses.append("instr(" + column + ", ?) > 0")
@@ -77,13 +80,34 @@ def search(parameters=None, *, path=None):
         with connection:
             connection.execute("BEGIN")
             result["total"], result["first_at"], result["last_at"] = connection.execute(
-                "SELECT count(*), min(sent_at), max(sent_at) FROM messages WHERE group_id = ?", (PRIMARY_CID,)).fetchone()
+                "SELECT count(*), min(sent_at), max(sent_at) FROM messages WHERE group_id = ?", (selected["group_id"],)).fetchone()
             result["matches"] = connection.execute("SELECT count(*) FROM messages WHERE " + where, values).fetchone()[0]
             result["rows"] = [dict(row) for row in connection.execute(
                 "SELECT message_id,sender_id,sender_name,name_source,sent_at,message_type,text,source FROM messages WHERE "
                 + where + " ORDER BY sent_at DESC, message_id DESC LIMIT ? OFFSET ?",
                 values + [PAGE_SIZE, (selected["page"] - 1) * PAGE_SIZE])]
     return result
+
+
+def recap_messages(group_id, since, until, *, limit=600, path=None):
+    """按时间窗读取认证群归档，返回与平台消息一致的结构。"""
+    if group_id != PRIMARY_CID:
+        return []
+    if not 1 <= limit <= 1000 or since >= until:
+        raise ValueError("invalid recap window")
+    database = Path(path or archive_path())
+    if not database.is_file():
+        return []
+    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=1)) as connection:
+        rows = connection.execute(
+            "SELECT message_id,sender_id,sender_name,sent_at,message_type,text FROM messages "
+            "WHERE group_id = ? AND sent_at >= ? AND sent_at < ? "
+            "ORDER BY sent_at DESC,message_id DESC LIMIT ?",
+            (PRIMARY_CID, since, until, limit)).fetchall()
+    return [{"message_id": message_id, "sent_by": sender_id, "sender_name": sender_name,
+             "sent_at": datetime.fromtimestamp(stamp, timezone.utc).isoformat().replace("+00:00", "Z"),
+             "content": {"type": kind, "text": text}}
+            for message_id, sender_id, sender_name, stamp, kind, text in reversed(rows)]
 
 
 def story_evidence(uid, *, start="", end="", path=None, focus="story"):

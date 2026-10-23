@@ -57,10 +57,12 @@ from runtime.memory import (_append_memory_ref, _refresh_profile_latest,
 from runtime.novel import _extract_novel_title, _group_name_cache, _novel_save_path
 from runtime.obs import log
 from runtime import dream as _dream
+from runtime import office as _office
 from runtime import personal_story as _personal_story
 from runtime import personal_portrait as _personal_portrait
 from runtime import personal_letter as _personal_letter
 from runtime import rose_moderation as _rose_moderation
+from runtime import gallery as _gallery
 from runtime.perf import (OWNER_UID, _get_perf_content, _handle_perf_start,
                           _perf_end_bg, _perf_m_name, _perf_send,
                           is_perf_end_cmd, is_perf_start_cmd)
@@ -912,8 +914,26 @@ async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
     _save_group(cid, group_state)
     _mark_inflight(cid, (_cmd_msg or msgs[-1]).get("message_id"))   # P12-BC：被硬杀也能补
 
+    if _office.command(cmd) is not None:
+        await _office.handle(sender, cid, cmd_sender, cmd, _cmd_msg or msgs[-1], dry=dry)
+        return
+
     if _rose_moderation.is_command(cid, cmd):
         await _rose_moderation.handle(sender, cid, _cmd_msg or msgs[-1], dry)
+        return
+
+    if _gallery.command(cmd) is not None:
+        if not _feat_on(cid, "slash_cmds"):
+            return
+        reply = await _gallery.command_reply(cid, cmd_sender, cmd,
+                                              _cmd_msg or msgs[-1], dry=dry)
+        if reply and not dry:
+            if not await sender.send("🤖 " + reply, cid):
+                raise RuntimeError("图集指令回执发送失败")
+            if reply == _gallery.CARD_INTRO:
+                message_id = await sender.send_character_with_id(_gallery.CARD_ID, cid)
+                if not message_id:
+                    raise RuntimeError("图集分享卡发送未确认")
         return
 
     perf = _get_perf_state(cid)
@@ -1106,6 +1126,8 @@ async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
                     "📊 投票进行中哦～想参与就发 /选 X 或 /X（X=序号），想结束发 /投票结束～")
     elif (is_help_cmd(cmd) or is_guide_cmd(cmd)) and _feat_on(cid, "help"):
         reply = p("help_text", cid) or _personas.fill(HELP_TEXT, cid)
+        if _gallery.in_scope(cid):
+            reply += "\n/漫画 - 打开姐妹图集（所有人可查看）\n回复图片 /保存 个人立绘 图片名称 - 名称可不填，仅妹子群可收图"
         if _dream.enabled(cid):
             if cid == _dream.TEA_CID:
                 dream_command = "#解梦" if _dream.is_hash_request(cid, "#解梦") else "@" + _personas.me_full(cid) + " 解梦"

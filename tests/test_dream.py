@@ -328,6 +328,7 @@ def _scan(cid, texts):
         _is_other_bot_noise=lambda cid, text: "记忆考核" in text,
         _chat_cooling=lambda cid, uid: 0, _is_room_trigger=lambda *args: False)
     env = {"B": bridge, "_dream": dream, "_rose_moderation": mainloop._rose_moderation,
+           "_gallery": mainloop._gallery, "_office": mainloop._office,
            "cid": cid, "log": lambda *args: None,
            "pending": [{"message_id": str(index), "sent_by": "guest", "content": {"text": text}}
                        for index, text in enumerate(texts)],
@@ -336,6 +337,17 @@ def _scan(cid, texts):
            "_via_quote": False, "room_hit": None, "_leftover": []}
     exec(compile(ast.Module(body=[selection], type_ignores=[]), "<actual-mainloop-selection>", "exec"), env)
     return env
+
+
+def test_office_specific_slash_whitelist_preserves_other_bots_and_batch():
+    features.set_overrides({dream.TEA_CID + "|office": True, dream.TEA_CID + "|at_only": True,
+                            dream.TEA_CID + "|slash_cmds": False})
+    result = _scan(dream.TEA_CID, ["/别家游戏", "/允许潜规则", "/潜规则 @成员 办公室", "/潜规则继续 第二天"])
+    assert result["cmd"] == "/允许潜规则"
+    assert [m["content"]["text"] for m in result["_leftover"]] == ["/潜规则 @成员 办公室", "/潜规则继续 第二天"]
+    features.set_overrides({dream.TEA_CID + "|office": False, dream.TEA_CID + "|at_only": True,
+                            dream.TEA_CID + "|slash_cmds": True})
+    assert not _scan(dream.TEA_CID, ["/潜规则 @成员"])["cmd"]
 
 
 def test_real_selection_whitelists_hash_before_at_only_and_preserves_batch():

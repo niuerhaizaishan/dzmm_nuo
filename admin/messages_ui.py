@@ -6,6 +6,8 @@ from urllib.parse import urlencode
 
 from admin import shell
 from runtime.chat_archive_query import LOCAL_ZONE, search
+from runtime.chat_archive import ARCHIVE_GROUPS
+from runtime.ctx import PRIMARY_CID
 
 
 def _escape(value):
@@ -27,14 +29,18 @@ def render(parameters=None, *, path=None):
     except Exception:
         error = "聊天记录暂时读不了，请稍后重试。"
         data = None
-    fields = []
+    selected = str(parameters.get("group_id", PRIMARY_CID))
+    options = "".join("<option value='{}'{}>{}</option>".format(
+        _escape(cid), " selected" if cid == selected else "", _escape(label))
+        for cid, label in ARCHIVE_GROUPS.items())
+    fields = ["<label>归档群<select class='input' name='group_id'>" + options + "</select></label>"]
     for key, label, kind in (("start", "开始日期", "date"), ("end", "结束日期", "date"),
                              ("name", "昵称包含", "text"), ("uid", "发送者 UID", "text"),
                              ("q", "消息关键词", "text")):
         fields.append("<label>{}<input class='input' type='{}' name='{}' value='{}'></label>".format(
             label, kind, key, _escape(str(parameters.get(key, ""))[:256])))
-    content = ("<h1>认证妹子群 · 聊天记录</h1>"
-               "<p class='text-dim'>仅此群；昵称按每条记录保存，UID 用于区分同名和改名。日期使用北京时间。"
+    content = ("<h1>群消息 · 聊天记录</h1>"
+               "<p class='text-dim'>按所选群独立查询；昵称按每条记录保存，UID 用于区分同名和改名。日期使用北京时间。"
                "不自动清理，不在此页面发送消息。</p>"
                "<form method='get' action='/messages' class='archive-filters'>" + "".join(fields)
                + "<button class='btn btn--primary' type='submit'>查询</button>"
@@ -76,5 +82,5 @@ def render(parameters=None, *, path=None):
               ".archive-table table{width:100%}.archive-table td{vertical-align:top}"
               ".archive-text{white-space:pre-wrap;overflow-wrap:anywhere;min-width:220px;max-width:700px}"
               ".archive-table small{overflow-wrap:anywhere}</style>")
-    return shell.page(active="/messages", title="认证群聊天记录", breadcrumb="监控 / 认证群聊天记录",
+    return shell.page(active="/messages", title="群聊天记录", breadcrumb="监控 / 群聊天记录",
                       content=content, extra_head=styles)

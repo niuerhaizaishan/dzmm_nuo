@@ -23,6 +23,9 @@ token.emergency
 bot.paused
 .session.lock
 .session_version.json
+secrets/
+/b/
+/c/
 
 # ---- runtime state and PII ------------------------------------------------
 state.json
@@ -60,6 +63,8 @@ state.json.*
 __pycache__/
 *.pyc
 _tmp/
+tmp*/
+releases/
 ._*
 # Junk left behind by a mistyped curl ("%{http_code}n", a 0-byte file) --
 # seen in the build context on 2026-09-27.

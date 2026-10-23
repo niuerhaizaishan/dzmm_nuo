@@ -123,6 +123,7 @@ def _scan(cid, texts):
     env = {"B": bridge,
            "_dream": SimpleNamespace(is_hash_request=lambda c, t: False),
            "_rose_moderation": mainloop._rose_moderation,
+           "_gallery": mainloop._gallery, "_office": mainloop._office,
            "cid": cid, "log": lambda *a: None,
            "pending": [{"message_id": str(i), "sent_by": "guest", "content": {"text": x}}
                        for i, x in enumerate(texts)],

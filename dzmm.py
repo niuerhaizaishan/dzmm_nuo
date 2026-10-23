@@ -2,6 +2,7 @@
 DZMM Core — cookie from Chrome + tRPC API.
 """
 import json, urllib.parse
+from datetime import datetime, timezone
 import requests
 import token_store
 import env_config
@@ -71,12 +72,19 @@ def api(path: str, inp: dict, cookies: dict | None = None,
     return data.get("result", {}).get("data", {}).get("json", {})
 
 
+def _utc_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def get_messages(chat_id: str, limit: int = 20, before: str | None = None,
                  cookies: dict | None = None, timeout: float = 15) -> list[dict]:
     if cookies is None:
         cookies = get_cookies()
     if before:
-        before = before.replace(" ", "T").replace("+00", "Z")
+        before = _utc_datetime(before).isoformat().replace("+00:00", "Z")
         # 有游标时，只带 json，不带 meta（验证过的正确格式）
         inp = {"json": {"chatroomId": chat_id, "limit": limit, "before": before}}
     else:
@@ -109,6 +117,8 @@ def get_messages_since(chat_id: str, since_time: str,
     """增量拉取窗口内消息；有终点时从终点向前翻页。"""
     if cookies is None:
         cookies = get_cookies()
+    since = _utc_datetime(since_time)
+    until = _utc_datetime(until_time) if until_time else None
     all_msgs, cursor = [], until_time
     for _ in range(100):
         msgs = get_messages(chat_id, 50, cursor, cookies)
@@ -116,15 +126,15 @@ def get_messages_since(chat_id: str, since_time: str,
             break
         all_msgs = msgs + all_msgs
         # get_messages 返回从旧到新，msgs[0] 是最旧一条
-        if msgs[0]["sent_at"] <= since_time:
+        if _utc_datetime(msgs[0]["sent_at"]) <= since:
             break  # 已翻到 since_time 或更早，停止
         cursor = msgs[0]["sent_at"]
         if len(all_msgs) >= max_count:
             break
     # 过滤出窗口内的消息；终点由 API 游标限制后仍在这里兜底。
     return [m for m in all_msgs
-            if m["sent_at"] > since_time
-            and (not until_time or m["sent_at"] < until_time)]
+            if _utc_datetime(m["sent_at"]) >= since
+            and (until is None or _utc_datetime(m["sent_at"]) < until)]
 
 
 def get_user(chat_id: str, user_id: str,

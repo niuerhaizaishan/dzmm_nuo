@@ -15,6 +15,7 @@ import asyncio
 import os
 import subprocess
 import time
+from runtime import lambda_bot as _lambda_bot
 from datetime import datetime  # ⚠️ 必须是类：bot 命名空间 `from datetime import datetime`，
                                 # 体内 datetime.now() 走直连（不在 B. 桥上）——
                                 # 顶部 import datetime（模块）曾让线上运势每发一条
@@ -26,6 +27,8 @@ from runtime import dream as _dream
 from runtime import session_obs as _session_obs
 from runtime import chat_archive as _chat_archive
 from runtime import rose_moderation as _rose_moderation
+from runtime import gallery as _gallery
+from runtime import office as _office
 
 
 __all__ = ["run_main_loop", "run_all"]
@@ -260,6 +263,8 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
         if is_primary:
             try:
                 await B._scheduled_pushes(sender, dry)
+                await _lambda_bot.scheduled_greetings(
+                    sender, dry, groups=B.GROUPS, mute_cids=B.MUTE_CIDS)
             except Exception as _e:
                 log("定时推送异常: " + str(_e)[:80])
         # 吹牛骰子超时跳过（3 分钟无动作 → 移到顺序最后，游戏继续）
@@ -306,6 +311,8 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
             _t_round = None  # P12-I 延迟自证：本轮开始计时（拿到消息才算）
             _lag = -1.0      # 最新群友消息从平台发出到现在的秒数
             try:
+                # 无新消息时同样检查持久化截止时间，重启后也能收尾。
+                await _office.tick(sender, cid, dry=dry)
                 # 读消息：Socket.IO 推送优先，HTTP 低频兜底（对账补漏）
                 sio_msgs = subscriber.drain(cid)
                 need_resync = subscriber.need_resync(cid)
@@ -449,6 +456,16 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                                 (_m.get("sent_by") or "")[:8],
                                 ((_m.get("content") or {}).get("text") or "")[:20]))
 
+                    # 酒馆控制优先于玩法、@ 冷却、欢迎和管理指令。
+                    pending = await _lambda_bot.filter_pending(
+                        sender, cid, pending, group_state, dry=dry,
+                        save_group=B._save_group, is_self=B.is_self)
+                    if not pending:
+                        group_state["last_id"] = msgs[-1]["message_id"]
+                        state[cid] = group_state
+                        B._save_group(cid, group_state)
+                        continue
+
                     # 本轮是否有真正的用户新消息（非 agent）
                     had_new = any(not B.is_self(m.get("sent_by")) for m in pending)
 
@@ -516,6 +533,22 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                         if B.is_self(m.get("sent_by")):
                             continue  # 跳过 bot 自己的消息，避免 self-echo
                         t = (m.get("content") or {}).get("text", "").strip()
+                        # 专用白名单绕过 at_only/slash_cmds；其他斜杠指令仍按原闸门处理。
+                        if cid == _office.TEA_CID and _office.command(t) is not None:
+                            if _office.enabled(cid):
+                                if not cmd:
+                                    cmd, cmd_sender, _cmd_msg = t, m.get("sent_by", ""), m
+                                else:
+                                    _leftover.append(m)
+                            continue
+                        # 群图集是明确指令，回复的是图片而不是机器人，也无需额外 @。
+                        if _gallery.in_scope(cid) and _gallery.command(t) is not None \
+                                and B._feat_on(cid, "slash_cmds"):
+                            if not cmd:
+                                cmd, cmd_sender, _cmd_msg = t, m.get("sent_by", ""), m
+                            else:
+                                _leftover.append(m)
+                            continue
                         if _rose_moderation.is_command(cid, t):
                             if not cmd:
                                 cmd = t
@@ -806,6 +839,9 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                             state[cid] = group_state
                             B._save_group(cid, group_state)
                             await B._publish_rank(sender, cid, dry)
+
+                if _lambda_bot.paused(cid):
+                    continue  # 无新消息时也停止业务计时器；控制入口在上方保留。
 
                 # 冷场吐槽（群里冷清，时间驱动，无新消息也执行）——房间群不毒舌
                 cold_reply = "" if cid in B.ROOM_CIDS or not B._feat_on(cid, "devil_cold") \

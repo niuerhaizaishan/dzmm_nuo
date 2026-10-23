@@ -13,6 +13,7 @@ from admin import dashboard, messages_ui
 from runtime import chat_archive as archive
 from runtime import chat_archive_query as query
 from runtime.ctx import PRIMARY_CID
+from runtime.office_store import TEA_CID
 
 
 def historical(mid="m1", *, uid="user-1", name="旧昵称", text="梦见下雨", stamp="2026-07-27 04:44:58.651+00", kind="text"):
@@ -22,6 +23,53 @@ def historical(mid="m1", *, uid="user-1", name="旧昵称", text="梦见下雨",
 def live(mid="m1", *, uid="user-1", text="梦见下雨", kind="text", stamp="2026-07-27T04:44:58.651Z"):
     return {"message_id": mid, "sent_by": uid, "sent_at": stamp,
             "chatroom_id": PRIMARY_CID, "content": {"type": kind, "text": text}}
+
+
+def test_tea_capture_dedup_and_query_are_isolated(dbdir, monkeypatch):
+    database = dbdir / "archive.db"
+    monkeypatch.setenv("DZMM_CHAT_ARCHIVE", "on")
+    monkeypatch.setenv("DZMM_CHAT_ARCHIVE_DB", str(database))
+    original = live(text="认证群内容")
+    tea = {**live(text="茶水间内容"), "chatroom_id": TEA_CID}
+    archive.append_batch([original], group_id=PRIMARY_CID, source="live_push", path=database)
+    asyncio.run(archive.capture(TEA_CID, [tea], source="live_push"))
+    asyncio.run(archive.capture(TEA_CID, [tea], source="live_http"))
+    first = query.search(path=database)
+    second = query.search({"group_id": TEA_CID}, path=database)
+    assert first["total"] == second["total"] == 1
+    assert first["rows"][0]["text"] == "认证群内容"
+    assert second["rows"][0]["text"] == "茶水间内容"
+    page = messages_ui.render({"group_id": TEA_CID}, path=database)
+    assert "茶水间内容" in page and "认证群内容" not in page
+    assert "顶层茶水间" in page
+    with pytest.raises(ValueError):
+        query.search({"group_id": "outside"}, path=database)
+
+
+def test_old_archive_check_migration_preserves_rows_and_indexes(dbdir):
+    database = dbdir / "old.db"
+    new_check = "CHECK (group_id IN ('" + PRIMARY_CID + "','" + TEA_CID + "'))"
+    old_check = "CHECK (group_id = '" + PRIMARY_CID + "')"
+    with closing(sqlite3.connect(database)) as conn, conn:
+        conn.executescript(archive._SCHEMA.replace(new_check, old_check))
+        conn.execute(archive._INSERT, archive.normalize(live("old"), group_id=PRIMARY_CID, source="live_http"))
+    tea = {**live("new"), "chatroom_id": TEA_CID}
+    result = archive.append_batch([tea], group_id=TEA_CID, source="live_push", path=database)
+    assert result["inserted"] == 1
+    with closing(sqlite3.connect(database)) as conn:
+        assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 2
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list(messages)")}
+        assert {"idx_messages_time", "idx_messages_sender"} <= indexes
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("UPDATE messages SET group_id='outside'")
+    assert archive.append_batch([tea], group_id=TEA_CID, source="live_http", path=database)["duplicates"] == 1
+
+
+def test_historical_tea_import_does_not_execute_commands(dbdir):
+    source, database = dbdir / "tea.jsonl", dbdir / "archive.db"
+    source.write_text(json.dumps(historical(text="/允许潜规则"), ensure_ascii=False) + "\n", encoding="utf-8")
+    assert archive.import_jsonl(source, group_id=TEA_CID, path=database)["inserted"] == 1
+    assert query.search({"group_id": TEA_CID}, path=database)["rows"][0]["text"] == "/允许潜规则"
 
 
 def write_history(path, records):

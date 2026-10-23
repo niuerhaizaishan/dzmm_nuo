@@ -38,14 +38,14 @@ def test_package_exists_and_old_file_is_gone():
 
 def test_package_files():
     got = sorted(p.name for p in PKG.glob("*.py"))
-    assert got == ["__init__.py", "nuo.py", "registry.py", "rose_butler.py",
+    assert got == ["__init__.py", "lambda_persona.py", "nuo.py", "registry.py", "rose_butler.py",
                    "ruojin.py"], got
 
 
 # ---------------------------------------------------------------- ② 接口（计划要求的断言）
 
 def test_personas_import():
-    assert set(P.PERSONAS) == {"nuo", "rose_butler", "ruojin"}
+    assert set(P.PERSONAS) == {"nuo", "rose_butler", "ruojin", "lambda"}
 
 
 def test_personas_interface():

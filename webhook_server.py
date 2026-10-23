@@ -148,7 +148,12 @@ def to_internal(update: dict) -> dict | None:
     # （`{id, sentBy, content:{text,type}}`）。以前这里只取 type/text，**reference
     # 被整个丢掉** ⇒ 走 webhook 那条路的消息永远看不出"他在回复我"。
     # 原样透传（不做形状转换），下游 `bot._ref_of()` 两层形状都认。
-    ref = content.get("reference") or content.get("quote")
+    ref = content.get("reference") or content.get("quote") or content.get("reply")
+    # Telegram 风格的引用也转换为同一形状，仅用于定位；收录仍回查原消息。
+    if not isinstance(ref, dict) and isinstance(msg.get("reply_to_message"), dict):
+        quoted = msg["reply_to_message"]
+        ref = {"id": str(_first(quoted, "message_id", "id") or ""),
+               "content": quoted.get("content") or {}, "sent_at": quoted.get("sent_at") or ""}
     if not isinstance(ref, dict):
         ref = None
 
@@ -157,7 +162,7 @@ def to_internal(update: dict) -> dict | None:
         "chatroom_id": str(cid),
         "sent_by": str(sender),
         "sent_at": sent_at,
-        "content": {"type": str(ctype), "text": str(text),
+        "content": {**content, "type": str(ctype), "text": str(text),
                     "from_name": str(_first(frm, "first_name", "username", "name") or ""),
                     "reference": ref},
         "_source": "webhook",

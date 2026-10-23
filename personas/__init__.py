@@ -309,6 +309,12 @@ def apply_persona(system_prompt: str, cid: str = None) -> str:
     s = s.replace(DEFAULT_NAME_SHORT, p["name_short"])
     if p.get("extra"):
         s = s + "\n\n" + p["extra"]
+    if persona_key_for(cid) == "lambda":
+        from .lambda_persona import RUIWEN_CID
+        actual_cid = cid if cid is not None else current_cid()
+        s += ("\n【本群背景】这里是瑞雯的酒馆；Vv 专属合体/分离由程序处理。"
+              if actual_cid == RUIWEN_CID else
+              "\n【本群背景】这里是 mr.橘的群。没有酒馆营业、Vv 合体/分离设定，不提瑞雯群的关系或记忆。")
     return s
 
 
@@ -405,6 +411,11 @@ def p(key: str, cid: str = None, **kw) -> str:
     s = phrases_for(persona_key_for(cid)).get(key)
     if s is None:
         s = PHRASES["nuo"].get(key) or ""
+    if key == "query_working" and s and persona_key_for(cid) == "lambda":
+        from .lambda_persona import RUIWEN_CID
+        actual_cid = cid if cid is not None else current_cid()
+        if actual_cid == RUIWEN_CID:
+            s += "乖乖！准备好接受我的大调查了吗？"
     return fill(s, cid, **kw)
 
 

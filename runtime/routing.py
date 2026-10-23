@@ -81,6 +81,10 @@ class RoutingSender:
         return await self._account.send_with_id(text, cid)
 
     async def send(self, text: str, cid: str, allow_fallback: bool = True) -> bool:
+        from runtime import lambda_bot
+        if not lambda_bot.is_control_send() and lambda_bot.suppress_outbound(cid):
+            return False
+        text = lambda_bot.render_text(text, cid)
         bot = self._bots.get(cid)
         if bot is not None:
             try:
@@ -108,3 +112,13 @@ class RoutingSender:
         ok = await self._account.send(text, cid, allow_fallback=allow_fallback)
         self.last_failure = "" if ok else "account_unknown"
         return ok
+
+    async def send_reply_with_id(self, text: str, cid: str, reference: dict, *, guard=None) -> str:
+        """茶水间引用回复只走账号；不得悄悄丢失引用或拆分正文。"""
+        self._note("account", cid)
+        return await self._account.send_reply_with_id(text, cid, reference, guard=guard)
+
+    async def send_character_with_id(self, resource_id: str, cid: str) -> str:
+        """官方文本接口不能携带 share，明确路由到账号通道。"""
+        self._note("account", cid)
+        return await self._account.send_character_with_id(resource_id, cid)

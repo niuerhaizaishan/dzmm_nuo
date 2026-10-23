@@ -37,6 +37,7 @@ import requests
 import socketio
 import aiohttp
 import env_config
+from runtime.reply_delivery import ReplyNotSent
 
 ORIGIN = env_config.get_dzmm_origin()
 env_config.set_process_proxy_env()  # 设置/清空 HTTP(S)_PROXY + WS(S)_PROXY（直连时清空）
@@ -161,11 +162,15 @@ class SioSubscriber:
             return ""
         return mid
 
-    async def confirmed_action(self, event: str, payload: dict):
+    async def confirmed_action(self, event: str, payload: dict, *, guard=None):
         """仅接受明确成功 ACK；超时或断线不重发。"""
         if not self._sio or not self._connected.is_set():
-            raise RuntimeError("账号连接不可用")
+            raise ReplyNotSent("账号连接不可用")
         async with self._action_lock:
+            if guard is not None and not guard():
+                return False
+            if not self._connected.is_set():
+                raise ReplyNotSent("账号连接不可用")
             acknowledgement = await self._sio.call(event, payload, timeout=10)
         if not isinstance(acknowledgement, dict) or acknowledgement.get("success") is not True:
             # 平台拒绝的原始 ACK（含 error/errorCode）只进 docker 日志 ——
@@ -175,7 +180,10 @@ class SioSubscriber:
             # 没有这条日志就无法区分"权限拒绝"和"连接问题"。
             print("[sio] ⚠️ {} 被平台拒绝: {}".format(event, repr(acknowledgement)[:200]),
                   flush=True)
+            if isinstance(acknowledgement, dict) and acknowledgement.get("success") is False:
+                raise ReplyNotSent("平台明确拒绝操作")
             raise RuntimeError("平台未确认操作成功")
+        return True
 
     async def recall_message(self, cid: str, message_id: str):
         """删除群消息（管理确认链用）。
@@ -193,6 +201,29 @@ class SioSubscriber:
         message = {"message_id": message_id, "chatroom_id": cid, "sent_by": user_id,
                    "sent_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
                    "content": {"type": "text", "text": text}}
+        await self.confirmed_action("message:send", {"chatroomId": cid, "message": message})
+        return message_id
+
+    async def send_reply_confirmed(self, cid: str, user_id: str, text: str, reference: dict, *, guard=None) -> str:
+        """账号长消息原生引用；一条发送、明确 ACK，不回退打字或官方 Bot。"""
+        if not isinstance(reference, dict) or not reference.get("id") or not reference.get("sentBy"):
+            raise ValueError("引用消息缺少身份或编号")
+        message_id = str(uuid.uuid4())
+        message = {"message_id": message_id, "chatroom_id": cid, "sent_by": user_id,
+                   "sent_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                   "content": {"type": "text", "text": text, "reference": reference}}
+        if await self.confirmed_action("message:send", {"chatroomId": cid, "message": message}, guard=guard) is False:
+            return ""
+        return message_id
+
+    async def send_character_confirmed(self, cid: str, user_id: str, resource_id: str) -> str:
+        """游戏分享卡使用独立 share 消息；只发一次并等待明确 ACK。"""
+        if not isinstance(resource_id, str) or not resource_id.isascii() or not resource_id.isdecimal() or int(resource_id) <= 0:
+            raise ValueError("游戏卡 ID 无效")
+        message_id = str(uuid.uuid4())
+        message = {"message_id": message_id, "chatroom_id": cid, "sent_by": user_id,
+                   "sent_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                   "content": {"type": "share", "shareType": "character", "resourceId": resource_id}}
         await self.confirmed_action("message:send", {"chatroomId": cid, "message": message})
         return message_id
 

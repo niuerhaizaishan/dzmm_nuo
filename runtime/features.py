@@ -283,6 +283,8 @@ _FEATURES_RAW = (
                    "同一时刻只有一封信在生成，所以刷不起来；这个参数只是留着，"
                    "万一有人反复给同一个人写，后台改个数字就能开，不用重新部署"),
     )),
+    Feature("office", "茶水间双人办公室剧情", "game", default=False,
+            note="默认关；仅茶水间小小糯，同部门职级校验、个人自愿开关、每天一次；关闭后结束会话"),
     Feature("dream", "小小糯解梦", "content", default=False,
             note="默认关，不改变现有群聊；按群打开后，仅小小糯的认证群和顶层茶水间可用", params=(
         Param("dream.hash_cmd", "允许 #解梦", 0, "", 0, 1,
@@ -410,6 +412,10 @@ _FEATURES_RAW = (
     Feature("auto_recover", "cookie 失效自动恢复", "schedule"),
 
     # ---- F. 房间玩法（7，仅房间群）
+    Feature("lambda_greetings", "Λʌ 酒馆问候（08:00 / 00:00）", "schedule",
+            note="仅瑞雯酒馆的 Λʌ 生效，独立于 push 总开关；其他群无效。"),
+    Feature("lambda_control", "Λʌ 合体 / 分离", "room",
+            note="仅瑞雯酒馆，且只允许 Vv 的固定用户 ID 控制；其他群无效。"),
     Feature("room_welcome", "新客欢迎（含屋主规矩）", "room"),
     Feature("room_refuse", "客人指令婉拒", "room"),
     Feature("room_order", "点单（酒水/雪茄）", "room",
@@ -446,6 +452,8 @@ _FEATURES_RAW = (
 # bot.py / runtime/*.py 里的 `_feat_on(cid, "key")`，两边不一致就报错。
 # 加闸门忘了改这里、或改了这里忘了加闸门，都会当场红。
 _WIRED = (
+    "office",
+    "lambda_greetings", "lambda_control",
     # --- 第一批（定时/事件类入口，不与命令分派链耦合）---
     "greet_morning", "greet_noon", "greet_evening",   # 定时问候（按群过滤）
     "memory_report",                                  # 午间记忆汇报

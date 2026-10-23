@@ -97,6 +97,9 @@ def _c3(key, title, note="", **kw):
 
 # ---------------------------------------------------------------- 41 个
 _SPECS = [
+    _c2("OFFICE_SCENE_PROMPT", "茶水间双人办公室剧情",
+        "按双方性别和职级组织双人剧情，400～600字整条引用发送",
+        must_keep=("participants", "性别", "400～600", "非露骨"), max_chars=600),
     _c3("PERSONAL_PORTRAIT_PROMPT", "我的画像",
         "按维度归纳本人聊天；引文由程序核验，不推断完整人格",
         must_keep=("JSON", "dimensions", "title", "text", "ending", "[[message_id]]"),

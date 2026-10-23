@@ -31,6 +31,7 @@ from runtime import personal_story as _personal_story
 from runtime import personal_portrait as _personal_portrait
 from runtime import personal_letter as _personal_letter
 from runtime import intro_photo as _intro_photo
+from runtime import lambda_bot as _lambda_bot
 from runtime.dispatch import _ph
 from runtime.fortune import fortune_reply, is_fortune_ask
 from runtime.group_state import (_get_dj_state, _get_fasao_state,
@@ -396,7 +397,15 @@ async def handle_at_chat(sender, cid, at_msg, at_sender, dry, group_state, state
                             "{who}", _who).replace(
                             "{q}", q).replace(
                             "{pending}", _pending_line(mem)),
-                        str(_tune("chat.frame_length", cid) or "").strip())
+                        ("闲聊几句自然接住，认真问题讲清楚，倾诉时耐心展开；不要为凑字数重复。"
+                         if _lambda_bot.in_scope(cid) else
+                         str(_tune("chat.frame_length", cid) or "").strip()))
+                    # 单独标明当前对象，避免昵称截断或历史称呼导致性别串位。
+                    if _lambda_bot.in_scope(cid):
+                        address = {"男生": "弟弟；戏谑打趣，有分寸地撩",
+                                   "女生": "妹妹；先共情倾听，再温柔回应"}.get(
+                                       glabel, "昵称或你；不猜性别，不叫弟弟或妹妹")
+                        _frame += "\n【当前对话者】性别：{}。称呼与口吻：{}。".format(glabel, address)
                     ctx.append({"sender": "",
                                 "text": _frame})
                     if mem:
@@ -457,7 +466,8 @@ async def handle_at_chat(sender, cid, at_msg, at_sender, dry, group_state, state
                     _heart = ""
                 if random.random() >= float(_tune("chat.bang_prob", cid)):
                     _bang = False
-                reply = _ensure_decor(reply, _heart, bang=_bang)
+                if not _lambda_bot.in_scope(cid):
+                    reply = _ensure_decor(reply, _heart, bang=_bang)
             reply = "🤖 " + reply
             log("💬 " + reply[:200])
             _remember_turn(cid, "我", reply[2:].strip())  # P12-AD

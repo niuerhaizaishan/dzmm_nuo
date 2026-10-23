@@ -1,0 +1,50 @@
+[
+  {
+    "id": "frieren",
+    "url": "https://dw9to29mmj727.cloudfront.net/products/1974725766.jpg",
+    "dimensions": [
+      320,
+      480
+    ]
+  },
+  {
+    "id": "witch",
+    "url": "https://dw9to29mmj727.cloudfront.net/products/1974715469.jpg",
+    "dimensions": [
+      320,
+      480
+    ]
+  },
+  {
+    "id": "blue",
+    "url": "https://dw9to29mmj727.cloudfront.net/products/1974734625.jpg",
+    "dimensions": [
+      320,
+      480
+    ]
+  },
+  {
+    "id": "skip",
+    "url": "https://dw9to29mmj727.cloudfront.net/products/1974734641.jpg",
+    "dimensions": [
+      320,
+      460
+    ]
+  },
+  {
+    "id": "yotsuba",
+    "url": "https://dw9to29mmj727.cloudfront.net/products/1974738930.jpg",
+    "dimensions": [
+      320,
+      460
+    ]
+  },
+  {
+    "id": "summer",
+    "url": "https://dw9to29mmj727.cloudfront.net/products/1974709930.jpg",
+    "dimensions": [
+      320,
+      480
+    ]
+  }
+]

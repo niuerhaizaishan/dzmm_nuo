@@ -12,9 +12,9 @@ sleep 1
 nohup Xvfb :99 -screen 0 1280x800x24 > /tmp/xvfb.log 2>&1 &
 sleep 2
 
-# 2. x11vnc 把 :99 暴露为 VNC（端口 5900，密码从 .env 的 VNC_PASS 读，默认 dzmm2026）
+# 2. x11vnc 把 :99 暴露为 VNC（端口 5900，密码从 .env 的 VNC_PASS 读，默认 configured in the restricted password file）
 [ -f /opt/dzmm/.env ] && . /opt/dzmm/.env
-nohup x11vnc -display :99 -forever -shared -passwd "${VNC_PASS:-dzmm2026}" -rfbport 5900 > /tmp/x11vnc.log 2>&1 &
+nohup x11vnc -display :99 -forever -shared -passwdfile /opt/dzmm/secrets/vnc.pass -rfbport 5900 > /tmp/x11vnc.log 2>&1 &
 sleep 2
 
 # 3. websockify 把 VNC 转成 WebSocket（网页 6080 → localhost:5900），前端用 noVNC

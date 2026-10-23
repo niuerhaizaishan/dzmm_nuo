@@ -6,12 +6,13 @@
 import asyncio
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from brains import generate_recap
 from dzmm import get_messages_since
 from personas import me as _pme, p as _pp          # 自称 + 按群人设文案（小小糯/薇丝）
 from runtime.ctx import PRIMARY_CID
+from runtime.chat_archive_query import recap_messages
 from runtime.features import on as _feat_on   # P12-AK：本群接不接 `/` 指令（决定 /xxx 算不算噪音）
 from runtime.identity import _load_member_names, get_full_name, get_name, is_self
 from runtime.obs import log
@@ -141,7 +142,20 @@ def _recap_window(cid: str, uid: str, text: str):
         return (d0, now, "今天")
     if "昨天" in t or "昨日" in t:
         d0 = _day0(datetime.now() - timedelta(days=1))
+        if "晚上" in t or "晚间" in t:
+            return (d0 + 18 * 3600, d0 + 86400, "昨天晚上")
+        if "早上" in t or "早晨" in t:
+            return (d0, d0 + 9 * 3600, "昨天早上")
+        if "上午" in t:
+            return (d0, d0 + 12 * 3600, "昨天上午")
+        if "中午" in t:
+            return (d0 + 11 * 3600, d0 + 14 * 3600, "昨天中午")
+        if "下午" in t:
+            return (d0 + 12 * 3600, d0 + 18 * 3600, "昨天下午")
         return (d0, d0 + 86400, "昨天")
+    if "昨晚" in t:
+        d0 = _day0(datetime.now() - timedelta(days=1))
+        return (d0 + 18 * 3600, d0 + 86400, "昨天晚上")
     if "上午" in t:
         return (_day0(datetime.now()), now, "今天上午起")
     if "下午" in t:
@@ -178,8 +192,10 @@ def _day0(dt) -> float:
 def _msg_ts(m: dict) -> float:
     """消息时间戳（sent_at 是 UTC 字符串）."""
     try:
-        return datetime.fromisoformat(
-            str(m.get("sent_at") or "").replace("+00", "+00:00")).timestamp()
+        parsed = datetime.fromisoformat(str(m.get("sent_at") or "").replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
     except Exception:
         return 0.0
 
@@ -257,7 +273,7 @@ def _recap_mentions(msgs: list, uid: str, kw: tuple = (), cid: str = None):
             continue  # P12-AK：游戏播报里的"提到"不算有人找他
         if any(("@" + n) in t or (n in t) or (n[:4] in t and len(n) >= 4) for n in names):
             hits += 1
-            nm = get_name(m.get("sent_by", "")) or "有人"
+            nm = m.get("sender_name") or get_name(m.get("sent_by", "")) or "有人"
             if nm not in who:
                 who.append(nm)
             if not sample:
@@ -297,7 +313,7 @@ def _recap_transcript(msgs: list, cid: str = None) -> tuple:
         else:
             stamp = ""
         body = t[:300] if t else _msg_kind(m)
-        who = _me if is_self(u) else get_name(u)
+        who = _me if is_self(u) else m.get("sender_name") or get_name(u)
         lines.append("[{}] {}: {}".format(stamp or "--:--", who, body))
         n_msg += 1
     return ("\n".join(lines), n_msg)
@@ -361,13 +377,22 @@ async def recap_absent(cid: str, uid: str, text: str = "",
             and time.time() - float(last.get("ts") or 0) \
             < _tune("recap.cooldown", cid):
         return "这一段刚给你说完呢～换个时间段问（比如「昨天」「上午」），或者过一会儿再问嘛～"
+    msgs = []
+    from_archive = False
+    if cid == PRIMARY_CID:
+        try:
+            msgs = await asyncio.to_thread(recap_messages, cid, since, until or time.time())
+            from_archive = bool(msgs)
+        except Exception as error:
+            log("回顾归档读取失败: " + type(error).__name__)
     try:
-        since_utc = datetime.utcfromtimestamp(since).strftime("%Y-%m-%d %H:%M:%S")
+        since_utc = datetime.fromtimestamp(since, timezone.utc).isoformat().replace("+00:00", "Z")
         fetch_until = until if until and until < time.time() - 60 else None
-        until_utc = (datetime.utcfromtimestamp(fetch_until).strftime("%Y-%m-%d %H:%M:%S")
+        until_utc = (datetime.fromtimestamp(fetch_until, timezone.utc).isoformat().replace("+00:00", "Z")
                      if fetch_until else None)
-        msgs = await asyncio.to_thread(get_messages_since, cid, since_utc,
-                                       max_count=600, until_time=until_utc)
+        if not from_archive:
+            msgs = await asyncio.to_thread(get_messages_since, cid, since_utc,
+                                           max_count=600, until_time=until_utc)
     except Exception as e:
         log("回顾拉取失败: " + str(e)[:60])
         return (_pp("recap_fail", cid)
@@ -375,10 +400,11 @@ async def recap_absent(cid: str, uid: str, text: str = "",
     # 先把成员昵称一次性load进来：否则转录里每个陌生 uid 都会单独发一次 HTTP 查名字
     # （实测 6 小时窗口因此多花 2.9 秒）
     try:
-        await asyncio.to_thread(_load_member_names, cid)
+        if not from_archive:
+            await asyncio.to_thread(_load_member_names, cid)
     except Exception:
         pass
-    msgs = [m for m in msgs if (m.get("content") or {}).get("text", "").strip()]
+    msgs = [m for m in msgs if (m.get("content") or {}).get("text", "").strip() or _msg_kind(m)]
     # 排掉当前这条提问本身（它是"问题"，不是"你不在的时候发生的事"）
     if exclude_mid:
         msgs = [m for m in msgs if str(m.get("message_id") or "") != str(exclude_mid)]
@@ -425,7 +451,8 @@ async def recap_absent(cid: str, uid: str, text: str = "",
                           + ("，比如「" + sample + "」" if sample else "")]
         else:
             body["📌"] = ["没人等你，安心潜水吧"]
-    lines = ["📮 你不在的时候（" + win_txt + "，群里 " + str(total) + " 条"
+    count_label = "本次读取本地归档 " if from_archive else "群里 "
+    lines = ["📮 你不在的时候（" + win_txt + "，" + count_label + str(total) + " 条"
              + ("，这里挑最近 " + str(n_shown) + " 条看" if total > n_shown else "") + "）",
              bell]
     for k in ("💬", "🎭", "📌"):

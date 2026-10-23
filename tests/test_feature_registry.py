@@ -90,8 +90,8 @@ def test_registry_has_69_features():
     屋主要"查询超过半个月没发言的群友 + 她们的故事和最后一句话"。
     数据面只在认证群聊天归档上跑，是**新增的触发入口**，默认关（见 `_DELIBERATE_OFF`）。
     """
-    assert len(F.FEATURES) == 74
-    assert len(set(F.keys())) == 74, "key 必须唯一"
+    assert len(F.FEATURES) == 77
+    assert len(set(F.keys())) == 77, "key 必须唯一"
 
 
 def test_every_feature_is_well_formed():
@@ -113,12 +113,13 @@ def test_category_counts_match_the_plan():
     people 再多 1 = P12-AL 新增 `at_only`（只 @ 才回复）。
     """
     got = {c: len(v) for c, v in F.by_category().items()}
-    assert got == {"game": 15, "content": 17, "people": 14, "screen": 7,
-                   "schedule": 9, "room": 8, "alert": 4}
+    assert got == {"game": 16, "content": 17, "people": 14, "screen": 7,
+                   "schedule": 10, "room": 9, "alert": 4}
 
 
 # 唯一允许 default=False 的功能，且必须写明理由（别让它悄悄变长）。
 _DELIBERATE_OFF = {
+    "office",  # 新增茶水间双人玩法，资料接口尚待联调，默认关闭。
     # P12-AE：这是一条**新增的触入口**（别人右键回复我也接话）。今天的行为是
     # "只有 @ 才答"，所以它默认必须是关的 —— 默认打开等于在所有群悄悄改了行为，
     # 玫瑰房那套"谁能触发管家"的房间策略也会被绕过。要用就在对应群按群打开。

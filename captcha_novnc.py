@@ -94,7 +94,7 @@ def main() -> int:
         return 0 if ip_captcha_cleared() else 1
 
     vnc_url = os.environ.get("VNC_URL", "http://47.237.152.187:6080/vnc.html")
-    vnc_pass = os.environ.get("VNC_PASS", "dzmm2026")
+    vnc_pass = os.environ.get("VNC_PASS", "")
     try:
         wait_min = int(os.environ.get("CAPTCHA_WAIT_MIN", "30"))
     except Exception:

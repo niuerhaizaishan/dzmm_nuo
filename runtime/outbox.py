@@ -17,11 +17,13 @@ P3 阶段的目标与边界：
 存储用 SQLite（WAL）。单群 MVP 足够；P7 迁 PostgreSQL 时只需换 `OutboxStore`。
 """
 import asyncio
+import json
 import sqlite3
 import threading
 import time
 import uuid
 from pathlib import Path
+from runtime import lambda_bot as _lambda_bot
 
 __all__ = [
     "PENDING", "LEASED", "SENT", "FAILED", "INTERRUPTED_NOTE",
@@ -259,6 +261,16 @@ class OutboxStore:
             self._conn.commit()
         return n
 
+    def discard_lambda_pending(self, cid: str, before: float) -> int:
+        """休眠时结案本群尚未投递的业务消息，不触碰在途或其他群记录。"""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE outbound SET status=?, last_error=? WHERE chatroom_id=? "
+                "AND created_at<=? AND status IN (?,?)",
+                (EXPIRED, "Λʌ 休眠：取消待发，不再重放", cid, before, PENDING, FAILED))
+            self._conn.commit()
+            return cur.rowcount
+
     def failed_count(self) -> int:
         """失败记录条数（P12-AB：巡检靠它发现"某条消息静默丢了"）。"""
         with self._lock:
@@ -343,12 +355,22 @@ class OutboxSender:
         return lock
 
     async def send(self, text: str, cid: str, allow_fallback: bool = True) -> bool:
+        control = _lambda_bot.is_control_send()
+        created_at = time.time()
+        if not control and _lambda_bot.suppress_outbound(cid):
+            return False
+        text = _lambda_bot.render_text(text, cid)
         # dry 模式完全走原路径，不落库、无副作用（保持与现网一致）
         if self._dry:
             return await self._inner.send(text, cid, allow_fallback=allow_fallback)
 
-        oid = self._store.enqueue(chatroom_id=cid, text=text)
+        oid = self._store.enqueue(chatroom_id=cid, text=text,
+                                  content_type="lambda_control" if control else "text")
         async with self._lock(cid):          # 同群串行，保证顺序
+            if not control and _lambda_bot.suppress_outbound(cid, created_at):
+                self._store.discard_lambda_pending(
+                    cid, float(_lambda_bot.presence(cid).get("paused_at") or created_at))
+                return False
             if not self._store.lease(oid, self._worker_id, self._lease_ttl):
                 self._store.mark_failed(oid, "领取租约失败")
                 return False
@@ -367,10 +389,16 @@ class OutboxSender:
 
     async def send_with_id(self, text: str, cid: str) -> str:
         """确认提示持久记录平台编号；失败不加入自动重试。"""
+        if _lambda_bot.suppress_outbound(cid):
+            return ""
+        text = _lambda_bot.render_text(text, cid)
         if self._dry:
             return ""
         oid = self._store.enqueue(chatroom_id=cid, text=text)
         async with self._lock(cid):
+            if _lambda_bot.suppress_outbound(cid):
+                self._store.discard_lambda_pending(cid, time.time())
+                return ""
             if not self._store.lease(oid, self._worker_id, self._lease_ttl):
                 self._store.mark_failed(oid, "确认提示领取失败")
                 return ""
@@ -383,6 +411,59 @@ class OutboxSender:
                 raise
             self._store.mark_sent(oid, platform_sent_id=message_id)
             return message_id
+
+    async def send_reply_with_id(self, text: str, cid: str, reference: dict, *, guard=None) -> str:
+        """保存正文和引用；专用类型禁止普通重试器把 JSON 当纯文本重放。"""
+        if self._dry or _lambda_bot.suppress_outbound(cid):
+            return ""
+        payload = json.dumps({"text": text, "reference": reference, "single_message": True}, ensure_ascii=False)
+        oid = self._store.enqueue(chatroom_id=cid, text=payload, content_type="office_reply")
+        async with self._lock(cid):
+            if _lambda_bot.suppress_outbound(cid):
+                self._store.expire([oid], "回复已取消")
+                return ""
+            if not self._store.lease(oid, self._worker_id, self._lease_ttl):
+                self._store.mark_failed(oid, "引用回复领取失败")
+                return ""
+            try:
+                mid = await self._inner.send_reply_with_id(text, cid, reference, guard=guard)
+                if not isinstance(mid, str) or not mid:
+                    self._store.mark_failed(oid, "引用回复已取消或尚未投递")
+                    return ""
+            except Exception as error:
+                self._store.mark_failed(oid, "引用回复结果待核对：" + type(error).__name__)
+                raise
+            self._store.mark_sent(oid, platform_sent_id=mid)
+            return mid
+
+    async def send_character_with_id(self, resource_id: str, cid: str) -> str:
+        """分享卡独立排队、记录类型和平台编号，失败不自动改发文本。"""
+        if _lambda_bot.suppress_outbound(cid):
+            return ""
+        if self._dry:
+            return ""
+        oid = self._store.enqueue(chatroom_id=cid, text=resource_id, content_type="share")
+        async with self._lock(cid):
+            if _lambda_bot.suppress_outbound(cid):
+                self._store.discard_lambda_pending(cid, time.time())
+                return ""
+            if not self._store.lease(oid, self._worker_id, self._lease_ttl):
+                self._store.mark_failed(oid, "分享卡领取失败")
+                return ""
+            try:
+                message_id = await self._inner.send_character_with_id(resource_id, cid)
+                if not isinstance(message_id, str) or not message_id:
+                    raise RuntimeError("缺少分享卡平台编号")
+            except Exception as error:
+                self._store.mark_failed(oid, "分享卡未确认：" + type(error).__name__)
+                raise
+            self._store.mark_sent(oid, platform_sent_id=message_id)
+            return message_id
+
+    def cancel_lambda_pending(self, cid: str, before: float) -> int:
+        if cid != _lambda_bot.RUIWEN_CID:
+            return 0
+        return self._store.discard_lambda_pending(cid, before)
 
     # ------------------------------------------------------------ 安全重试（P12-J）
     async def retry_worker(self) -> None:
@@ -442,7 +523,7 @@ class OutboxSender:
                 attempts = int(it.get("attempt_count") or 0)
             except Exception:                                  # noqa: BLE001
                 attempts = 0
-            if "[rejected]" not in err:
+            if it.get("content_type", "text") != "text" or "[rejected]" not in err:
                 self.retry_counts["skipped_unsafe"] += 1
                 continue
             if attempts > self.retry_max:
@@ -453,6 +534,9 @@ class OutboxSender:
             if not cid or not text:
                 continue
             async with self._lock(cid):
+                if _lambda_bot.suppress_outbound(cid, it.get("created_at")):
+                    self._store.expire([oid], "Λʌ 休眠：取消旧回复，不再重放")
+                    continue
                 # failed 的记录领不到租约（lease 只认 pending / 过期 leased）
                 # ⇒ 先放回 pending 再领
                 if not self._store.revive(oid):
