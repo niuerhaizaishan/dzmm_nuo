@@ -197,6 +197,15 @@ $("#btn-connect").addEventListener("click",connect);
 $("#btn-stop").addEventListener("click",()=>stopNow("房主手动"));
 $("#btn-share").addEventListener("click",createShare);
 $("#btn-end").addEventListener("click",endShare);
+$("#allowbot").addEventListener("change",async()=>{
+  if(!S.sid){log("先生成分享码","warn"); $("#allowbot").checked=false; return}
+  try{
+    const r=await fetch("api/program/allow",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({sid:S.sid,pin:S.pin,allow:$("#allowbot").checked})});
+    const d=await r.json();
+    log((d.allow_program?"已允许":"已撤回")+"小小糯控制","ok");
+  }catch(e){log("设置失败："+e.message,"bad")}
+});
 window.addEventListener("pagehide",()=>{if(S.char){try{write("Vibrate:0;")}catch(e){}}});
 document.addEventListener("visibilitychange",()=>{if(document.hidden)log("页面切到后台，蓝牙可能被挂起，建议保持前台","warn")});
 log("页面已加载。HTTPS："+(location.protocol==="https:")+" · Web Bluetooth："+(!!navigator.bluetooth),navigator.bluetooth?"ok":"bad");

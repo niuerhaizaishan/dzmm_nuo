@@ -63,6 +63,7 @@ from runtime import personal_portrait as _personal_portrait
 from runtime import personal_letter as _personal_letter
 from runtime import rose_moderation as _rose_moderation
 from runtime import gallery as _gallery
+from runtime.haptics import bot_commands as _haptics_bot
 from runtime.perf import (OWNER_UID, _get_perf_content, _handle_perf_start,
                           _perf_end_bg, _perf_m_name, _perf_send,
                           is_perf_end_cmd, is_perf_start_cmd)
@@ -934,6 +935,15 @@ async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
                 message_id = await sender.send_character_with_id(_gallery.CARD_ID, cid)
                 if not message_id:
                     raise RuntimeError("图集分享卡发送未确认")
+        return
+
+    if _haptics_bot.command(cmd) is not None:
+        if not _feat_on(cid, "slash_cmds"):
+            return
+        reply = await _haptics_bot.handle(cmd, owner=(cmd_sender == OWNER_UID))
+        if reply and not dry:
+            if not await sender.send("🤖 " + reply, cid):
+                raise RuntimeError("触觉指令回执发送失败")
         return
 
     perf = _get_perf_state(cid)

@@ -27,6 +27,7 @@ MIN_INTERVAL_MS = 300     # 同一控制者两条指令最小间隔
 SESSION_TTL = 30 * 60     # 闲置 30 分钟回收
 MAX_GUESTS = 1            # 一次只允许一个人控制
 PIN_ATTEMPTS = 5          # 连续错 5 次锁房
+PROGRAM_TOKEN = os.environ.get("DZMM_SHARE_PROGRAM_TOKEN", "")  # 机器人（小小糯）用的令牌；没配就关掉程序通道
 LOCK_SECONDS = 300
 STATIC_DIR = "runtime/haptics/static"
 
@@ -47,6 +48,8 @@ class Session:
         self.fails = 0
         self.locked_until = 0.0
         self.device = ""
+        self.allow_program = False   # 房主是否显式允许机器人控制
+        self.program = None          # 机器人那条 WS
         self.last_cmd = {}
         self.last_ack = {}
         self.seq = 0
@@ -60,6 +63,7 @@ class Session:
 
     def state(self):
         return {"host": self.host is not None, "guests": len(self.guests),
+                "program": self.program is not None, "allow_program": self.allow_program,
                 "device": self.device, "last_cmd": self.last_cmd,
                 "last_ack": self.last_ack,
                 "caps": {"max_level": MAX_LEVEL, "max_duration_ms": MAX_DURATION_MS,
@@ -125,6 +129,33 @@ async def _to_host(session, payload):
     except Exception:
         session.host = None
         return False
+
+
+def _program_ok(value):
+    return bool(PROGRAM_TOKEN) and secrets.compare_digest(str(value or ""), PROGRAM_TOKEN)
+
+
+async def _relay_cmd(session, data):
+    """夹紧参数并转发给房主。成功返回 (cmd_id, level, duration, None)，失败返回 (None,None,None,原因)。"""
+    try:
+        level = float(data.get("level", 0))
+    except (TypeError, ValueError):
+        level = 0.0
+    try:
+        duration = int(data.get("duration_ms") or 1000)
+    except (TypeError, ValueError):
+        duration = 1000
+    level = max(0.0, min(level, MAX_LEVEL)) if MAX_LEVEL < 1.0 else min(max(level, 0.0), 1.0)
+    duration = max(200, min(duration, MAX_DURATION_MS)) if MAX_DURATION_MS > 0 else max(200, duration)
+    if session.host is None:
+        return None, None, None, "房主不在线"
+    session.seq += 1
+    cmd_id = session.seq
+    session.last_cmd = {"id": cmd_id, "level": level, "duration_ms": duration, "at": time.time()}
+    if not await _to_host(session, {"t": "cmd", "id": cmd_id, "level": level,
+                                    "duration_ms": duration}):
+        return None, None, None, "房主不在线"
+    return cmd_id, level, duration, None
 
 
 def create_app(*, base_url="", hub=None):
@@ -228,29 +259,11 @@ def create_app(*, base_url="", hub=None):
                 if (now - last_send) * 1000 < MIN_INTERVAL_MS:
                     await ws.send_json({"t": "denied", "reason": "太快了，慢一点"})
                     continue
-                try:
-                    level = float(data.get("level", 0))
-                except (TypeError, ValueError):
-                    level = 0.0
-                try:
-                    duration = int(data.get("duration_ms") or 1000)
-                except (TypeError, ValueError):
-                    duration = 1000
-                level = max(0.0, min(level, MAX_LEVEL)) if MAX_LEVEL < 1.0 else min(max(level, 0.0), 1.0)
-                duration = max(200, min(duration, MAX_DURATION_MS)) if MAX_DURATION_MS > 0 else max(200, duration)
-                if session.host is None:
-                    await ws.send_json({"t": "denied", "reason": "房主不在线"})
+                cmd_id, level, duration, reason = await _relay_cmd(session, data)
+                if reason:
+                    await ws.send_json({"t": "denied", "reason": reason})
                     continue
                 last_send = now
-                session.seq += 1
-                cmd_id = session.seq
-                session.last_cmd = {"id": cmd_id, "level": level, "duration_ms": duration,
-                                    "at": time.time()}
-                sent = await _to_host(session, {"t": "cmd", "id": cmd_id, "level": level,
-                                                "duration_ms": duration})
-                if not sent:
-                    await ws.send_json({"t": "denied", "reason": "房主不在线"})
-                    continue
                 await ws.send_json({"t": "sent", "id": cmd_id, "level": level,
                                     "duration_ms": duration})
                 await _broadcast_guests(session, {"t": "state", "state": session.state()})
@@ -275,6 +288,107 @@ def create_app(*, base_url="", hub=None):
             await _to_host(session, {"t": "stop", "reason": "回执超时"})
             log("haptics-share: 指令 " + str(cmd_id) + " 回执超时，已补发停止")
 
+    # ---------- 机器人（小小糯）通道 ----------
+
+    async def program_allow(request):
+        """房主页面上的「允许小小糯控制」开关。"""
+        payload = await request.json()
+        session = hub.get(payload.get("sid"))
+        if session is None or not session.check_pin(payload.get("pin")):
+            return web.json_response({"ok": False, "error": "not_found"}, status=403)
+        session.allow_program = bool(payload.get("allow"))
+        if not session.allow_program and session.program is not None:
+            try:
+                await session.program.close(code=4002, message=b"revoked")
+            except Exception:
+                pass
+            session.program = None
+            await _to_host(session, {"t": "stop", "reason": "机器人已撤回"})
+        session.touched = time.monotonic()
+        await _broadcast_guests(session, {"t": "state", "state": session.state()})
+        log("haptics-share: 机器人许可=" + str(session.allow_program) + " " + session.sid)
+        return web.json_response({"ok": True, "allow_program": session.allow_program})
+
+    async def program_session(request):
+        """机器人问：现在有哪个房间允许我控制？"""
+        token = request.headers.get("X-Program-Token") or request.query.get("token", "")
+        if not _program_ok(token):
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        best = None
+        for session in hub.sessions.values():
+            if not (session.allow_program and session.host is not None):
+                continue
+            if best is None or session.touched > best.touched:
+                best = session
+        if best is None:
+            return web.json_response({"ok": True, "session": None})
+        return web.json_response({"ok": True, "session": {"sid": best.sid, "device": best.device,
+                                                          "caps": best.state()["caps"]}})
+
+    async def program_ws(request):
+        if not _program_ok(request.query.get("token")):
+            raise web.HTTPUnauthorized(text="令牌不对")
+        session = hub.get(request.query.get("sid"))
+        if session is None:
+            raise web.HTTPForbidden(text="房间不存在")
+        if not session.allow_program:
+            raise web.HTTPForbidden(text="房主没有允许机器人控制")
+        ws = web.WebSocketResponse(heartbeat=20, max_msg_size=64 * 1024)
+        await ws.prepare(request)
+        if session.program is not None and session.program is not ws:
+            try:
+                await session.program.close(code=4001, message=b"replaced")
+            except Exception:
+                pass
+        session.program = ws
+        session.graceful = False   # 客户端发 bye 表示"指令发完就走"，别再补停止
+        session.touched = time.monotonic()
+        last_send = 0.0
+        log("haptics-share: 机器人接入 " + session.sid)
+        await ws.send_json({"t": "welcome", "state": session.state()})
+        try:
+            async for message in ws:
+                if message.type != WSMsgType.TEXT:
+                    continue
+                session.touched = time.monotonic()
+                data = message.json() if hasattr(message, "json") else {}
+                kind = data.get("t")
+                if kind == "stop":
+                    await _to_host(session, {"t": "stop", "reason": "机器人停止"})
+                    await ws.send_json({"t": "result", "id": None, "ok": True, "raw": "stop"})
+                    continue
+                if kind == "bye":
+                    session.graceful = True
+                    continue
+                if kind != "cmd":
+                    continue
+                now = time.monotonic()
+                if (now - last_send) * 1000 < MIN_INTERVAL_MS:
+                    await ws.send_json({"t": "denied", "reason": "rate_limited"})
+                    continue
+                cmd_id, level, duration, reason = await _relay_cmd(session, data)
+                if reason:
+                    await ws.send_json({"t": "denied", "reason": reason})
+                    continue
+                last_send = now
+                await ws.send_json({"t": "sent", "id": cmd_id, "level": level,
+                                    "duration_ms": duration})
+                await _broadcast_guests(session, {"t": "state", "state": session.state()})
+                if session.stop_task:
+                    session.stop_task.cancel()
+                session.stop_task = asyncio.create_task(
+                    _watchdog(session, cmd_id, duration + 500))
+        finally:
+            if session.program is ws:
+                session.program = None
+                last_send = 0.0
+                if not getattr(session, "graceful", False):
+                    await _to_host(session, {"t": "stop", "reason": "机器人异常断开"})
+                    log("haptics-share: 机器人异常断开，已补停止 " + session.sid)
+                else:
+                    log("haptics-share: 机器人正常收工 " + session.sid)
+        return ws
+
     async def qrlib(request):
         path = here / "static" / "qrcode.min.js"
         return web.Response(text=path.read_text(encoding="utf-8"),
@@ -291,6 +405,9 @@ def create_app(*, base_url="", hub=None):
     app.router.add_get("/api/session/{sid}", session_state)
     app.router.add_get("/ws/host", host_ws)
     app.router.add_get("/ws/guest", guest_ws)
+    app.router.add_post("/api/program/allow", program_allow)
+    app.router.add_get("/api/program/session", program_session)
+    app.router.add_get("/ws/program", program_ws)
     app.router.add_get("/healthz", health)
     app["hub"] = hub
     return app
