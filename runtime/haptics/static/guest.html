@@ -40,12 +40,9 @@
     <label>强度 <span class="big" id="lvl">50</span>%<span class="dim" id="capnote"></span></label>
     <input type="range" id="level" min="1" max="100" value="50">
     <div class="dim">这就是手动档位：拖到哪，玩具就按那个强度一直震，拖的时候实时变。</div>
-    <label>时长 <span class="big" id="dur">1200</span> ms</label>
-    <input type="range" id="duration" min="200" max="10000" step="100" value="1200">
-    <button id="btn-send" class="primary">振动一下</button>
     <div class="row">
       <button id="btn-short">短 · 0.4 秒</button>
-      <button id="btn-long">长 · 2.5 秒</button>
+      <button id="btn-long">长 · 1.2 秒</button>
     </div>
     <button id="btn-stop" class="danger">立即停止</button>
   </div>
@@ -159,7 +156,6 @@ function stopRunUI(){
 
 /* ---------- 交互 ---------- */
 $("#level").addEventListener("input",()=>{$("#lvl").textContent=$("#level").value;sendLevel()});
-$("#duration").addEventListener("input",()=>$("#dur").textContent=$("#duration").value);
 function sendCmd(extra){
   if(!ws||ws.readyState!==1)return log("还没连上","warn");
   const now=Date.now();
@@ -167,9 +163,8 @@ function sendCmd(extra){
   lastSent=now;
   ws.send(JSON.stringify(Object.assign({t:"cmd",level:Number($("#level").value)/100},extra)));
 }
-$("#btn-send").addEventListener("click",()=>sendCmd({duration_ms:Number($("#duration").value)}));
 $("#btn-short").addEventListener("click",()=>sendCmd({duration_ms:400}));
-$("#btn-long").addEventListener("click",()=>sendCmd({duration_ms:2500}));
+$("#btn-long").addEventListener("click",()=>sendCmd({duration_ms:1200}));
 $("#btn-stop").addEventListener("click",()=>{
   if(!ws||ws.readyState!==1)return;
   ws.send(JSON.stringify({t:"stop"}));
