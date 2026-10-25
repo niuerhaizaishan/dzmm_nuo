@@ -121,6 +121,7 @@ def test_pattern_command_relays_id_and_total_ms():
             session, {"level": 0.5, "pattern": "pulse", "total_ms": 60000})
         assert reason is None and cmd_id == 1
         assert pattern == "pulse" and total_ms == 60000 and duration == 60000
+        assert level == 1.0, "预设自带每一步的强度，手动档位不参与换算"
         relayed = session.host.sent[-1]
         assert relayed["t"] == "cmd" and relayed["pattern"] == "pulse"
         assert relayed["total_ms"] == 60000

@@ -162,6 +162,9 @@ async def _relay_cmd(session, data):
             total_ms = MAX_PATTERN_MS
         total_ms = max(200, min(total_ms, MAX_PATTERN_MS))
         duration = total_ms
+        # 预设自带每一步的强度（那是节奏的一部分），所以 level 不参与；
+        # 手动强度只走 level 通道，两者互不换算。
+        level = 1.0
     level = max(0.0, min(level, MAX_LEVEL)) if MAX_LEVEL < 1.0 else min(max(level, 0.0), 1.0)
     if not pattern:
         duration = max(200, min(duration, MAX_DURATION_MS)) if MAX_DURATION_MS > 0 else max(200, min(duration, MAX_DURATION_MS_CAP))

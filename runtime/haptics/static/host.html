@@ -76,7 +76,7 @@ for(const y of "0123456789abcdef")for(const [x,z] of [["4","3"],["5","4"]])
 const SETS=STATIC_SETS.concat(GEN3);
 const SERVICES=SETS.map(s=>s.service);
 
-const S={device:null,server:null,char:null,rx:null,deviceName:"",ws:null,sid:"",pin:"",lastAck:null,ackWaiter:null,stopTimer:null,cur:null};
+const S={device:null,server:null,char:null,rx:null,deviceName:"",ws:null,sid:"",pin:"",lastAck:null,ackWaiter:null,stopTimer:null,manualTimer:null,cur:null};
 const $=s=>document.querySelector(s);
 const logBox=$("#log");
 function log(m,c=""){const d=document.createElement("div");if(c)d.className=c;d.textContent=`[${new Date().toTimeString().slice(0,8)}] ${m}`;logBox.appendChild(d);logBox.scrollTop=logBox.scrollHeight}
@@ -152,15 +152,18 @@ function waitAck(ms=700){
 }
 async function stopNow(reason){
   clearTimeout(S.stopTimer);S.stopTimer=null;
+  clearTimeout(S.manualTimer);S.manualTimer=null;
   stopRun();S.cur=null;
   if(!S.char)return;
   try{await write("Vibrate:0;");log("停止（"+reason+"）","warn")}catch(e){}
 }
-/* 跑一条六十秒的预设：按 steps 循环，到点就停；token 变了就立刻放弃。 */
-async function runPattern(id,base,totalMs){
+/* 跑一条六十秒的预设：按 steps 循环，到点就停；token 变了就立刻放弃。
+   预设自带每一步的强度（节奏的一部分），不看手动档位的值。 */
+async function runPattern(id,totalMs){
   const def=PATTERNS[id];
   if(!def)return log("未知预设 "+id,"bad");
   const token=++runToken;
+  clearTimeout(S.manualTimer);S.manualTimer=null;
   const start=performance.now();
   const n=Math.max(2,Math.round(totalMs/500));
   let i=0;
@@ -168,10 +171,10 @@ async function runPattern(id,base,totalMs){
     const left=totalMs-(performance.now()-start);
     if(left<=0)break;
     const st=def.step(i++,n);
-    const lv=clampLevel(base*st.shape);
+    const lv=clampLevel(st.shape);
     await write(`Vibrate:${lv};`);
     if(token!==runToken)return;
-    S.cur={level:lv,shape:st.shape,continuous:st.off<=0};
+    S.cur={level:lv,shape:st.shape};
     await sleep(Math.min(st.on,left));
     if(token!==runToken)return;
     if(st.off>0){
@@ -185,6 +188,21 @@ async function runPattern(id,base,totalMs){
     S.cur=null;
     log("预设「"+def.name+"」结束","warn");
   }
+}
+/* 手动档位：拖到哪就按那个强度一直震，直到「立即停止」或拖回 0。
+   兜底：5 分钟没有任何调整自动停（防止忘了关）。 */
+const MANUAL_MAX_MS=300000;
+async function manualLevel(value){
+  clearTimeout(S.stopTimer);S.stopTimer=null;
+  stopRun();                                   // 手动接管：预设让位
+  const v=Math.max(0,Math.min(1,Number(value)||0));
+  if(v<=0){await stopNow("档位归零");return}
+  const n=clampLevel(v);
+  S.cur={level:n,shape:1.0};
+  try{await write(`Vibrate:${n};`)}catch(e){log("手动档位失败："+e.message,"bad");return}
+  clearTimeout(S.manualTimer);
+  S.manualTimer=setTimeout(()=>stopNow("手动档位超时"),MANUAL_MAX_MS);
+  $("#devstate").textContent="手动档位 "+(n*5)+"%（"+(S.deviceName||"设备")+"）";
 }
 function sendState(){
   if(S.ws&&S.ws.readyState===1)
@@ -220,8 +238,8 @@ function openHostWS(){
     if(d.t==="guest_joined"){log("有人扫码接入了","ok");$("#sharestate").textContent="对方正在控制"}
     if(d.t==="cmd"){
       clearTimeout(S.stopTimer);S.stopTimer=null;
+      clearTimeout(S.manualTimer);S.manualTimer=null;
       stopRun();S.cur=null;
-      const base=Math.max(0,Math.min(1,d.level||0));
       try{
         if(d.pattern){
           const def=PATTERNS[d.pattern];
@@ -230,15 +248,15 @@ function openHostWS(){
           }else{
             const total=Math.max(200,d.total_ms||60000);
             S.ws.send(JSON.stringify({t:"ack",id:d.id,ok:true,raw:"pattern:"+d.pattern}));
-            log("收到预设「"+def.name+"」"+(total/1000)+" 秒 · 强度 "+Math.round(base*100)+"%","ok");
-            runPattern(d.pattern,base,total).catch(e=>log("预设中断："+e.message,"bad"));
+            log("收到预设「"+def.name+"」"+(total/1000)+" 秒","ok");
+            runPattern(d.pattern,total).catch(e=>log("预设中断："+e.message,"bad"));
           }
         }else{
-          const n=clampLevel(base);
+          const n=clampLevel(d.level||0);
           await write(`Vibrate:${n};`);
           const ack=await waitAck();
           S.ws.send(JSON.stringify({t:"ack",id:d.id,ok:!!ack,raw:ack||"sent"}));
-          S.cur={level:n,shape:1.0,continuous:true};
+          S.cur={level:n,shape:1.0};
           S.stopTimer=setTimeout(()=>stopNow("到时"),Math.max(200,d.duration_ms||1000));
         }
       }catch(e){
@@ -250,17 +268,9 @@ function openHostWS(){
         : "对方正在控制（最近 "+(d.level*100).toFixed(0)+"%）";
     }
     if(d.t==="level"){
-      const v=Math.max(0,Math.min(1,d.value||0));
-      if(v<=0){await stopNow("强度归零");return}
-      // 正在长震/渐强里：立刻改写当前档位；否则只影响下一步
-      if(S.cur&&S.char){
-        const nv=clampLevel(v*S.cur.shape);
-        if(nv!==S.cur.level){
-          S.cur.level=nv;
-          try{await write(`Vibrate:${nv};`)}catch(e){}
-        }
-      }
-      log("实时强度 "+Math.round(v*100)+"%","dim");
+      // 手动档位：绝对值，直接按这个强度震，不看预设
+      await manualLevel(d.value);
+      $("#sharestate").textContent="对方手动档位 "+Math.round(Math.max(0,Math.min(1,d.value||0))*100)+"%";
     }
     if(d.t==="stop"){await stopNow(d.reason||"对方要求")}
   };

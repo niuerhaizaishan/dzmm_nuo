@@ -39,7 +39,7 @@
     <div id="who" class="dim">正在连接房主的设备…</div>
     <label>强度 <span class="big" id="lvl">50</span>%<span class="dim" id="capnote"></span></label>
     <input type="range" id="level" min="1" max="100" value="50">
-    <div class="dim">拖着滑条就能实时调，正在震的时候也生效；预设节奏会按这个强度整体缩放。</div>
+    <div class="dim">这就是手动档位：拖到哪，玩具就按那个强度一直震，拖的时候实时变。</div>
     <label>时长 <span class="big" id="dur">1200</span> ms</label>
     <input type="range" id="duration" min="200" max="10000" step="100" value="1200">
     <button id="btn-send" class="primary">振动一下</button>
@@ -51,7 +51,7 @@
   </div>
 
   <div class="card">
-    <div class="dim" style="margin-top:0">预设节奏 · 每条 60 秒（再点一下换节奏，随时可停）</div>
+    <div class="dim" style="margin-top:0">预设节奏 · 每条 60 秒（强度按节奏自己的走，不跟滑条；再点一下换节奏，随时可停）</div>
     <div id="presets" class="grid"></div>
     <div id="runbar" hidden>
       <div id="runtext" class="dim" style="margin-top:10px"></div>
@@ -117,10 +117,11 @@ function connect(){
   ws.onerror=()=>log("连接出错","bad");
 }
 
-/* ---------- 实时强度 ---------- */
+/* ---------- 手动档位（实时强度） ---------- */
 let lastLevelAt=0,levelTimer=null;
 function sendLevel(){
   if(!ws||ws.readyState!==1)return;
+  stopRunUI();                 // 拖滑条＝手动接管，预设让位
   const now=performance.now(),gap=now-lastLevelAt;
   if(gap<150){
     if(!levelTimer)levelTimer=setTimeout(()=>{levelTimer=null;sendLevel()},150-gap);
