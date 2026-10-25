@@ -82,6 +82,75 @@ def test_parse_plain_accepts_model_answer():
     assert cues.parse_plain("30") is None
 
 
+def test_drama_curve_is_monotonic_and_clamped():
+    """模型只给紧张度，强度/时长由代码映射 —— 必须单调、不越上限。"""
+    rows = [raid.from_drama(score) for score in (0, 25, 50, 75, 100)]
+    levels = [row.level for row in rows]
+    durations = [row.duration_ms for row in rows]
+    assert levels == sorted(levels) and durations == sorted(durations), "必须单调递增"
+    assert levels[0] >= 0.2 and abs(levels[-1] - cues.MAX_LEVEL) < 1e-9
+    assert raid.from_drama(999).level == raid.from_drama(100).level, "越界要夹住"
+    assert raid.from_drama(-5).level == raid.from_drama(0).level
+    assert raid.from_drama("abc") is None
+
+
+def test_judge_maps_a_single_number(monkeypatch):
+    import brains
+
+    monkeypatch.setattr(brains, "_call_llm_raw",
+                        lambda *a, **k: ("72", "stop"))
+    got = raid._judge("一段很长的叙述" * 20)
+    assert got is not None and abs(got.level - raid.from_drama(72).level) < 1e-9
+
+
+def test_judge_falls_back_to_plain_pair(monkeypatch):
+    import brains
+
+    monkeypatch.setattr(brains, "_call_llm_raw",
+                        lambda *a, **k: ("55 1200", "stop"))
+    got = raid._judge("一段很长的叙述" * 20)
+    assert got is not None and got.duration_ms == 1200
+
+
+def test_judge_returns_none_when_model_garbage(monkeypatch):
+    import brains
+
+    monkeypatch.setattr(brains, "_call_llm_raw", lambda *a, **k: ("不知道", "stop"))
+    assert raid._judge("一段很长的叙述" * 20) is None
+
+
+def test_judge_prompt_carries_previous_level_and_action(monkeypatch):
+    """模型必须知道"上一回合多强 + 玩家这回合干了啥"，否则每段都判四五十。"""
+    import brains
+
+    seen = {}
+
+    def fake(prompt, content, **kw):
+        seen["prompt"] = prompt
+        return ("60", "stop")
+
+    monkeypatch.setattr(brains, "_call_llm_raw", fake)
+    raid._judge("一段很长的叙述" * 20, {"prev": 0.35, "action": "直接开箱"})
+    assert "35%" in seen["prompt"]
+    assert "直接开箱" in seen["prompt"]
+
+
+def test_plan_threads_previous_level_into_judge(_clean):
+    """离线仿真也要把上一回合的强度传下去（否则和线上不一致）。"""
+    seen = []
+
+    def judge(text, ctx=None):
+        seen.append((ctx or {}).get("prev"))
+        return cues.Cue("模型", 0.5, 800)
+
+    conf = {"mode": "b", "per_turn": 2, "cooldown_s": 0}
+    long_text = "管道检修口的栅格被踹松了，你侧身挤进去。" * 5
+    raid.plan([{"at": 0, "text": long_text}, {"at": 120, "text": long_text}],
+              conf=conf, judge=judge)
+    assert seen == [None, 0.5], "第二次判定必须拿到上一次的强度当锚点"
+
+
+
 def test_per_turn_cap_and_timeline():
     text = "【震动】警官 25% 600ms 又【震动】侠盗 45% 900ms"
     assert len(cues.parse_cues(text)) == 2
@@ -117,14 +186,14 @@ def test_collect_uses_prompt_tiers_by_default():
 
 
 def test_collect_falls_back_to_prompt_tier_when_model_fails(monkeypatch):
-    monkeypatch.setattr(raid, "_judge", lambda text: None)
+    monkeypatch.setattr(raid, "_judge", lambda text, ctx=None: None)
     conf = {"mode": "b", "per_turn": 2}
     got = raid.collect(["【震动】警官 30% 800ms"], conf)
     assert got and got[0].role == "警官", "模型没有结论时必须退回提示词档位"
 
 
 def test_collect_prefers_model_answer_in_mode_b(monkeypatch):
-    monkeypatch.setattr(raid, "_judge", lambda text: cues.Cue("模型", 0.6, 1500))
+    monkeypatch.setattr(raid, "_judge", lambda text, ctx=None: cues.Cue("模型", 0.6, 1500))
     conf = {"mode": "b", "per_turn": 2}
     long_text = "管道检修口的栅格被军靴第二下就踹松了。" * 6 + "【震动】警官 25% 600ms"
     got = raid.collect([long_text], conf)
@@ -134,7 +203,7 @@ def test_collect_prefers_model_answer_in_mode_b(monkeypatch):
 def test_mode_b_skips_short_texts_to_save_model_calls(monkeypatch):
     """状态栏/短回复不该调模型，也不该震；短文本只走 a 的兜底解析。"""
     calls = []
-    monkeypatch.setattr(raid, "_judge", lambda text: calls.append(text) or None)
+    monkeypatch.setattr(raid, "_judge", lambda text, ctx=None: calls.append(text) or None)
     conf = {"mode": "b", "per_turn": 2}
     assert raid.collect(["【进度】密码 ①— ②— ③—｜钥匙 有/无"], conf) == []
     assert calls == [], "太短，不该调模型"
@@ -238,3 +307,35 @@ def test_third_cue_of_same_turn_is_dropped(_clean, monkeypatch):
             "【震动】警官 25% 600ms【震动】侠盗 45% 900ms【震动】警官 70% 3000ms"}}])
         assert got == 2
     asyncio.run(scenario())
+
+
+def test_plan_replays_history_with_cooldowns(_clean):
+    """离线仿真：同一套冷却规则。隔 30 秒的两次都触发，隔 1 秒的被挡。"""
+    _write_config(_clean, mode="a", per_turn=2, cooldown_s=10)
+    items = [
+        {"at": 0, "text": "开场，没有触觉。"},
+        {"at": 30, "text": "【震动】警官 30% 800ms"},
+        {"at": 31, "text": "【震动】警官 55% 1200ms"},     # 同角色 1 秒内 → 挡
+        {"at": 75, "text": "【震动】警官 55% 1200ms"},     # 隔 45 秒 → 放
+    ]
+    rows = raid.plan(items)
+    fired = [(r["at"], [round(c["level"], 2) for c in r["cues"]]) for r in rows]
+    assert fired == [(0, []), (30, [0.3]), (31, []), (75, [0.55])]
+    assert rows[2]["dropped"], "被挡掉的那条要能在仿真里看到原因"
+
+
+def test_plan_uses_injected_judge_in_mode_b(_clean):
+    _write_config(_clean, mode="b", per_turn=2, cooldown_s=0)
+    long_text = "管道检修口的栅格被踹松了，你侧身挤进去。" * 5
+    rows = raid.plan([{"at": 0, "text": long_text}],
+                     conf={"mode": "b", "per_turn": 2, "cooldown_s": 0},
+                     judge=lambda text, ctx=None: cues.Cue("模型", 0.6, 1500))
+    assert rows[0]["cues"] and rows[0]["cues"][0]["duration_ms"] == 1500
+
+
+def test_plan_skips_status_lines_in_mode_b(_clean):
+    conf = {"mode": "b", "per_turn": 2, "cooldown_s": 0}
+    rows = raid.plan([{"at": 0, "text": "【进度】密码 ①— ②— ③—｜钥匙 有/无"}],
+                     conf=conf, judge=lambda text, ctx=None: cues.Cue("模型", 0.9, 3000))
+    assert rows[0]["cues"] == []
+
