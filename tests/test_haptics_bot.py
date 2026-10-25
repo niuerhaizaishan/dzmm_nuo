@@ -48,6 +48,21 @@ def test_preset_names_map_to_page_ids():
         assert B.parse(bad)[0] is None, bad
 
 
+def test_toy_help_topic_is_recognised_but_general_help_is_not():
+    """/帮助 玩具 由触觉族接；光秃秃的 /帮助 还给通用帮助（不能抢）。"""
+    for text in ("/帮助 玩具", "/帮助 玩具指令", "/help 玩具", "/帮助 糯控", "/帮助 震动"):
+        assert B.command(text) == "帮助", text
+    for text in ("/帮助", "/帮助 玩法", "/菜单", "/帮助 图集"):
+        assert B.command(text) is None, text
+
+
+def test_toy_help_answers_anyone_and_lists_commands():
+    """帮助是纯文字，不查白名单（不然新人连怎么用都看不到）。"""
+    reply = asyncio.run(B.handle("/帮助 玩具", uid="stranger", owner=False))
+    for word in ("/预设", "/震", "/停", "允许小小糯控制"):
+        assert word in reply, word
+
+
 def test_preset_command_relays_pattern(monkeypatch):
     monkeypatch.setenv("DZMM_SHARE_PROGRAM_TOKEN", "t")
     share = FakeShare()

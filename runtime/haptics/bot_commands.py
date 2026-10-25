@@ -28,6 +28,8 @@ def allow_file():
 
 
 COMMAND = re.compile(r"^/(震|停|预设|节奏)(?=\s|$)(.*)$", re.S)
+HELP_CMD = re.compile(r"^/(?:帮助|help|指令|菜单|命令)\s+(\S.*)$", re.S)
+TOY_TOPICS = ("玩具", "糯控", "触觉", "震动", "振动", "设备", "小恶魔")
 DEFAULT_LEVEL = 0.30
 DEFAULT_DURATION_MS = 800
 MIN_DURATION_MS = 200
@@ -72,12 +74,41 @@ def is_allowed(uid):
 
 
 def command(text):
-    """返回动作名（震/预设/停）或 None。"""
-    match = COMMAND.match((text or "").strip())
-    if not match:
-        return None
-    kind = match.group(1)
-    return "预设" if kind == "节奏" else kind
+    """返回动作名（震/预设/停/帮助）或 None。"""
+    raw = (text or "").strip()
+    match = COMMAND.match(raw)
+    if match:
+        kind = match.group(1)
+        return "预设" if kind == "节奏" else kind
+    # /帮助 玩具（也叫糯控/触觉/震动…）走这里；别的 /帮助 主题还给通用帮助
+    help_match = HELP_CMD.match(raw)
+    if help_match and is_toy_topic(help_match.group(1)):
+        return "帮助"
+    return None
+
+
+def is_toy_topic(text):
+    value = (text or "").strip()
+    return any(key in value for key in TOY_TOPICS)
+
+
+def help_text():
+    """`/帮助 玩具` 的内容：所有玩具相关指令 + 网页版怎么开。"""
+    lines = [
+        "🧸 玩具指令（主人白名单可用）：",
+        "/预设 — 看全部预设节奏",
+        "/预设 心跳 — 播 60 秒；/预设 心跳 30 = 30 秒（5~60）",
+        "   七个：点按 · 脉冲 · 心跳 · 渐强 · 渐弱 · 连抖 · 全开",
+        "/震 — 单发：/震 30 800（强度% 时长ms，都可省）",
+        "/停 — 立刻全停（正在跑的预设、背景层一起停）",
+        "",
+        "🕹 网页版（手动/预设/实时强度）：https://www.nuonuo.pw/haptics/",
+        "   房主：连接设备 → 生成分享码；要给小小糯用就勾「允许小小糯控制」",
+        "   想让它跟着团本剧情自己震：房主页开着 + 勾上面那个就够",
+    ]
+    if not share_client.enabled():
+        lines.append("⚠️ 机器人通道没开（服务器缺 DZMM_SHARE_PROGRAM_TOKEN），现在只能用网页版。")
+    return "\n".join(lines)
 
 
 def preset_list_text():
@@ -103,6 +134,8 @@ def parse(text):
     """解析成动作 dict；参数不合法返回 (None, 提示)。"""
     match = COMMAND.match((text or "").strip())
     if not match:
+        if command(text) == "帮助":
+            return {"action": "help"}, ""
         return None, USAGE
     kind = command(text)
     if kind == "停":
@@ -157,6 +190,8 @@ async def handle(text, *, uid="", owner=False, share=None):
     action, problem = parse(text)
     if action is None:
         return problem
+    if action["action"] == "help":
+        return help_text()
     if action["action"] == "presets":
         return preset_list_text()
     if not owner and not is_allowed(uid):
