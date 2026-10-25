@@ -1,5 +1,6 @@
 """/震 与 /停：解析、权限、回执（用假客户端，不碰网络）。"""
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -75,3 +76,60 @@ def test_usage_is_returned_for_bad_params(monkeypatch):
     monkeypatch.setenv("DZMM_SHARE_PROGRAM_TOKEN", "t")
     reply = asyncio.run(B.handle("/震 abc", owner=True, share=FakeShare()))
     assert "用法" in reply
+
+
+def test_allowlist_file_grants_permission(tmp_path, monkeypatch):
+    allow = tmp_path / "allow.json"
+    allow.write_text('{"uids": ["CF1B1360-7F3F-4EF8-9188-07D718FE9173"], "names": ["御褚"]}', encoding="utf-8")
+    monkeypatch.setenv("DZMM_HAPTICS_ALLOW_FILE", str(allow))
+    monkeypatch.setenv("DZMM_SHARE_PROGRAM_TOKEN", "t")
+    assert B.is_allowed("cf1b1360-7f3f-4ef8-9188-07d718fe9173"), "大小写不该影响"
+    assert not B.is_allowed("someone-else")
+
+    share = FakeShare()
+    reply = asyncio.run(B.handle("/震 20", uid="cf1b1360-7f3f-4ef8-9188-07d718fe9173", share=share))
+    assert reply.startswith("⚡ 20% / 800ms")
+    reply = asyncio.run(B.handle("/震 20", uid="someone-else", share=share))
+    assert "白名单" in reply
+    assert len(share.calls) == 1, "白名单外的调用不该真的下发"
+
+
+def test_missing_or_broken_allow_file_denies_everyone(tmp_path, monkeypatch):
+    monkeypatch.setenv("DZMM_HAPTICS_ALLOW_FILE", str(tmp_path / "nope.json"))
+    assert B.allow_uids() == set()
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("DZMM_HAPTICS_ALLOW_FILE", str(bad))
+    assert B.allow_uids() == set()
+    assert not B.is_allowed("anyone")
+
+def test_allowlist_file_grants_permission(monkeypatch):
+    allow = Path(__file__).with_name("_allow_test.json")
+    allow.write_text('{"uids": ["CF1B1360-7F3F-4EF8-9188-07D718FE9173"], "names": ["御褚"]}',
+                     encoding="utf-8")
+    try:
+        monkeypatch.setenv("DZMM_HAPTICS_ALLOW_FILE", str(allow))
+        monkeypatch.setenv("DZMM_SHARE_PROGRAM_TOKEN", "t")
+        assert B.is_allowed("cf1b1360-7f3f-4ef8-9188-07d718fe9173"), "大小写不该影响"
+        assert not B.is_allowed("someone-else")
+        share = FakeShare()
+        reply = asyncio.run(B.handle("/震 20", uid="cf1b1360-7f3f-4ef8-9188-07d718fe9173", share=share))
+        assert reply.startswith("⚡ 20% / 800ms")
+        reply = asyncio.run(B.handle("/震 20", uid="someone-else", share=share))
+        assert "白名单" in reply
+        assert len(share.calls) == 1, "白名单外的调用不该真的下发"
+    finally:
+        allow.unlink(missing_ok=True)
+
+
+def test_missing_or_broken_allow_file_denies_everyone(monkeypatch):
+    monkeypatch.setenv("DZMM_HAPTICS_ALLOW_FILE", str(Path(__file__).with_name("_no_such_allow.json")))
+    assert B.allow_uids() == set()
+    bad = Path(__file__).with_name("_allow_bad.json")
+    bad.write_text("{not json", encoding="utf-8")
+    try:
+        monkeypatch.setenv("DZMM_HAPTICS_ALLOW_FILE", str(bad))
+        assert B.allow_uids() == set()
+        assert not B.is_allowed("anyone")
+    finally:
+        bad.unlink(missing_ok=True)

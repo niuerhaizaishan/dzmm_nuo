@@ -1,4 +1,4 @@
-"""/震 与 /停：群里的触觉指令（只给主人用）。
+﻿"""/震 与 /停：群里的触觉指令（群主 + 白名单）。
 
 指令形态：
   /震              默认 30% / 800ms
@@ -8,9 +8,18 @@
 强度按百分比给（1~100），时长 200~10000ms；实际是否生效取决于房主页面是否打开了
 「允许小小糯控制」——没打开时回一句怎么开。
 """
+import json
+import os
 import re
 
 from runtime.haptics import share_client
+
+# 白名单：{"uids": ["<uid>", ...], "names": ["御褚"]}。每次指令都重读，改完立即生效、不用重启。
+DEFAULT_ALLOW_FILE = "/app/data/haptics_allow.json"
+
+
+def allow_file():
+    return os.environ.get("DZMM_HAPTICS_ALLOW_FILE") or DEFAULT_ALLOW_FILE
 
 COMMAND = re.compile(r"^/(震|停)(?=\s|$)(.*)$", re.S)
 DEFAULT_LEVEL = 0.30
@@ -18,6 +27,21 @@ DEFAULT_DURATION_MS = 800
 MIN_DURATION_MS = 200
 MAX_DURATION_MS = 10000
 USAGE = "用法：/震 30 500（强度%，时长ms，可省）｜/停"
+
+
+def allow_uids():
+    """读白名单；文件缺失或坏掉就当空表（宁可不开权限）。"""
+    try:
+        with open(allow_file(), encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return set()
+    rows = data.get("uids") if isinstance(data, dict) else data
+    return {str(item).strip().lower() for item in (rows or []) if str(item).strip()}
+
+
+def is_allowed(uid):
+    return str(uid or "").strip().lower() in allow_uids()
 
 
 def command(text):
@@ -54,13 +78,13 @@ def parse(text):
     return {"action": "vibrate", "level": round(level, 3), "duration_ms": duration}, ""
 
 
-async def handle(text, *, owner=False, share=None):
-    """执行一条指令并返回要发回群里的短回执。"""
+async def handle(text, *, uid="", owner=False, share=None):
+    """执行一条指令并返回要发回群里的短回执。owner=群主，uid 用于查白名单。"""
     action, problem = parse(text)
     if action is None:
         return problem
-    if not owner:
-        return "这个指令只有主人能用。"
+    if not owner and not is_allowed(uid):
+        return "这个指令只有主人和白名单里的人能用。"
     if not share_client.enabled():
         return "机器人通道没开（服务器缺 DZMM_SHARE_PROGRAM_TOKEN），先用网页版控制。"
     share = share or share_client.client()

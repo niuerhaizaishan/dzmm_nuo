@@ -940,7 +940,9 @@ async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
     if _haptics_bot.command(cmd) is not None:
         if not _feat_on(cid, "slash_cmds"):
             return
-        reply = await _haptics_bot.handle(cmd, owner=(cmd_sender == OWNER_UID))
+        # uid 一并传下去：群主之外的权限走 haptics_allow.json 白名单
+        reply = await _haptics_bot.handle(cmd, uid=cmd_sender,
+                                          owner=(cmd_sender == OWNER_UID))
         if reply and not dry:
             if not await sender.send("🤖 " + reply, cid):
                 raise RuntimeError("触觉指令回执发送失败")
