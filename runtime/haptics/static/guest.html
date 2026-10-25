@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#14161a">
+<title>糯控 · 控制</title>
+<style>
+  :root{color-scheme:dark}
+  *{box-sizing:border-box}
+  body{margin:0;background:#14161a;color:#e6e6ea;font:15px/1.6 "Microsoft YaHei",system-ui,sans-serif}
+  main{max-width:520px;margin:0 auto;padding:18px 16px 44px}
+  h1{font-size:17px;margin:2px 0 14px;font-weight:600}
+  .card{background:#1c1f25;border:1px solid #2a2f38;border-radius:12px;padding:14px;margin-bottom:12px}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;margin-left:6px}
+  .off{background:#4a2020;color:#f09c9c}.on{background:#204a2f;color:#7ee2a8}
+  label{display:block;font-size:12px;color:#8b93a1;margin:14px 0 6px}
+  input[type=range]{width:100%}
+  .big{font-size:26px;font-weight:600;color:#f0c9a8}
+  button{width:100%;padding:14px;border-radius:10px;border:0;background:#2f3743;color:#dfe4ec;font-size:15px;cursor:pointer;margin-top:10px}
+  button.primary{background:#b0533f;color:#fff}
+  button.danger{background:#7d2b22;color:#fff;font-weight:600}
+  button:disabled{opacity:.45;cursor:default}
+  #log{font:12px/1.6 ui-monospace,Consolas,monospace;color:#9aa4b2;max-height:30vh;overflow:auto;white-space:pre-wrap}
+  .dim{color:#6f7784;font-size:12px}
+</style>
+</head>
+<body><main>
+  <h1>糯控 · 控制<span id="pill" class="pill off">连接中</span></h1>
+
+  <div class="card">
+    <div id="who" class="dim">正在连接房主的设备…</div>
+    <label>强度 <span class="big" id="lvl">20</span>%<span class="dim" id="capnote"></span></label>
+    <input type="range" id="level" min="1" max="40" value="20">
+    <label>时长 <span class="big" id="dur">1200</span> ms</label>
+    <input type="range" id="duration" min="200" max="3000" step="100" value="1200">
+    <button id="btn-send" class="primary">振动一下</button>
+    <button id="btn-stop" class="danger">立即停止</button>
+    <div class="dim" style="margin-top:10px">最短间隔 300ms；强度上限由服务端夹紧，不会超过 40%。</div>
+  </div>
+
+  <div class="card">
+    <div class="dim">状态</div>
+    <div id="log"></div>
+  </div>
+</main>
+<script>
+"use strict";
+const q=new URLSearchParams(location.search);
+const SID=q.get("sid")||"", PIN=q.get("pin")||"";
+const $=s=>document.querySelector(s);
+const logBox=$("#log");
+function log(m,c=""){const d=document.createElement("div");if(c)d.className=c;d.textContent=`[${new Date().toTimeString().slice(0,8)}] ${m}`;logBox.appendChild(d);logBox.scrollTop=logBox.scrollHeight}
+function pill(text,on){const p=$("#pill");p.className="pill "+(on?"on":"off");p.textContent=text}
+let ws=null,busy=false,lastSent=0;
+
+if(!SID){pill("链接缺少房间号",false);log("这个链接不完整，请重新扫房主的二维码","bad");}
+else connect();
+function connect(){
+  const proto=location.protocol==="https:"?"wss":"ws";
+  ws=new WebSocket(`${proto}://${location.host}${location.pathname.replace(/\/$/,"")}/ws/guest?sid=${encodeURIComponent(SID)}&pin=${encodeURIComponent(PIN)}`);
+  ws.onopen=()=>{pill("已接入",true);log("已连上房主","ok")};
+  ws.onmessage=ev=>{
+    let d;try{d=JSON.parse(ev.data)}catch{return}
+    if(d.t==="welcome"||d.t==="state"){
+      const s=d.state||{};
+      $("#who").textContent=(s.host?"房主在线":"房主不在线")+" · 设备："+(s.device||"未上报");
+      if(s.caps){$("#level").max=Math.round(s.caps.max_level*100);$("#capnote").textContent="（上限 "+Math.round(s.caps.max_level*100)+"%）"}
+      if(d.t==="welcome")pill(s.host?"已接入":"房主不在线",!!s.host);
+    }
+    if(d.t==="sent")log(`已下发 ${Math.round(d.level*100)}% / ${d.duration_ms}ms`,"ok");
+    if(d.t==="executed")log(`设备回执：${d.ok?"OK":"未确认"}`,"ok");
+    if(d.t==="denied")log("被拒绝："+d.reason,"bad");
+    if(d.t==="closed"){pill("房主已断开",false);log("房主结束了分享（"+d.reason+"）","bad")}
+    if(d.t==="result"&&d.id!==null)log("回执："+(d.ok?"OK":"未确认")+(d.raw?" "+d.raw:""),"dim");
+  };
+  ws.onclose=()=>{pill("已断开",false);log("连接已断开（可能是 PIN 错、房间已结束，或已有别人在控制）","bad")};
+  ws.onerror=()=>log("连接出错","bad");
+}
+$("#level").addEventListener("input",()=>$("#lvl").textContent=$("#level").value);
+$("#duration").addEventListener("input",()=>$("#dur").textContent=$("#duration").value);
+$("#btn-send").addEventListener("click",()=>{
+  if(!ws||ws.readyState!==1)return log("还没连上","warn");
+  const now=Date.now();
+  if(now-lastSent<300)return log("慢一点（300ms 间隔）","warn");
+  lastSent=now;
+  ws.send(JSON.stringify({t:"cmd",level:Number($("#level").value)/100,duration_ms:Number($("#duration").value)}));
+});
+$("#btn-stop").addEventListener("click",()=>{
+  if(!ws||ws.readyState!==1)return;
+  ws.send(JSON.stringify({t:"stop"}));log("已发送停止","warn");
+});
+window.addEventListener("pagehide",()=>{try{if(ws&&ws.readyState===1)ws.send(JSON.stringify({t:"stop"}))}catch(e){}});
+log("页面已加载，房间 "+SID);
+</script>
+</body></html>
