@@ -223,3 +223,36 @@ docker restart caddy-nuonuo
 ### 已知限制
 - 房主页面必须保持**前台亮屏**（Web Bluetooth 在后台会被挂起）；控制者侧无所谓。
 - 二维码里带 PIN（扫码即控）；要收回就点「结束分享」重开一个房间。
+
+---
+
+## 附录 C · 小小糯作为控制者（群指令 /震 /停）· 2026-10-25
+
+### 用法
+1. 手机打开 <https://www.nuonuo.pw/haptics/>，连设备、生成分享码
+2. **勾上「允许小小糯控制」**（不勾机器人连不上）
+3. 群里发：
+   - `/震` → 30% / 800ms
+   - `/震 50` → 50% / 800ms
+   - `/震 50 2000` → 50% / 2000ms（强度 1~100%，时长 200~10000ms）
+   - `/停` → 立刻停
+4. 只有 `OWNER_UID`（糯糯～）能用；其他人收到「这个指令只有主人能用」。
+
+### 服务端新增
+- `POST /api/program/allow`：房主页开关（房主显式授权，默认关）
+- `GET /api/program/session`：机器人问「现在哪个房间允许我控制」
+- `GET /ws/program`：程序通道，凭 `DZMM_SHARE_PROGRAM_TOKEN`
+- `_relay_cmd()`：房主/控制者/机器人共用同一套参数处理，避免三处逻辑分叉
+- 客户端发 `bye` 表示正常收工；只有**异常断开**才补停止（否则每条指令刚下发就被自己停掉——实测踩过）
+
+### 部署要点（这次踩到的坑，务必记住）
+- **线上 `/opt/dzmm/runtime/dispatch.py` 比仓库里的旧**：仓库版 import `runtime.office`，而线上没有该模块。第一次直接把仓库版传上去，导致 A 实例启动即 `ImportError` 崩溃重启。
+- 正确做法：从旧镜像里取回线上那份 dispatch.py（`docker run --rm --entrypoint cat dzmm-bot:pre-haptics-20261025 /app/runtime/dispatch.py`），只插入最小钩子（一行 import + 一段 if），再重建。
+- **未来把分支全量部署到线上之前，必须先把 `runtime/office.py` 等缺失模块补齐**，否则会再次崩。
+- 宿主机 `python3` 是 3.6，校验不了海象运算符；用容器里的 3.11 校验（`docker run --rm -v ... python:3.11-slim python -c "import ast; ast.parse(...)"`）。
+- 回滚镜像：`dzmm-bot:pre-haptics-20261025`（`docker tag` 回 latest 再 `compose up -d dzmm-bot`）。
+- 传错的那份 dispatch.py 备份在 `/opt/dzmm/backup-haptics-share-20261025/dispatch.my-upload.py`。
+
+### 已验证
+- 51 项单测通过
+- 无手机端到端：脚本扮房主页 → 勾允许 → 机器人 `/震 40 800` → 房主收到 `cmd(0.4, 800)`；`/停` → 收到 `stop`；无多余补停
