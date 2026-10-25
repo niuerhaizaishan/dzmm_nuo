@@ -13,8 +13,8 @@ class FakeShare:
         self.ok = ok
         self.detail = detail
 
-    async def command(self, level, duration_ms):
-        self.calls.append(("cmd", level, duration_ms))
+    async def command(self, level, duration_ms, pattern=None, total_ms=None):
+        self.calls.append(("cmd", level, duration_ms, pattern, total_ms))
         return {"ok": self.ok, "detail": self.detail} if not self.ok else {"ok": True}
 
     async def stop(self, reason=""):
@@ -24,10 +24,39 @@ class FakeShare:
 
 @pytest.mark.parametrize("text,action", [
     ("/震", "震"), ("/震 30", "震"), ("/震 30 500", "震"), ("/停", "停"),
-    ("/震动", None), ("/停一下", None), ("随便说点什么", None), ("", None),
+    ("/预设", "预设"), ("/预设 心跳", "预设"), ("/节奏 全开 20", "预设"),
+    ("/震动", None), ("/停一下", None), ("/场景 惩罚", None),
+    ("随便说点什么", None), ("", None),
 ])
 def test_command_recognition(text, action):
     assert B.command(text) == action
+
+
+def test_preset_names_map_to_page_ids():
+    assert B.parse("/预设")[0] == {"action": "presets"}
+    action, _ = B.parse("/预设 心跳")
+    assert action["pattern"] == "heartbeat" and action["total_ms"] == 60000
+    action, _ = B.parse("/预设 心跳 30")
+    assert action["total_ms"] == 30000
+    for name, pid in B.PRESET_LABELS:
+        assert B.parse("/预设 " + name)[0]["pattern"] == pid
+    # 别名与唯一前缀
+    assert B.parse("/预设 长震")[0]["pattern"] == "hold"
+    assert B.parse("/预设 心")[0]["pattern"] == "heartbeat"
+    assert B.parse("/预设 不存在")[0] is None
+    for bad in ("/预设 心跳 1", "/预设 心跳 99", "/预设 心跳 abc"):
+        assert B.parse(bad)[0] is None, bad
+
+
+def test_preset_command_relays_pattern(monkeypatch):
+    monkeypatch.setenv("DZMM_SHARE_PROGRAM_TOKEN", "t")
+    share = FakeShare()
+    reply = asyncio.run(B.handle("/预设 连抖 20", owner=True, share=share))
+    assert "连抖" in reply and "20" in reply
+    assert share.calls == [("cmd", 0.0, 20000, "stutter", 20000)]
+    reply = asyncio.run(B.handle("/预设 不存在", owner=True, share=share))
+    assert "没有这个预设" in reply
+    assert len(share.calls) == 1, "没找到预设时不该下发"
 
 
 def test_parse_defaults_and_ranges():
@@ -59,7 +88,7 @@ def test_owner_command_and_stop_go_through(monkeypatch):
     share = FakeShare()
     reply = asyncio.run(B.handle("/震 40 600", owner=True, share=share))
     assert reply.startswith("⚡ 40% / 600ms")
-    assert share.calls == [("cmd", 0.4, 600)]
+    assert share.calls == [("cmd", 0.4, 600, None, None)]
     reply = asyncio.run(B.handle("/停", owner=True, share=share))
     assert reply == "已停。"
     assert share.calls[-1][0] == "stop"

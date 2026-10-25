@@ -70,8 +70,12 @@ class ShareClient:
             if data.get("t") in kinds:
                 return data
 
-    async def command(self, level, duration_ms):
-        """下发一条振动指令。返回 {"ok": bool, "detail": str}。"""
+    async def command(self, level, duration_ms, pattern=None, total_ms=None):
+        """下发一条振动指令。返回 {"ok": bool, "detail": str}。
+
+        pattern 给了就播预设节奏（房主页本地按时序跑 total_ms 毫秒）；
+        这时 level 不参与（预设自带每一步的强度）。
+        """
         if not self.token:
             return {"ok": False, "detail": "机器人通道未启用（缺 DZMM_SHARE_PROGRAM_TOKEN）"}
         target = await self._find_session()
@@ -83,7 +87,11 @@ class ShareClient:
                         f"{self.ws_url}/ws/program?sid={target['sid']}&token={self.token}",
                         timeout=self.timeout) as ws:
                     await ws.receive(timeout=self.timeout)  # welcome
-                    await ws.send_json({"t": "cmd", "level": level, "duration_ms": duration_ms})
+                    payload = {"t": "cmd", "level": level, "duration_ms": duration_ms}
+                    if pattern:
+                        payload["pattern"] = pattern
+                        payload["total_ms"] = int(total_ms or duration_ms or 60000)
+                    await ws.send_json(payload)
                     reply = await self._read_until(ws, {"sent", "denied"})
                     if reply is None:
                         return {"ok": False, "detail": "设备端没有回应"}
@@ -92,7 +100,8 @@ class ShareClient:
                     # 正常收工：告诉服务端别把这次断开当成异常去补停止
                     await ws.send_json({"t": "bye"})
                     return {"ok": True, "detail": "", "level": reply.get("level"),
-                            "duration_ms": reply.get("duration_ms")}
+                            "duration_ms": reply.get("duration_ms"),
+                            "pattern": reply.get("pattern")}
         except asyncio.TimeoutError:
             return {"ok": False, "detail": "连接超时"}
         except Exception as exc:  # 网络抖动不该把指令处理打挂
