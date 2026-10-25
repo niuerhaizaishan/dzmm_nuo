@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -44,6 +44,9 @@
       <div class="code" id="pin">------</div>
       <div class="dim" style="text-align:center">PIN（二维码里已带，念给对方也行）</div>
       <div id="link" style="margin-top:8px"></div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:13px;color:#aab3c0">
+        <input type="checkbox" id="allowbot" style="width:auto;margin:0"> 允许小小糯控制（群里 /震、/停）
+      </label>
       <button id="btn-end" class="ghost" style="margin-top:10px">结束分享</button>
     </div>
     <div id="sharestate" class="dim" style="margin-top:10px">未开分享</div>
@@ -191,6 +194,7 @@ async function endShare(){
   S.sid="";S.pin="";
   $("#sharebox").hidden=true;
   $("#sharestate").textContent="未开分享";
+  $("#allowbot").checked=false;   // 房间作废后许可也一起清掉
   log("已结束分享","warn");
 }
 $("#btn-connect").addEventListener("click",connect);
