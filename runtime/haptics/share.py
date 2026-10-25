@@ -11,7 +11,9 @@
   * 所有东西都在内存里，重启即清空——这里不需要持久化。
 """
 import asyncio
+import json
 import os
+import re
 import secrets
 import time
 
@@ -37,6 +39,10 @@ LEVEL_MIN_INTERVAL_MS = 150  # 实时强度消息的节流
 BEAT_RHYTHMS = {"steady", "breathe", "heartbeat", "wave", "stutter"}
 BEAT_MAX_MS = 20000          # 单段上限 20 秒（屋主定的）
 BEAT_MIN_MS = 800
+# 群友白名单：房主页勾选的人能用 /震 /预设 /停。机器人每次指令都重读这个文件。
+ALLOW_FILE = os.environ.get("DZMM_HAPTICS_ALLOW_FILE", "/app/data/haptics_allow.json")
+ALLOW_MAX = 20               # 最多勾几个人
+UID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 LOCK_SECONDS = 300
 STATIC_DIR = "runtime/haptics/static"
 
@@ -146,6 +152,47 @@ async def _to_host(session, payload):
 
 def _program_ok(value):
     return bool(PROGRAM_TOKEN) and secrets.compare_digest(str(value or ""), PROGRAM_TOKEN)
+
+
+def read_allowlist():
+    """读群友白名单。坏文件/缺文件＝空表（宁可不给权限）。"""
+    try:
+        with open(ALLOW_FILE, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:                                          # noqa: BLE001
+        return {"uids": [], "names": []}
+    rows = data.get("uids") if isinstance(data, dict) else data
+    names = data.get("names") if isinstance(data, dict) else []
+    return {"uids": [str(item) for item in (rows or [])],
+            "names": [str(item) for item in (names or [])]}
+
+
+def write_allowlist(uids, names=None):
+    """写群友白名单（原子替换）。返回 (新表, 错误)。"""
+    clean = []
+    for item in uids or []:
+        value = str(item or "").strip().lower()
+        if not value:
+            continue
+        if not UID_RE.match(value):
+            return None, "有个 uid 格式不对"
+        if value not in clean:
+            clean.append(value)
+    if len(clean) > ALLOW_MAX:
+        return None, "最多勾 %d 个人" % ALLOW_MAX
+    payload = {"uids": clean,
+               "names": [str(item) for item in (names or [])][:len(clean)],
+               "updated": time.strftime("%Y-%m-%d %H:%M")}
+    # 注意：这个文件是**单文件 bind mount**，对它 os.replace 会 EBUSY —— 只能原地写。
+    try:
+        with open(ALLOW_FILE, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+    except Exception as exc:                                   # noqa: BLE001
+        log("haptics-share: 白名单写入失败 " + type(exc).__name__)
+        return None, "写不进去（服务没挂载白名单文件？）"
+    log("haptics-share: 白名单更新 " + str(len(clean)) + " 人")
+    return {"uids": clean, "names": payload["names"]}, None
+
 
 
 async def _relay_cmd(session, data):
@@ -533,6 +580,28 @@ def create_app(*, base_url="", hub=None):
                     log("haptics-share: 机器人正常收工 " + session.sid)
         return ws
 
+    async def allowlist_api(request):
+        """房主页的「群友权限」：读/写都能用，但要 sid + pin（等于房主本人）。"""
+        if request.method == "GET":
+            sid = request.query.get("sid")
+            pin = request.query.get("pin")
+        else:
+            payload = await request.json()
+            sid = payload.get("sid")
+            pin = payload.get("pin")
+            request["payload"] = payload
+        session = hub.get(sid)
+        if session is None or not session.check_pin(pin):
+            return web.json_response({"ok": False, "error": "not_found"}, status=403)
+        if request.method == "GET":
+            return web.json_response({"ok": True, "allow": read_allowlist()})
+        payload = request["payload"]
+        allow, error = write_allowlist(payload.get("uids") or [], payload.get("names") or [])
+        if error:
+            return web.json_response({"ok": False, "error": error}, status=400)
+        session.touched = time.monotonic()
+        return web.json_response({"ok": True, "allow": allow})
+
     async def qrlib(request):
         path = here / "static" / "qrcode.min.js"
         return web.Response(text=path.read_text(encoding="utf-8"),
@@ -550,6 +619,8 @@ def create_app(*, base_url="", hub=None):
     app.router.add_get("/ws/host", host_ws)
     app.router.add_get("/ws/guest", guest_ws)
     app.router.add_post("/api/program/allow", program_allow)
+    app.router.add_get("/api/allow", allowlist_api)
+    app.router.add_post("/api/allow", allowlist_api)
     app.router.add_get("/api/program/session", program_session)
     app.router.add_get("/ws/program", program_ws)
     app.router.add_get("/healthz", health)

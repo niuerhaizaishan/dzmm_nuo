@@ -179,6 +179,32 @@ def test_baseline_relayed_and_clamped():
     asyncio.run(scenario())
 
 
+def test_allowlist_roundtrip_and_validation(monkeypatch):
+    """房主页勾选的群友白名单：能存能读、格式/上限都拦得住。"""
+    import os
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "haptics-allow-test.json")
+    monkeypatch.setattr(share, "ALLOW_FILE", path)
+    uid = "a56cbd67-3a1e-439a-8beb-d1557dbeff79"
+    try:
+        assert share.read_allowlist()["uids"] == [], "文件不存在＝空表"
+        allow, error = share.write_allowlist([uid, uid.upper()], ["糯糯", "糯糯"])
+        assert error is None and allow["uids"] == [uid], "必须去重并转小写"
+        assert share.read_allowlist()["uids"] == [uid]
+
+        _, error = share.write_allowlist(["not-a-uid"])
+        assert error == "有个 uid 格式不对"
+
+        many = ["{:08x}-0000-0000-0000-000000000000".format(i) for i in range(share.ALLOW_MAX + 1)]
+        _, error = share.write_allowlist(many)
+        assert error == "最多勾 %d 个人" % share.ALLOW_MAX
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def test_level_message_reaches_host_and_is_clamped():
     async def scenario():
         hub = Hub()

@@ -55,6 +55,12 @@
   </div>
 
   <div class="card">
+    <div class="dim" style="margin-top:0">群友权限 · 谁能用 /震 /预设 /停</div>
+    <div id="roster" style="margin-top:8px"></div>
+    <div id="allowmsg" class="dim" style="margin-top:8px">改一次就存一次，机器人那边立刻生效（不用重启）。</div>
+  </div>
+
+  <div class="card">
     <div class="dim" style="margin-top:0">日志</div>
     <div id="log"></div>
   </div>
@@ -253,6 +259,7 @@ async function createShare(){
     new QRCode($("#qr"),{text:d.link,width:190,height:190,correctLevel:QRCode.CorrectLevel.M});
     $("#sharebox").hidden=false;
     openHostWS();
+    loadRoster();
     log("已开分享："+d.link,"ok");
   }catch(e){log("开分享失败："+e.message,"bad")}
   finally{$("#btn-share").disabled=false}
@@ -326,6 +333,65 @@ async function endShare(){
 }
 $("#btn-connect").addEventListener("click",connect);
 $("#btn-stop").addEventListener("click",()=>stopNow("房主手动"));
+
+/* ---------- 群友权限 ---------- */
+const ROSTER=[
+  {name:"糯糯～（我）", uid:"a56cbd67-3a1e-439a-8beb-d1557dbeff79", fixed:true},
+  {name:"御褚",        uid:"cf1b1360-7f3f-4ef8-9188-07d718fe9173", fixed:true},
+  {name:"紫苑",        uid:"79c910d0-e0e8-40c8-9d84-ad4c6a45bd49"},
+  {name:"过期少女",     uid:"2fd9d11a-846e-4654-b309-9931a4b0ebe1"},
+  {name:"过期少女（薰妈妈）", uid:"625e5f9f-a649-40ec-8843-43f2632644c4"},
+  {name:"裳",          uid:"77a9b4dd-de55-458a-a1d9-a0d028ca3ae4"},
+  {name:"珍妮",        uid:"6f77a7cf-4916-4a78-ab50-8e16bbbded32"}
+];
+let allowUids=[];
+function renderRoster(){
+  const box=$("#roster");box.replaceChildren();
+  for(const person of ROSTER){
+    const on=person.fixed||allowUids.indexOf(person.uid)>=0;
+    const label=document.createElement("label");
+    label.style.cssText="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:13px;color:#aab3c0";
+    const cb=document.createElement("input");
+    cb.type="checkbox";cb.style.cssText="width:auto;margin:0";
+    cb.checked=on;cb.disabled=!!person.fixed;
+    cb.addEventListener("change",()=>togglePerson(person,cb.checked));
+    const span=document.createElement("span");
+    span.textContent=person.name+(person.fixed?"（默认）":"");
+    label.append(cb,span);
+    box.appendChild(label);
+  }
+}
+function togglePerson(person,on){
+  const set=new Set(allowUids);
+  if(on)set.add(person.uid);else set.delete(person.uid);
+  allowUids=[...set];
+  saveRoster();
+}
+async function saveRoster(){
+  if(!S.sid){$("#allowmsg").textContent="先生成分享码（要 sid 才能存）。";renderRoster();return}
+  try{
+    const r=await fetch("api/allow",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({sid:S.sid,pin:S.pin,uids:allowUids,
+        names:ROSTER.filter(p=>allowUids.indexOf(p.uid)>=0).map(p=>p.name)})});
+    const d=await r.json();
+    if(!d.ok){$("#allowmsg").textContent="没存上："+(d.error||"未知");return}
+    allowUids=d.allow.uids||[];
+    const names=ROSTER.filter(p=>allowUids.indexOf(p.uid)>=0).map(p=>p.name);
+    $("#allowmsg").textContent="已保存："+(names.join("、")||"（只有主人）");
+    renderRoster();
+  }catch(e){$("#allowmsg").textContent="保存失败："+e.message}
+}
+async function loadRoster(){
+  if(!S.sid){$("#allowmsg").textContent="先生成分享码，权限列表才能读写。";return}
+  try{
+    const r=await fetch("api/allow?sid="+encodeURIComponent(S.sid)+"&pin="+encodeURIComponent(S.pin));
+    const d=await r.json();
+    if(d.ok){allowUids=(d.allow&&d.allow.uids)||[];renderRoster();
+      const names=ROSTER.filter(p=>allowUids.indexOf(p.uid)>=0).map(p=>p.name);
+      $("#allowmsg").textContent="当前："+(names.join("、")||"（只有主人）");}
+  }catch(e){$("#allowmsg").textContent="读取失败："+e.message}
+}
+renderRoster();
 async function testFire(ms){
   stopRun();S.patternRun=false;
   try{
