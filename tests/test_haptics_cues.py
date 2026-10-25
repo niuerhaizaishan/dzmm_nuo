@@ -150,6 +150,37 @@ def test_plan_threads_previous_level_into_judge(_clean):
     assert seen == [None, 0.5], "第二次判定必须拿到上一次的强度当锚点"
 
 
+def test_dm_uids_filter_ignores_players_long_paragraphs(_clean):
+    """真实团本里玩家也写大段 IC —— 只认 DM，否则一次会话冒出几十条触觉。"""
+    dm = "3adb1285-febb-4ad5-b7da-6ebd76034d66"
+    player = "a56cbd67-3a1e-439a-8beb-d1557dbeff79"
+    conf = {"mode": "b", "per_turn": 2, "cooldown_s": 0, "dm_uids": [dm]}
+    long_text = "白光一闪，废墟、直升机、指挥官的怒吼全部消失。" * 4
+    judge = lambda text, ctx=None: cues.Cue("DM", 0.5, 800)      # noqa: E731
+
+    rows = raid.plan([{"at": 0, "text": long_text, "uid": player}], conf=conf, judge=judge)
+    assert rows[0]["cues"] == [], "玩家的长段落不该触发"
+    rows = raid.plan([{"at": 0, "text": long_text, "uid": dm}], conf=conf, judge=judge)
+    assert rows[0]["cues"], "DM 的叙述要触发"
+
+
+def test_without_dm_uids_every_long_text_is_judged(_clean):
+    """没配 dm_uids 时退回旧行为（只看长度），保证老群不受影响。"""
+    conf = {"mode": "b", "per_turn": 2, "cooldown_s": 0}
+    long_text = "白光一闪，废墟、直升机、指挥官的怒吼全部消失。" * 4
+    rows = raid.plan([{"at": 0, "text": long_text, "uid": "someone"}], conf=conf,
+                     judge=lambda text, ctx=None: cues.Cue("模型", 0.5, 800))
+    assert rows[0]["cues"]
+
+
+def test_collect_still_parses_a_lone_cue_line(_clean):
+    """短消息里单独一行的【震动】也要认（a 路线）。"""
+    conf = {"mode": "b", "per_turn": 2, "dm_uids": ["dm"]}
+    got = raid.collect([{"text": "【震动】警官 30% 800ms", "uid": "dm"}], conf)
+    assert got and got[0].duration_ms == 800
+
+
+
 
 def test_per_turn_cap_and_timeline():
     text = "【震动】警官 25% 600ms 又【震动】侠盗 45% 900ms"

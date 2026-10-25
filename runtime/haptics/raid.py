@@ -157,22 +157,43 @@ def _text_of(message):
     return str(content.get("text") or "").strip()
 
 
+def _is_dm(uid, conf):
+    """这位说话的是不是"叙述者"（DM）？
+
+    只按"够不够长"判会把玩家的长段落也判成叙述 —— 真实团本里玩家也写大段 IC，
+    实测一次会话冒出 39 条触觉（其中 27 条是玩家的）。所以支持在配置里写
+    `dm_uids`：写了就只认这些 uid；没写就退回"只看长度"的老行为。
+    """
+    dm_uids = [str(item) for item in (conf.get("dm_uids") or []) if str(item or "").strip()]
+    if not dm_uids:
+        return True
+    return str(uid or "") in dm_uids
+
+
 def collect(texts, conf, prev_level=None):
     """把这一批消息变成待发的 Cue 列表（不含冷却判断，方便离线测试）。
 
     批内按顺序推进两个上下文：`action`＝最近一句玩家动作（短消息），
     `prev`＝上一次判出来的强度。这样模型能判断"比上一回合更紧还是更松"。
+    texts 里的元素可以是 str，也可以是 {"uid","text"}（要按 dm_uids 过滤时必须是后者）。
     """
     limit = max(0, int(conf.get("per_turn") or 2))
     out = []
     action = ""
     prev = prev_level
-    for text in texts:
+    for item in texts:
+        text, uid = (item, None) if isinstance(item, str) else (
+            (item or {}).get("text") or "", (item or {}).get("uid"))
         if not text:
             continue
         if len(text) < MIN_NARRATION:
             action = text.strip()
-        found = _collect_with(text, conf, context={"prev": prev, "action": action})
+            found = _cues.parse_cues(text)      # 短消息只可能是独立的【震动】行
+        elif not _is_dm(uid, conf):
+            action = text.strip()               # 玩家在演，算"这回合的动作"，不触发
+            continue
+        else:
+            found = _collect_with(text, conf, context={"prev": prev, "action": action})
         for cue in found:
             if len(out) >= limit:
                 return out
@@ -241,11 +262,16 @@ def plan(items, conf=None, judge=None):
     for item in ordered:
         at = float(item.get("at") or 0)
         text = item.get("text") or ""
-        is_short = len(text) < MIN_NARRATION
-        if is_short:
-            action = text.strip()          # 玩家这一手，给下一次叙述当上下文
-        picked = _collect_with(text, conf, judge,
-                               {"prev": prev_level, "action": action})
+        uid = item.get("uid")
+        if len(text) < MIN_NARRATION:
+            action = text.strip()
+            picked = _cues.parse_cues(text)
+        elif not _is_dm(uid, conf):
+            action = text.strip()          # 玩家长段落：当动作上下文，不触发
+            picked = []
+        else:
+            picked = _collect_with(text, conf, judge,
+                                   {"prev": prev_level, "action": action})
         ready = _filter_cues(picked, conf, state, at)
         if ready:
             prev_level = ready[-1].level
@@ -314,7 +340,7 @@ async def watch(cid, pending, *, dry=False, is_self=None):
                 continue
             text = _text_of(message)
             if text:
-                texts.append(text)
+                texts.append({"text": text, "uid": message.get("sent_by", "")})
         if not texts:
             return 0
         picked = collect(texts, conf, prev_level=_LAST_LEVEL)
