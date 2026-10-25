@@ -158,7 +158,7 @@ async function createShare(){
 }
 function openHostWS(){
   const proto=location.protocol==="https:"?"wss":"ws";
-  S.ws=new WebSocket(`${proto}://${location.host}${location.pathname.replace(/\/$/,"")}/ws/host?sid=${S.sid}&pin=${S.pin}`);
+  S.ws=new WebSocket(`${proto}://${location.host}${location.pathname.replace(/\/[^/]*$/,"")}/ws/host?sid=${S.sid}&pin=${S.pin}`);
   S.ws.onopen=()=>{
     S.ws.send(JSON.stringify({t:"hello",device:S.deviceName}));
     $("#sharestate").textContent="分享中 · 等待对方扫码";

@@ -58,7 +58,7 @@ if(!SID){pill("链接缺少房间号",false);log("这个链接不完整，请重
 else connect();
 function connect(){
   const proto=location.protocol==="https:"?"wss":"ws";
-  ws=new WebSocket(`${proto}://${location.host}${location.pathname.replace(/\/$/,"")}/ws/guest?sid=${encodeURIComponent(SID)}&pin=${encodeURIComponent(PIN)}`);
+  ws=new WebSocket(`${proto}://${location.host}${location.pathname.replace(/\/[^/]*$/,"")}/ws/guest?sid=${encodeURIComponent(SID)}&pin=${encodeURIComponent(PIN)}`);
   ws.onopen=()=>{pill("已接入",true);log("已连上房主","ok")};
   ws.onmessage=ev=>{
     let d;try{d=JSON.parse(ev.data)}catch{return}
