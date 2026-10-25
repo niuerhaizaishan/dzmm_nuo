@@ -158,3 +158,25 @@ Lush 4 Mini 属较新固件，**可能是 C 套 UUID，且可能要求 16 字节
 4. **App 名字与图标**：随便给个名字（默认「糯控」），免得装上去不知道是什么。
 
 确认这四条，我就先只做阶段 0 的探针页面。
+
+---
+
+## 附录 A · 阶段 0 实测结果（2026-10-25，Lush 4 Mini）
+
+手机 Chrome + Web Bluetooth 实连成功，协议已确定，后续实现不用再猜：
+
+| 项 | 实测值 |
+| --- | --- |
+| 设备蓝牙名 | `LVS-C21`（C21 = Lush Mini；注意与 Buttplug 的 DeviceType 码不是一套编码） |
+| 主服务 | `53300001-0023-4bd4-bbd5-a6920e4c5653`（第三代族，不是 fff0 / NUS / 5030-0024） |
+| 写特征 | `53300002-0023-4bd4-bbd5-a6920e4c5653`（W + w 属性，用 writeWithoutResponse） |
+| 通知特征 | `53300003-0023-4bd4-bbd5-a6920e4c5653`（N，回包是 ASCII 文本） |
+| 强度命令 | `Vibrate:<0..20>;` 原样 ASCII，不需要补齐 16 字节（11 字节） |
+| 停止命令 | `Vibrate:0;`（10 字节） |
+| 设备回包 | `OK;`——可作为「指令真的被设备接受」的判据，不必只靠"没抛异常" |
+
+排查记录（避免重复踩）：先按 Buttplug 文档试了三套（fff0 / Nordic UART / 5030-0024），这台设备全部
+`NotFound`；原因是 Lush Mini 用第三代服务族 `53300001-0023`。Chrome 的 Web Bluetooth 只能访问
+`requestDevice` 时声明过的服务，所以探测页一次性声明了 36 个候选（4 个静态 + 32 个第三代变体）。
+
+探测页：`tools/haptics/probe.html`，临时部署在 `https://www.nuonuo.pw/img/probe.html`，用完删除。
