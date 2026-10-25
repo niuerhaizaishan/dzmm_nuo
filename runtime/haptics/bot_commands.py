@@ -27,8 +27,8 @@ def allow_file():
     return os.environ.get("DZMM_HAPTICS_ALLOW_FILE") or DEFAULT_ALLOW_FILE
 
 
-COMMAND = re.compile(r"^/(震|停|预设|节奏)(?=\s|$)(.*)$", re.S)
-HELP_CMD = re.compile(r"^/(?:帮助|help|指令|菜单|命令)\s+(\S.*)$", re.S)
+COMMAND = re.compile(r"^[/#](震|停|预设|节奏)(?=\s|$)(.*)$", re.S)
+HELP_CMD = re.compile(r"^[/#](?:帮助|help|指令|菜单|命令)\s+(\S.*)$", re.S)
 TOY_TOPICS = ("玩具", "糯控", "触觉", "震动", "振动", "设备", "小恶魔")
 DEFAULT_LEVEL = 0.30
 DEFAULT_DURATION_MS = 800

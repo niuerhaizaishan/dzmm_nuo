@@ -230,6 +230,8 @@ def collect(texts, conf, prev_level=None):
         if len(text) < MIN_NARRATION:
             action = text.strip()
             found = _cues.parse_cues(text)      # 短消息只可能是独立的【震动】行
+            found = [Beat(cue.role, cue.level, cue.duration_ms, "steady")
+                     for cue in found]
         elif not _is_dm(uid, conf):
             action = text.strip()               # 玩家在演，算"这回合的动作"，不触发
             continue
@@ -306,7 +308,8 @@ def plan(items, conf=None, judge=None):
         uid = item.get("uid")
         if len(text) < MIN_NARRATION:
             action = text.strip()
-            picked = _cues.parse_cues(text)
+            picked = [Beat(cue.role, cue.level, cue.duration_ms, "steady")
+                      for cue in _cues.parse_cues(text)]
         elif not _is_dm(uid, conf):
             action = text.strip()          # 玩家长段落：当动作上下文，不触发
             picked = []
@@ -327,18 +330,25 @@ def plan(items, conf=None, judge=None):
 
 
 def _collect_with(text, conf, judge=None, context=None):
-    """collect() 的单条版本，支持注入假模型和上下文。"""
+    """单条消息 → Beat 列表。
+
+    mode:
+      a    只认 DM 写的【震动】行（提示词档位）
+      b    只信模型判断（行被忽略）
+      auto **先看有没有【震动】行，有就用它，没有才问模型**（默认推荐：
+           提示词写了就精确执行，模型抽风也覆盖不到；哪天 DM 忘了写就自动兜底）
+    """
     limit = max(0, int(conf.get("per_turn") or 2))
-    found = []
-    if conf.get("mode") == "b" and len(text) >= MIN_NARRATION:
+    mode = str(conf.get("mode") or "auto").lower()
+    parsed = _cues.parse_cues(text)
+    if parsed and mode in ("a", "auto"):
+        return [Beat(cue.role, cue.level, cue.duration_ms, "steady")
+                for cue in parsed][:limit]
+    if mode in ("b", "auto") and len(text) >= MIN_NARRATION:
         judged = (judge or _judge)(text, context) if judge else _judge(text, context)
         if judged is not None:
-            found = [judged]
-    if not found:
-        # a 路线（提示词的【震动】行）没有节奏概念 → 当一段"稳"的短段落
-        found = [Beat(cue.role, cue.level, cue.duration_ms, "steady")
-                 for cue in _cues.parse_cues(text)]
-    return found[:limit]
+            return [judged][:limit]
+    return []
 
 
 async def _ensure_baseline():
