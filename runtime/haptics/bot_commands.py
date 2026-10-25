@@ -17,6 +17,7 @@ import json
 import os
 import re
 
+from runtime.haptics import raid
 from runtime.haptics import share_client
 
 # 白名单：{"uids": ["<uid>", ...], "names": ["御褚"]}。每次指令都重读，改完立即生效、不用重启。
@@ -28,7 +29,10 @@ def allow_file():
 
 
 COMMAND = re.compile(r"^[/#](震|停|预设|节奏)(?=\s|$)(.*)$", re.S)
+MONITOR_CMD = re.compile(r"^[/#](停止监控|监控)\s*(.*)$", re.S)
 HELP_CMD = re.compile(r"^[/#](?:帮助|help|指令|菜单|命令)\s+(\S.*)$", re.S)
+CID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 # 群里常把 OOC 指令包在 (( )) / （） / 【】 里 —— 先剥掉再认，不然永远匹配不上
 _TRIM_CHARS = "()（）[]［］ \t\r\n"
 
@@ -92,8 +96,11 @@ def is_allowed(uid):
 
 
 def command(text):
-    """返回动作名（震/预设/停/帮助）或 None。"""
+    """返回动作名（震/预设/停/帮助/监控/停止监控）或 None。"""
     raw = clean(text)
+    monitor = MONITOR_CMD.match(raw)
+    if monitor:
+        return "停止监控" if monitor.group(1) == "停止监控" else "监控"
     match = COMMAND.match(raw)
     if match:
         kind = match.group(1)
@@ -103,6 +110,12 @@ def command(text):
     if help_match and is_toy_topic(help_match.group(1)):
         return "帮助"
     return None
+
+
+def find_cid(text):
+    """从一段话里抠群 ID：分享链接（?c=…）或裸 UUID 都认。"""
+    match = CID_RE.search(text or "")
+    return match.group(0) if match else None
 
 
 def is_toy_topic(text):
@@ -150,6 +163,10 @@ def parse_preset(name):
 
 def parse(text):
     """解析成动作 dict；参数不合法返回 (None, 提示)。"""
+    monitor = MONITOR_CMD.match(clean(text))
+    if monitor:
+        kind = "unmonitor" if monitor.group(1) == "停止监控" else "monitor"
+        return {"action": kind, "target": monitor.group(2).strip()}, ""
     match = COMMAND.match(clean(text))
     if not match:
         if command(text) == "帮助":
@@ -203,11 +220,24 @@ def _hint(detail):
     return "没能下发：" + detail
 
 
-async def handle(text, *, uid="", owner=False, share=None):
+async def handle(text, *, uid="", owner=False, share=None, quote=""):
     """执行一条指令并返回要发回群里的短回执。owner=群主，uid 用于查白名单。"""
     action, problem = parse(text)
     if action is None:
         return problem
+    if action["action"] in ("monitor", "unmonitor"):
+        # 监控名单只有主人能改（白名单里的人能震，但别让他们乱订群）
+        if not owner:
+            return "只有主人能改监控名单。"
+        cid = find_cid(action.get("target") or "") or find_cid(quote or "")
+        if not cid:
+            return ("没找到群 ID。用法：把团本群链接发我，或在私聊里引用那条链接再发 /监控；"
+                    "也可以直接 /监控 <群ID>")
+        if action["action"] == "monitor":
+            ok, msg = raid.add_cid(cid)
+        else:
+            ok, msg = raid.remove_cid(cid)
+        return msg
     if action["action"] == "help":
         return help_text()
     if action["action"] == "presets":

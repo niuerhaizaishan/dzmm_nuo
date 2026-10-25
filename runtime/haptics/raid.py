@@ -180,6 +180,57 @@ def is_raid(cid):
     return bool(conf["enabled"]) and str(cid) in conf["cids"]
 
 
+def _write_conf(data):
+    """原地写回配置（文件也可能是单文件 bind mount，不能 rename）。"""
+    tmp = {"enabled": bool(data.get("enabled")),
+           "cids": list(data.get("cids") or []),
+           "mode": data.get("mode") or "auto",
+           "per_turn": int(data.get("per_turn") or 2),
+           "cooldown_s": int(data.get("cooldown_s") or 10),
+           "dm_uids": list(data.get("dm_uids") or []),
+           "_说明": data.get("_说明") or "月之瞳剧情触觉配置。改完 2 秒内生效。"}
+    with open(config_path(), "w", encoding="utf-8") as handle:
+        json.dump(tmp, handle, ensure_ascii=False, indent=2)
+    reset()
+
+
+def add_cid(cid):
+    """/监控：把一个群加进剧情触觉名单。返回 (ok, 回执文字)。"""
+    cid = str(cid or "").strip()
+    if not cid:
+        return False, "群 ID 不对"
+    conf = load(force=True)
+    cids = list(conf.get("cids") or [])
+    if cid in cids:
+        return True, "这个群已经在监控名单里了。"
+    cids.append(cid)
+    data = dict(conf)
+    data["cids"] = cids
+    data["enabled"] = True
+    try:
+        _write_conf(data)
+    except Exception as exc:                                   # noqa: BLE001
+        return False, "写不进去：" + type(exc).__name__
+    log("📡 剧情触觉：新增监控群 " + cid[:8])
+    return True, "✅ 已开始监控这个群（剧情跟随 + 玩具指令），约 5 秒内生效。"
+
+
+def remove_cid(cid):
+    cid = str(cid or "").strip()
+    conf = load(force=True)
+    cids = [item for item in (conf.get("cids") or []) if item != cid]
+    if len(cids) == len(conf.get("cids") or []):
+        return True, "这个群本来就不在监控名单里。"
+    data = dict(conf)
+    data["cids"] = cids
+    try:
+        _write_conf(data)
+    except Exception as exc:                                   # noqa: BLE001
+        return False, "写不进去：" + type(exc).__name__
+    log("📡 剧情触觉：取消监控群 " + cid[:8])
+    return True, "已停止监控这个群。"
+
+
 def reset():
     """给测试用：清缓存/冷却/队列。"""
     global _LAST_ANY, _LAST_LEVEL, _BASELINE_AT, _QUEUE, _WORKER

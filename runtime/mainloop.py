@@ -291,6 +291,21 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                     if B.is_self(_m.get("sent_by")):
                         continue
                     _ptext = ((_m.get("content") or {}).get("text") or "").strip()
+                    if _haptics_bot.command(_ptext) in ("监控", "停止监控"):
+                        # /监控 <链接> 或 引用那条链接再发 /监控 —— 热加载一个新团本群
+                        _ref = ((_m.get("content") or {}).get("reference") or {})
+                        _qtext = ((_ref.get("content") or {}).get("text") or "")
+                        _puid = _m.get("sent_by", "")
+                        try:
+                            _rep = await _haptics_bot.handle(
+                                _ptext, uid=_puid, owner=(_puid == _OWNER_UID),
+                                quote=_qtext)
+                        except Exception as _e:                 # noqa: BLE001
+                            _rep = "监控指令异常：" + type(_e).__name__
+                        log("📡 [{}] 监控指令 {} → {}".format(
+                            _pcid[:8], _ptext[:16], (_rep or "")[:40]))
+                        await B._dice_send_private(sender, _puid, "🤖 " + (_rep or ""))
+                        continue
                     if _ptext == "/看骰":
                         _puid = _m.get("sent_by", "")
                         _pg = B._dice_state()
@@ -1063,6 +1078,14 @@ async def run_all(interval: float, dry: bool, once: bool, *, B) -> None:
     from sio_subscribe import SioSubscriber
     subscriber = SioSubscriber(B.GROUPS)
     sub_task = asyncio.create_task(subscriber.start())
+    # 团本监控热加载：看 haptics_raid.json 的 cids，新群就地订阅（socket），不用重启
+    try:
+        from runtime.haptics import monitor as _haptics_monitor
+        asyncio.create_task(_haptics_monitor.supervise(
+            subscriber, sender, is_self=B.is_self, known_groups=B.GROUPS))
+        log("📡 团本监控监督已启动（/监控 <链接> 可直接订阅新群）")
+    except Exception as _he:                                   # noqa: BLE001
+        log("📡 团本监控监督启动失败：" + str(_he)[:60])
     # P12-AZ：把这条长连接交给发送侧 —— 账号的长消息优先用它发（一条，不用握手）。
     B._sender_mod._LIVE_SIO = subscriber   # P3-7：真身住 runtime/sender.py
 
