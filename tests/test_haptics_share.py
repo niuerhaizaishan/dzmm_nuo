@@ -144,6 +144,41 @@ def test_pattern_command_clamps_total_ms_and_rejects_unknown_id():
     asyncio.run(scenario())
 
 
+def test_beat_relayed_with_rhythm_and_capped_length():
+    async def scenario():
+        hub = Hub()
+        session = hub.create("https://example.com")
+        session.host = _FakeHost()
+        beat, why = await share._relay_beat(
+            session, {"level": 0.6, "duration_ms": 90000, "rhythm": "wave"})
+        assert why is None and beat["rhythm"] == "wave"
+        assert beat["duration_ms"] == share.BEAT_MAX_MS, "段落上限 20 秒"
+        relayed = session.host.sent[-1]
+        assert relayed["t"] == "beat" and relayed["rhythm"] == "wave"
+        assert session.state()["beat"]["duration_ms"] == share.BEAT_MAX_MS
+        _, why = await share._relay_beat(session, {"level": 0.5, "rhythm": "no_such"})
+        assert why == "未知节奏", "节奏白名单外的必须拒绝"
+        _, why = await share._relay_beat(session, {"level": 0.5, "duration_ms": 10})
+        assert why is None and session.beat["duration_ms"] == share.BEAT_MIN_MS
+    asyncio.run(scenario())
+
+
+def test_baseline_relayed_and_clamped():
+    async def scenario():
+        hub = Hub()
+        session = hub.create("https://example.com")
+        session.host = _FakeHost()
+        value, why = await share._relay_baseline(session, {"value": 0.05})
+        assert why is None and abs(value - 0.05) < 1e-9
+        assert session.host.sent[-1] == {"t": "baseline", "value": 0.05}
+        assert abs(session.state()["baseline"] - 0.05) < 1e-9
+        value, why = await share._relay_baseline(session, {"value": 9})
+        assert value == 1.0
+        value, why = await share._relay_baseline(session, {"value": 0})
+        assert value == 0.0, "0 = 关背景"
+    asyncio.run(scenario())
+
+
 def test_level_message_reaches_host_and_is_clamped():
     async def scenario():
         hub = Hub()

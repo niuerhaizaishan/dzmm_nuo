@@ -76,7 +76,8 @@ for(const y of "0123456789abcdef")for(const [x,z] of [["4","3"],["5","4"]])
 const SETS=STATIC_SETS.concat(GEN3);
 const SERVICES=SETS.map(s=>s.service);
 
-const S={device:null,server:null,char:null,rx:null,deviceName:"",ws:null,sid:"",pin:"",lastAck:null,ackWaiter:null,stopTimer:null,manualTimer:null,cur:null};
+const S={device:null,server:null,char:null,rx:null,deviceName:"",ws:null,sid:"",pin:"",lastAck:null,ackWaiter:null,
+         base:0,beat:null,manual:null,patternRun:false,lastN:-1};
 const $=s=>document.querySelector(s);
 const logBox=$("#log");
 function log(m,c=""){const d=document.createElement("div");if(c)d.className=c;d.textContent=`[${new Date().toTimeString().slice(0,8)}] ${m}`;logBox.appendChild(d);logBox.scrollTop=logBox.scrollHeight}
@@ -116,7 +117,7 @@ async function connect(){
     if(!navigator.bluetooth) throw new Error("这个浏览器不支持 Web Bluetooth，请用安卓 Chrome");
     S.device=await navigator.bluetooth.requestDevice({filters:[{namePrefix:"LVS-"}],optionalServices:SERVICES});
     S.deviceName=S.device.name||"";
-    S.device.addEventListener("gattserverdisconnected",()=>{pill(false);log("蓝牙断开","bad");S.char=null});
+    S.device.addEventListener("gattserverdisconnected",()=>{pill(false);log("蓝牙断开","bad");S.char=null;S.lastN=-1});
     S.server=await S.device.gatt.connect();
     const found=await findChar(S.server);
     if(!found) throw new Error("没找到可写特征");
@@ -135,74 +136,104 @@ async function connect(){
     }catch(e){log("订阅回包失败（不影响下发）","dim")}
     pill(true);
     $("#devstate").textContent="设备："+S.deviceName+" · 就绪";
+    startMotor();
     sendState();
   }catch(e){log("连接失败："+e.message,"bad")}
   finally{$("#btn-connect").disabled=false}
 }
-async function write(cmd){
+async function write(cmd,quiet){
   if(!S.char) throw new Error("设备未连接");
   const bytes=new TextEncoder().encode(cmd);
   if(S.char.properties.writeWithoutResponse&&S.char.writeValueWithoutResponse)
     await S.char.writeValueWithoutResponse(bytes);
   else await S.char.writeValue(bytes);
-  log("→ "+cmd,"ok");
+  if(!quiet)log("→ "+cmd,"ok");
 }
 function waitAck(ms=700){
   return new Promise(res=>{S.ackWaiter=res;setTimeout(()=>{if(S.ackWaiter===res){S.ackWaiter=null;res("")}},ms)});
 }
+/* ---------- 马达循环：背景底噪 + 剧情段落 ----------
+   每 120ms 算一次"现在该输出多大"，变了才写。优先级：
+     手动档位 > 剧情段落（按节奏函数随时间起伏）> 背景底噪
+   段落跑完自己回落到背景，不需要谁再发停止。 */
+const RHYTHMS={
+  steady:()=>1,
+  breathe:t=>0.5+0.5*Math.sin(2*Math.PI*t/6000),
+  heartbeat:t=>{const c=t%1000;return c<180?1:(c<320?0:(c<480?0.85:0))},
+  wave:t=>0.6+0.4*Math.sin(2*Math.PI*t/4000),
+  stutter:t=>{const c=t%700;return c<400?1:0}
+};
+function startBeat(level,ms,rhythm){
+  const now=performance.now();
+  S.beat={level:Math.max(0,Math.min(1,Number(level)||0)),startAt:now,
+          endAt:now+Math.max(500,ms),rhythm:RHYTHMS[rhythm]?rhythm:"steady"};
+  S.manual=null;S.lastN=-1;
+  log("段落 "+Math.round(S.beat.level*100)+"% × "+Math.round(ms/1000)+"s · "+S.beat.rhythm,"ok");
+}
+let motorTimer=null;
+async function motorTick(){
+  if(!S.char||S.patternRun||S.ticking)return;
+  const now=performance.now();
+  let want;
+  if(S.manual!==null) want=S.manual;
+  else if(S.beat&&now<S.beat.endAt) want=S.beat.level*RHYTHMS[S.beat.rhythm](now-S.beat.startAt);
+  else{
+    if(S.beat){S.beat=null;log("段落结束 → 回到底噪","dim")}
+    want=S.base;
+  }
+  const n=clampLevel(want);
+  if(n===S.lastN)return;
+  S.lastN=n;
+  S.ticking=true;
+  try{await write(`Vibrate:${n};`,true)}catch(e){S.lastN=-1}
+  finally{S.ticking=false}
+}
+function startMotor(){
+  if(!motorTimer)motorTimer=setInterval(motorTick,120);
+}
 async function stopNow(reason){
-  clearTimeout(S.stopTimer);S.stopTimer=null;
-  clearTimeout(S.manualTimer);S.manualTimer=null;
-  stopRun();S.cur=null;
+  stopRun();                                   // 预设执行器也让位
+  S.beat=null;S.manual=null;S.base=0;S.lastN=-1;
   if(!S.char)return;
   try{await write("Vibrate:0;");log("停止（"+reason+"）","warn")}catch(e){}
 }
 /* 跑一条六十秒的预设：按 steps 循环，到点就停；token 变了就立刻放弃。
-   预设自带每一步的强度（节奏的一部分），不看手动档位的值。 */
+   预设自带每一步的强度（节奏的一部分），跑的时候马达循环让位。 */
 async function runPattern(id,totalMs){
   const def=PATTERNS[id];
   if(!def)return log("未知预设 "+id,"bad");
   const token=++runToken;
-  clearTimeout(S.manualTimer);S.manualTimer=null;
+  S.patternRun=true;S.beat=null;S.manual=null;
   const start=performance.now();
   const n=Math.max(2,Math.round(totalMs/500));
   let i=0;
-  while(token===runToken){
-    const left=totalMs-(performance.now()-start);
-    if(left<=0)break;
-    const st=def.step(i++,n);
-    const lv=clampLevel(st.shape);
-    await write(`Vibrate:${lv};`);
-    if(token!==runToken)return;
-    S.cur={level:lv,shape:st.shape};
-    await sleep(Math.min(st.on,left));
-    if(token!==runToken)return;
-    if(st.off>0){
-      await write("Vibrate:0;");
-      S.cur=null;
-      await sleep(Math.min(st.off,Math.max(0,totalMs-(performance.now()-start))));
+  try{
+    while(token===runToken){
+      const left=totalMs-(performance.now()-start);
+      if(left<=0)break;
+      const st=def.step(i++,n);
+      const lv=clampLevel(st.shape);
+      await write(`Vibrate:${lv};`);
+      if(token!==runToken)return;
+      await sleep(Math.min(st.on,left));
+      if(token!==runToken)return;
+      if(st.off>0){
+        await write("Vibrate:0;");
+        await sleep(Math.min(st.off,Math.max(0,totalMs-(performance.now()-start))));
+      }
     }
-  }
-  if(token===runToken){
-    try{await write("Vibrate:0;")}catch(e){}
-    S.cur=null;
-    log("预设「"+def.name+"」结束","warn");
+    if(token===runToken)log("预设「"+def.name+"」结束","warn");
+  }finally{
+    if(token===runToken){S.patternRun=false;S.lastN=-1;}   // 交还给马达循环（回底噪）
   }
 }
-/* 手动档位：拖到哪就按那个强度一直震，直到「立即停止」或拖回 0。
-   兜底：5 分钟没有任何调整自动停（防止忘了关）。 */
-const MANUAL_MAX_MS=300000;
+/* 手动档位：拖到哪就按那个强度一直震，直到「立即停止」或拖回 0。 */
 async function manualLevel(value){
-  clearTimeout(S.stopTimer);S.stopTimer=null;
-  stopRun();                                   // 手动接管：预设让位
+  stopRun();
   const v=Math.max(0,Math.min(1,Number(value)||0));
   if(v<=0){await stopNow("档位归零");return}
-  const n=clampLevel(v);
-  S.cur={level:n,shape:1.0};
-  try{await write(`Vibrate:${n};`)}catch(e){log("手动档位失败："+e.message,"bad");return}
-  clearTimeout(S.manualTimer);
-  S.manualTimer=setTimeout(()=>stopNow("手动档位超时"),MANUAL_MAX_MS);
-  $("#devstate").textContent="手动档位 "+(n*5)+"%（"+(S.deviceName||"设备")+"）";
+  S.patternRun=false;S.beat=null;S.manual=v;S.lastN=-1;
+  $("#devstate").textContent="手动档位 "+Math.round(v*100)+"%（"+(S.deviceName||"设备")+"）";
 }
 function sendState(){
   if(S.ws&&S.ws.readyState===1)
@@ -237,9 +268,7 @@ function openHostWS(){
     let d;try{d=JSON.parse(ev.data)}catch{return}
     if(d.t==="guest_joined"){log("有人扫码接入了","ok");$("#sharestate").textContent="对方正在控制"}
     if(d.t==="cmd"){
-      clearTimeout(S.stopTimer);S.stopTimer=null;
-      clearTimeout(S.manualTimer);S.manualTimer=null;
-      stopRun();S.cur=null;
+      stopRun();S.patternRun=false;S.beat=null;S.manual=null;S.lastN=-1;
       try{
         if(d.pattern){
           const def=PATTERNS[d.pattern];
@@ -256,8 +285,8 @@ function openHostWS(){
           await write(`Vibrate:${n};`);
           const ack=await waitAck();
           S.ws.send(JSON.stringify({t:"ack",id:d.id,ok:!!ack,raw:ack||"sent"}));
-          S.cur={level:n,shape:1.0};
-          S.stopTimer=setTimeout(()=>stopNow("到时"),Math.max(200,d.duration_ms||1000));
+          // 单发＝一段"稳"的短段落，到点由马达循环自己回到底噪
+          startBeat(d.level||0,Math.max(200,d.duration_ms||1000),"steady");
         }
       }catch(e){
         S.ws.send(JSON.stringify({t:"ack",id:d.id,ok:false,raw:String(e.message||e)}));
@@ -266,6 +295,15 @@ function openHostWS(){
       $("#sharestate").textContent=d.pattern
         ? "对方正在控制（预设 "+((PATTERNS[d.pattern]||{}).name||d.pattern)+"）"
         : "对方正在控制（最近 "+(d.level*100).toFixed(0)+"%）";
+    }
+    if(d.t==="beat"){
+      startBeat(d.level||0,Math.max(500,d.duration_ms||6000),d.rhythm||"steady");
+      $("#sharestate").textContent="剧情段落 "+Math.round((d.level||0)*100)+"% · "+(d.rhythm||"steady");
+    }
+    if(d.t==="baseline"){
+      S.base=Math.max(0,Math.min(1,Number(d.value)||0));
+      S.lastN=-1;
+      log("背景层 "+(S.base>0?Math.round(S.base*100)+"%":"关"),"dim");
     }
     if(d.t==="level"){
       // 手动档位：绝对值，直接按这个强度震，不看预设
@@ -289,12 +327,10 @@ async function endShare(){
 $("#btn-connect").addEventListener("click",connect);
 $("#btn-stop").addEventListener("click",()=>stopNow("房主手动"));
 async function testFire(ms){
-  clearTimeout(S.stopTimer);S.stopTimer=null;stopRun();
-  const n=clampLevel(0.5);
+  stopRun();S.patternRun=false;
   try{
-    await write(`Vibrate:${n};`);
-    S.cur={level:n,shape:1.0,continuous:true};
-    S.stopTimer=setTimeout(()=>stopNow("到时"),ms);
+    await write(`Vibrate:${clampLevel(0.5)};`);
+    startBeat(0.5,ms,"steady");
     log("自测 "+ms+"ms","ok");
   }catch(e){log("自测失败："+e.message,"bad")}
 }

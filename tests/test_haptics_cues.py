@@ -94,6 +94,21 @@ def test_drama_curve_is_monotonic_and_clamped():
     assert raid.from_drama("abc") is None
 
 
+def test_beat_tiers_have_rhythm_and_cap():
+    """每档都要有节奏；时长不得超过 20 秒（屋主定的上限）。"""
+    beats = [raid.from_drama(score) for score in (10, 30, 50, 70, 95)]
+    assert [b.rhythm for b in beats] == ["steady", "breathe", "heartbeat", "wave", "stutter"]
+    assert all(b.duration_ms <= 20000 for b in beats)
+    assert beats[0].duration_ms >= 5000, "平静段落也别短成一下"
+    assert len({b.rhythm for b in beats}) == 5, "五档节奏不该重复"
+
+
+def test_baseline_is_first_device_step():
+    """背景层用设备第 1 档（5%）：1% 会取整成 0 = 不转。"""
+    assert abs(raid.BASELINE - 0.05) < 1e-9
+
+
+
 def test_judge_maps_a_single_number(monkeypatch):
     import brains
 
@@ -247,12 +262,17 @@ def test_watch_ignores_groups_not_registered(_clean, monkeypatch):
     monkeypatch.setenv("DZMM_SHARE_PROGRAM_TOKEN", "t")
     called = []
 
-    async def _fake_command(level, duration_ms):
-        called.append((level, duration_ms))
+    async def _fake_baseline(value):
+        called.append(("base", round(value, 3)))
+        return {"ok": True}
+
+    async def _fake_beat(level, duration_ms, rhythm="steady"):
+        called.append((round(level, 2), duration_ms, rhythm))
         return {"ok": True}
 
     monkeypatch.setattr(raid._share, "client", lambda: type(
-        "C", (), {"command": staticmethod(_fake_command)})())
+        "C", (), {"baseline": staticmethod(_fake_baseline),
+                  "beat": staticmethod(_fake_beat)})())
 
     async def scenario():
         got = await raid.watch("other-group", [{"content": {"text": "【震动】警官 30% 800ms"}}])
@@ -266,19 +286,25 @@ def test_watch_queues_and_sends_cue(_clean, monkeypatch):
     monkeypatch.setenv("DZMM_SHARE_PROGRAM_TOKEN", "t")
     called = []
 
-    async def _fake_command(level, duration_ms):
-        called.append((round(level, 2), duration_ms))
+    async def _fake_baseline(value):
+        called.append(("base", round(value, 3)))
+        return {"ok": True}
+
+    async def _fake_beat(level, duration_ms, rhythm="steady"):
+        called.append((round(level, 2), duration_ms, rhythm))
         return {"ok": True}
 
     monkeypatch.setattr(raid._share, "client", lambda: type(
-        "C", (), {"command": staticmethod(_fake_command)})())
+        "C", (), {"baseline": staticmethod(_fake_baseline),
+                  "beat": staticmethod(_fake_beat)})())
 
     async def scenario():
         got = await raid.watch("c1", [{"content": {"text": "【震动】警官 30% 800ms"}}])
         assert got == 1
         if raid._QUEUE is not None:
             await asyncio.wait_for(raid._QUEUE.join(), timeout=5)
-        assert called == [(0.3, 800)]
+        assert called == [("base", 0.05), (0.3, 800, "steady")], \
+            "先开背景层，再下发段落"
         # 同角色立刻再来一次要被冷却挡住
         got2 = await raid.watch("c1", [{"content": {"text": "【震动】警官 30% 800ms"}}])
         assert got2 == 0
@@ -312,12 +338,17 @@ def test_same_turn_two_cues_both_go_out(_clean, monkeypatch):
     monkeypatch.setenv("DZMM_SHARE_PROGRAM_TOKEN", "t")
     called = []
 
-    async def _fake_command(level, duration_ms):
-        called.append((round(level, 2), duration_ms))
+    async def _fake_baseline(value):
+        called.append(("base", round(value, 3)))
+        return {"ok": True}
+
+    async def _fake_beat(level, duration_ms, rhythm="steady"):
+        called.append((round(level, 2), duration_ms, rhythm))
         return {"ok": True}
 
     monkeypatch.setattr(raid._share, "client", lambda: type(
-        "C", (), {"command": staticmethod(_fake_command)})())
+        "C", (), {"baseline": staticmethod(_fake_baseline),
+                  "beat": staticmethod(_fake_beat)})())
 
     async def scenario():
         got = await raid.watch("c1", [{"content": {"text":
@@ -325,7 +356,8 @@ def test_same_turn_two_cues_both_go_out(_clean, monkeypatch):
         assert got == 2, "每回合上限 2 条，两条都要发出去"
         if raid._QUEUE is not None:
             await asyncio.wait_for(raid._QUEUE.join(), timeout=8)
-        assert called == [(0.25, 600), (0.45, 900)]
+        beats = [row for row in called if row[0] != "base"]
+        assert beats == [(0.25, 600, "steady"), (0.45, 900, "steady")]
     asyncio.run(scenario())
 
 

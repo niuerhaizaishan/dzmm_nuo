@@ -33,6 +33,10 @@ PATTERN_IDS = {"tap", "pulse", "heartbeat", "ramp", "ramp_down", "stutter", "hol
 MAX_PATTERN_MS = 60000       # 单条预设上限 60 秒
 MAX_DURATION_MS_CAP = 60000  # 单条单脉冲上限（预设之外的兜底）
 LEVEL_MIN_INTERVAL_MS = 150  # 实时强度消息的节流
+# 剧情段落（beat）：一段"涨起来的震动"，跑完自动回落到背景层。
+BEAT_RHYTHMS = {"steady", "breathe", "heartbeat", "wave", "stutter"}
+BEAT_MAX_MS = 20000          # 单段上限 20 秒（屋主定的）
+BEAT_MIN_MS = 800
 LOCK_SECONDS = 300
 STATIC_DIR = "runtime/haptics/static"
 
@@ -58,6 +62,8 @@ class Session:
         self.last_cmd = {}
         self.last_ack = {}
         self.level = 0.0             # 当前实时强度（预设/长按执行期间可随时改）
+        self.baseline = 0.0          # 背景层档位（0=关）
+        self.beat = {}               # 最近一条剧情段落
         self.seq = 0
         self.stop_task = None
 
@@ -72,6 +78,7 @@ class Session:
                 "program": self.program is not None, "allow_program": self.allow_program,
                 "device": self.device, "last_cmd": self.last_cmd,
                 "last_ack": self.last_ack, "level": self.level,
+                "baseline": self.baseline, "beat": self.beat,
                 "caps": {"max_level": MAX_LEVEL, "max_duration_ms": MAX_DURATION_MS,
                          "capped": MAX_LEVEL < 1.0 or MAX_DURATION_MS > 0},
                 "locked": self.locked_until > time.monotonic()}
@@ -197,6 +204,46 @@ async def _relay_level(session, data):
     return level, None
 
 
+async def _relay_baseline(session, data):
+    """背景层：一直轻嗡的底噪。0 = 关。"""
+    try:
+        value = float(data.get("value", 0))
+    except (TypeError, ValueError):
+        return None, "强度不对"
+    value = min(max(value, 0.0), MAX_LEVEL if MAX_LEVEL < 1.0 else 1.0)
+    if session.host is None:
+        return None, "房主不在线"
+    session.baseline = value
+    if not await _to_host(session, {"t": "baseline", "value": value}):
+        return None, "房主不在线"
+    return value, None
+
+
+async def _relay_beat(session, data):
+    """剧情段落：一段涨起来的震动，跑完由房主页自己回落到底噪。"""
+    rhythm = str(data.get("rhythm") or "steady")
+    if rhythm not in BEAT_RHYTHMS:
+        return None, "未知节奏"
+    try:
+        level = float(data.get("level", 0))
+    except (TypeError, ValueError):
+        return None, "强度不对"
+    try:
+        duration = int(data.get("duration_ms") or 6000)
+    except (TypeError, ValueError):
+        duration = 6000
+    level = max(0.0, min(level, MAX_LEVEL if MAX_LEVEL < 1.0 else 1.0))
+    duration = max(BEAT_MIN_MS, min(duration, BEAT_MAX_MS))
+    if session.host is None:
+        return None, "房主不在线"
+    session.beat = {"level": level, "duration_ms": duration, "rhythm": rhythm,
+                    "at": time.time()}
+    if not await _to_host(session, {"t": "beat", "level": level,
+                                    "duration_ms": duration, "rhythm": rhythm}):
+        return None, "房主不在线"
+    return session.beat, None
+
+
 def create_app(*, base_url="", hub=None):
     hub = hub or Hub()
     here = __import__("pathlib").Path(__file__).resolve().parent
@@ -299,6 +346,20 @@ def create_app(*, base_url="", hub=None):
                         await ws.send_json({"t": "denied", "reason": why})
                         continue
                     await ws.send_json({"t": "level_ok", "value": value})
+                    continue
+                if kind == "baseline":
+                    value, why = await _relay_baseline(session, data)
+                    if why:
+                        await ws.send_json({"t": "denied", "reason": why})
+                        continue
+                    await ws.send_json({"t": "baseline_ok", "value": value})
+                    continue
+                if kind == "beat":
+                    beat, why = await _relay_beat(session, data)
+                    if why:
+                        await ws.send_json({"t": "denied", "reason": why})
+                        continue
+                    await ws.send_json({"t": "beat_ok", "beat": beat})
                     continue
                 if kind == "stop":
                     await _to_host(session, {"t": "stop", "reason": "控制者停止"})
@@ -418,6 +479,20 @@ def create_app(*, base_url="", hub=None):
                         await ws.send_json({"t": "denied", "reason": why})
                         continue
                     await ws.send_json({"t": "level_ok", "value": value})
+                    continue
+                if kind == "baseline":
+                    value, why = await _relay_baseline(session, data)
+                    if why:
+                        await ws.send_json({"t": "denied", "reason": why})
+                        continue
+                    await ws.send_json({"t": "baseline_ok", "value": value})
+                    continue
+                if kind == "beat":
+                    beat, why = await _relay_beat(session, data)
+                    if why:
+                        await ws.send_json({"t": "denied", "reason": why})
+                        continue
+                    await ws.send_json({"t": "beat_ok", "beat": beat})
                     continue
                 if kind == "stop":
                     await _to_host(session, {"t": "stop", "reason": "机器人停止"})

@@ -35,6 +35,7 @@ _CFG = {"at": 0.0, "data": None}
 _LAST_ROLE = {}           # 角色 → 上次触发的 monotonic
 _LAST_ANY = 0.0
 _LAST_LEVEL = None        # 上一次判出来的强度，作为"这回合该更紧还是更松"的锚点
+_BASELINE_AT = 0.0        # 背景层上次下发的时间（0 = 还没开/被清掉了）
 _QUEUE = None
 _WORKER = None
 
@@ -55,9 +56,49 @@ HAPTIC_CURVE_PROMPT = (
     "只输出这个整数，不要单位、标点、解释或任何多余文字。\n\n"
     "剧情叙述：\n"
 )
-DRAMA_LEVEL = (0.20, None)     # 紧张度 0→1 映射到的强度区间（上限取 cues.MAX_LEVEL）
-DRAMA_MS = (400, 1500)         # 紧张度 0→1 映射到的时长区间
+DRAMA_LEVEL = (0.20, None)     # 旧参数，保留给 a 路线的短脉冲映射
+DRAMA_MS = (400, 1500)
 DRAMA_RE = re.compile(r"\d+")
+
+# 一段"剧情段落"怎么落地（2026-10-25 屋主定：背景层 5% 常开 + 段落最长 20 秒）
+# 紧张度区间 → 段落强度 / 时长 / 段内节奏
+BEAT_TABLE = (
+    (20, 0.25, 6000, "steady"),      # 平静：一条直线
+    (40, 0.35, 10000, "breathe"),    # 有动作：慢呼吸
+    (60, 0.50, 15000, "heartbeat"),  # 对抗：心跳
+    (80, 0.62, 18000, "wave"),       # 失守：起伏
+    (100, 0.70, 20000, "stutter"),   # 高潮：急促
+)
+BASELINE = 0.05          # 背景层＝设备第 1 档（5%），常开
+BASELINE_TTL = 300.0     # 背景层多久重发一次（被 /停 清掉后能自己回来）
+BASELINE_MAX_MS = 20000  # 和服务端 BEAT_MAX_MS 对齐
+
+
+class Beat:
+    """一段剧情触觉：强度 + 时长 + 段内节奏。"""
+
+    __slots__ = ("role", "level", "duration_ms", "rhythm", "drama")
+
+    def __init__(self, role, level, duration_ms, rhythm="steady", drama=None):
+        self.role = role
+        self.level = level
+        self.duration_ms = duration_ms
+        self.rhythm = rhythm
+        self.drama = drama
+
+    def __repr__(self):
+        return "Beat({} {:.0f}% {}ms {})".format(
+            self.role, self.level * 100, self.duration_ms, self.rhythm)
+
+    def __eq__(self, other):
+        return (isinstance(other, Beat) and self.rhythm == other.rhythm
+                and self.duration_ms == other.duration_ms
+                and abs(self.level - other.level) < 1e-9)
+
+    def as_dict(self):
+        return {"role": self.role, "level": self.level,
+                "duration_ms": self.duration_ms, "rhythm": self.rhythm,
+                "drama": self.drama}
 
 
 def clamp_drama(score):
@@ -69,17 +110,16 @@ def clamp_drama(score):
 
 
 def from_drama(score, role="模型"):
-    """0~100 的紧张度 → 一条 Cue（纯函数，可测）。"""
+    """0~100 的紧张度 → 一段 Beat（纯函数，可测）。"""
     score = clamp_drama(score)
     if score is None:
         return None
-    ratio = score / 100.0
-    low, high = DRAMA_LEVEL
-    high = _cues.MAX_LEVEL if high is None else high
-    level = low + (high - low) * ratio
-    lo_ms, hi_ms = DRAMA_MS
-    duration = int(round(lo_ms + (hi_ms - lo_ms) * ratio))
-    return _cues.Cue(role, round(level, 3), duration)
+    for ceiling, level, duration, rhythm in BEAT_TABLE:
+        if score <= ceiling:
+            return Beat(role, min(level, _cues.MAX_LEVEL), min(duration, BASELINE_MAX_MS),
+                        rhythm, score)
+    ceiling, level, duration, rhythm = BEAT_TABLE[-1]
+    return Beat(role, min(level, _cues.MAX_LEVEL), min(duration, BASELINE_MAX_MS), rhythm, score)
 
 
 def _judge(text, context=None):
@@ -142,12 +182,13 @@ def is_raid(cid):
 
 def reset():
     """给测试用：清缓存/冷却/队列。"""
-    global _LAST_ANY, _LAST_LEVEL, _QUEUE, _WORKER
+    global _LAST_ANY, _LAST_LEVEL, _BASELINE_AT, _QUEUE, _WORKER
     _CFG["at"] = 0.0
     _CFG["data"] = None
     _LAST_ROLE.clear()
     _LAST_ANY = 0.0
     _LAST_LEVEL = None
+    _BASELINE_AT = 0.0
     _QUEUE = None
     _WORKER = None
 
@@ -294,24 +335,44 @@ def _collect_with(text, conf, judge=None, context=None):
         if judged is not None:
             found = [judged]
     if not found:
-        found = _cues.parse_cues(text)
+        # a 路线（提示词的【震动】行）没有节奏概念 → 当一段"稳"的短段落
+        found = [Beat(cue.role, cue.level, cue.duration_ms, "steady")
+                 for cue in _cues.parse_cues(text)]
     return found[:limit]
+
+
+async def _ensure_baseline():
+    """背景层：设备第 1 档常开。被 /停 清掉之后会自己补回来。"""
+    global _BASELINE_AT
+    now = time.monotonic()
+    if _BASELINE_AT and now - _BASELINE_AT < BASELINE_TTL:
+        return
+    result = await _share.client().baseline(BASELINE)
+    _BASELINE_AT = now if result.get("ok") else 0.0
+    if result.get("ok"):
+        log("📳 背景层 " + str(int(BASELINE * 100)) + "% 常开")
+    else:
+        log("📳 背景层没开成：" + str(result.get("detail") or "")[:40])
 
 
 async def _worker_loop(queue):
     while True:
         cue = await queue.get()
         try:
-            result = await _share.client().command(cue.level, cue.duration_ms)
+            await _ensure_baseline()
+            result = await _share.client().beat(cue.level, cue.duration_ms,
+                                                getattr(cue, "rhythm", "steady"))
             if result.get("ok"):
-                log("📳 剧情触觉 " + _cues.describe(cue))
+                log("📳 剧情段落 " + _cues.describe(cue)
+                    + " · " + getattr(cue, "rhythm", "steady"))
             else:
-                log("📳 剧情触觉没发出去：" + str(result.get("detail") or "")[:40])
+                log("📳 剧情段落没发出去：" + str(result.get("detail") or "")[:40])
+                _BASELINE_AT = 0.0          # 下次先把背景层补回来
             await asyncio.sleep((cue.duration_ms + 250) / 1000.0)
         except asyncio.CancelledError:
             raise
         except Exception as exc:                               # noqa: BLE001
-            log("📳 剧情触觉异常：" + type(exc).__name__)
+            log("📳 剧情段落异常：" + type(exc).__name__)
         finally:
             queue.task_done()
 
