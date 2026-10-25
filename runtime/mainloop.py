@@ -28,6 +28,7 @@ from runtime import session_obs as _session_obs
 from runtime import chat_archive as _chat_archive
 from runtime import rose_moderation as _rose_moderation
 from runtime import gallery as _gallery
+from runtime.haptics import raid as _haptics_raid
 from runtime import office as _office
 
 
@@ -440,6 +441,14 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
 
                     # 静默监控群：只推进游标、不做任何处理（读得到但一声不吭）
                     if cid in B.MUTE_CIDS:
+                        # 唯一例外：剧情触觉（月之瞳）。只在 haptics_raid.json 里
+                        # 显式登记的群生效，其余静默群是彻底的空转；出错也不影响游标。
+                        try:
+                            await _haptics_raid.watch(
+                                cid, pending, dry=dry, is_self=B.is_self)
+                        except Exception as _e:                # noqa: BLE001
+                            log("⚠️ [{}] 剧情触觉异常：{}".format(
+                                cid[:8], str(_e)[:60]))
                         group_state["last_id"] = pending[-1]["message_id"]
                         state[cid] = group_state
                         B._save_group(cid, group_state)
