@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -30,13 +30,13 @@
 
   <div class="card">
     <div id="who" class="dim">正在连接房主的设备…</div>
-    <label>强度 <span class="big" id="lvl">20</span>%<span class="dim" id="capnote"></span></label>
-    <input type="range" id="level" min="1" max="40" value="20">
+    <label>强度 <span class="big" id="lvl">30</span>%<span class="dim" id="capnote"></span></label>
+    <input type="range" id="level" min="1" max="100" value="30">
     <label>时长 <span class="big" id="dur">1200</span> ms</label>
-    <input type="range" id="duration" min="200" max="3000" step="100" value="1200">
+    <input type="range" id="duration" min="200" max="10000" step="100" value="1200">
     <button id="btn-send" class="primary">振动一下</button>
     <button id="btn-stop" class="danger">立即停止</button>
-    <div class="dim" style="margin-top:10px">最短间隔 300ms；强度上限由服务端夹紧，不会超过 40%。</div>
+    <div class="dim" style="margin-top:10px">最短间隔 300ms。上限由房主那侧设定，默认不限。</div>
   </div>
 
   <div class="card">
@@ -65,7 +65,14 @@ function connect(){
     if(d.t==="welcome"||d.t==="state"){
       const s=d.state||{};
       $("#who").textContent=(s.host?"房主在线":"房主不在线")+" · 设备："+(s.device||"未上报");
-      if(s.caps){$("#level").max=Math.round(s.caps.max_level*100);$("#capnote").textContent="（上限 "+Math.round(s.caps.max_level*100)+"%）"}
+      if(s.caps){
+        const lvCap=Math.round((s.caps.max_level||1)*100);
+        $("#level").max=lvCap;
+        if(Number($("#level").value)>lvCap)$("#level").value=lvCap;
+        $("#capnote").textContent=s.caps.capped?("（上限 "+lvCap+"%）"):"（不限）";
+        if(s.caps.max_duration_ms>0)
+          $("#capnote").textContent+="（时长上限 "+s.caps.max_duration_ms+"ms）";
+      }
       if(d.t==="welcome")pill(s.host?"已接入":"房主不在线",!!s.host);
     }
     if(d.t==="sent")log(`已下发 ${Math.round(d.level*100)}% / ${d.duration_ms}ms`,"ok");

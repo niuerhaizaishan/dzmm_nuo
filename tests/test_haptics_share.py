@@ -1,4 +1,4 @@
-"""网页分享控制：房间、PIN、限幅与生命周期（不含真实蓝牙）。"""
+﻿"""网页分享控制：房间、PIN、限幅与生命周期（不含真实蓝牙）。"""
 import asyncio
 import time
 
@@ -31,13 +31,16 @@ def test_pin_check_and_lockout_after_five_wrong():
     assert session.state()["locked"] is True
 
 
-def test_caps_are_exposed_in_state():
+def test_caps_default_open_and_can_be_tightened_by_env():
     hub = Hub()
     session = hub.create("https://example.com")
     caps = session.state()["caps"]
-    assert caps["max_level"] == share.MAX_LEVEL == 0.4
-    assert caps["max_duration_ms"] == share.MAX_DURATION_MS == 3000
+    # 默认不设上限（按用户要求）：强度 1.0、时长 0 表示不限
+    assert caps["max_level"] == 1.0 and caps["max_duration_ms"] == 0
+    assert caps["capped"] is False
+    # 仍然保留的硬性约束
     assert share.MAX_GUESTS == 1 and share.MIN_INTERVAL_MS == 300
+    assert share.PIN_ATTEMPTS == 5
 
 
 def test_idle_session_is_swept_but_occupied_kept():

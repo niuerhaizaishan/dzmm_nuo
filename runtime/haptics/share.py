@@ -11,6 +11,7 @@
   * 所有东西都在内存里，重启即清空——这里不需要持久化。
 """
 import asyncio
+import os
 import secrets
 import time
 
@@ -18,8 +19,10 @@ from aiohttp import WSMsgType, web
 
 from runtime.obs import log
 
-MAX_LEVEL = 0.40          # 服务端硬上限：40%
-MAX_DURATION_MS = 3000    # 单条指令最长 3 秒
+# 上限默认不设（按你的要求）：1.0 = 强度不限，0 = 时长不限。
+# 需要时用环境变量收紧，例如 DZMM_SHARE_MAX_LEVEL=0.4 / DZMM_SHARE_MAX_DURATION_MS=3000。
+MAX_LEVEL = float(os.environ.get("DZMM_SHARE_MAX_LEVEL", "1.0"))
+MAX_DURATION_MS = int(os.environ.get("DZMM_SHARE_MAX_DURATION_MS", "0"))
 MIN_INTERVAL_MS = 300     # 同一控制者两条指令最小间隔
 SESSION_TTL = 30 * 60     # 闲置 30 分钟回收
 MAX_GUESTS = 1            # 一次只允许一个人控制
@@ -59,7 +62,8 @@ class Session:
         return {"host": self.host is not None, "guests": len(self.guests),
                 "device": self.device, "last_cmd": self.last_cmd,
                 "last_ack": self.last_ack,
-                "caps": {"max_level": MAX_LEVEL, "max_duration_ms": MAX_DURATION_MS},
+                "caps": {"max_level": MAX_LEVEL, "max_duration_ms": MAX_DURATION_MS,
+                         "capped": MAX_LEVEL < 1.0 or MAX_DURATION_MS > 0},
                 "locked": self.locked_until > time.monotonic()}
 
     def expired(self):
@@ -232,8 +236,8 @@ def create_app(*, base_url="", hub=None):
                     duration = int(data.get("duration_ms") or 1000)
                 except (TypeError, ValueError):
                     duration = 1000
-                level = max(0.0, min(level, MAX_LEVEL))
-                duration = max(200, min(duration, MAX_DURATION_MS))
+                level = max(0.0, min(level, MAX_LEVEL)) if MAX_LEVEL < 1.0 else min(max(level, 0.0), 1.0)
+                duration = max(200, min(duration, MAX_DURATION_MS)) if MAX_DURATION_MS > 0 else max(200, duration)
                 if session.host is None:
                     await ws.send_json({"t": "denied", "reason": "房主不在线"})
                     continue
