@@ -180,3 +180,46 @@ Lush 4 Mini 属较新固件，**可能是 C 套 UUID，且可能要求 16 字节
 `requestDevice` 时声明过的服务，所以探测页一次性声明了 36 个候选（4 个静态 + 32 个第三代变体）。
 
 探测页：`tools/haptics/probe.html`，临时部署在 `https://www.nuonuo.pw/img/probe.html`，用完删除。
+
+---
+
+## 附录 B · 网页扫码分享控制：实现与部署（2026-10-25）
+
+### 形态
+房主手机浏览器连设备并生成二维码；其他人扫码进控制页，指令经服务端转发给房主浏览器执行。
+
+`
+控制者浏览器 ──WSS──▶ dzmm-share（127.0.0.1:8097） ──WSS──▶ 房主浏览器 ──BLE──▶ Lush 4 Mini
+`
+
+页面与接口：/（房主页）、/c（控制页）、/ws/host、/ws/guest、POST /api/session、/qrcode.min.js、/healthz。
+二维码在浏览器本地渲染（vendored qrcode.min.js，MIT），不请求第三方接口。
+
+### 安全与约束（当前生效）
+- 强度/时长**默认不设服务端上限**（按用户要求）；需要时用 DZMM_SHARE_MAX_LEVEL=0.4、DZMM_SHARE_MAX_DURATION_MS=3000 收紧。
+- 仍然保留：300ms 限流、单房间只允许 1 个控制者、PIN 连错 5 次锁房 5 分钟、闲置 30 分钟回收、控制者退出/房主断线自动补一次停止、回执超时补停。
+
+### 部署记录
+| 项 | 值 |
+| --- | --- |
+| 镜像 | dzmm-share:20261025（python:3.11-slim + iohttp==3.14.3，148MB） |
+| 构建目录 | /opt/dzmm/releases/haptics-share-20261025/（含空白 untime/__init__.py，避免连带 import 机器人其他模块） |
+| 容器 | dzmm-share，
+etwork_mode: host，只绑 127.0.0.1:8097，mem_limit 128m |
+| compose | /opt/dzmm/docker-compose.yml 末尾追加 dzmm-share 服务 |
+| Caddy | /opt/dzmm/Caddyfile 在兜底 handle { 之前插入 handle_path /haptics/* → 127.0.0.1:8097 |
+| 备份 | /opt/dzmm/backup-haptics-share-20261025/（改动前的 Caddyfile 与 docker-compose.yml） |
+| 验收 | /haptics/ 200、/haptics/c 200、/haptics/qrcode.min.js 200、/haptics/healthz 200、建房间返回正确链接；图集 200/401、旧探测页 200、webhook 401 均未受影响 |
+
+### 回滚
+`sh
+cd /opt/dzmm
+docker compose stop dzmm-share && docker compose rm -f dzmm-share
+cp backup-haptics-share-20261025/docker-compose.yml .
+cp backup-haptics-share-20261025/Caddyfile .
+docker restart caddy-nuonuo
+`
+
+### 已知限制
+- 房主页面必须保持**前台亮屏**（Web Bluetooth 在后台会被挂起）；控制者侧无所谓。
+- 二维码里带 PIN（扫码即控）；要收回就点「结束分享」重开一个房间。
