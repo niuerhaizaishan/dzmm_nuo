@@ -74,11 +74,27 @@ for(const y of "0123456789abcdef")for(const [x,z] of [["4","3"],["5","4"]])
 const SETS=STATIC_SETS.concat(GEN3);
 const SERVICES=SETS.map(s=>s.service);
 
-const S={device:null,server:null,char:null,rx:null,deviceName:"",ws:null,sid:"",pin:"",lastAck:null,ackWaiter:null,stopTimer:null};
+const S={device:null,server:null,char:null,rx:null,deviceName:"",ws:null,sid:"",pin:"",lastAck:null,ackWaiter:null,stopTimer:null,cur:null};
 const $=s=>document.querySelector(s);
 const logBox=$("#log");
 function log(m,c=""){const d=document.createElement("div");if(c)d.className=c;d.textContent=`[${new Date().toTimeString().slice(0,8)}] ${m}`;logBox.appendChild(d);logBox.scrollTop=logBox.scrollHeight}
 function pill(on){const p=$("#pill");p.className="pill "+(on?"on":"off");p.textContent=on?"设备已连接":"未连接"}
+function clampLevel(v){return Math.max(0,Math.min(20,Math.round((Number(v)||0)*20)))}
+const sleep=ms=>new Promise(r=>setTimeout(r,Math.max(0,ms)));
+
+/* 预设节奏：每一步 = 一个形状系数 + 通电时长 + 断电间隙。
+   服务端只转发预设 id 和总时长，具体波形全在这台手机上跑（它必须在前台）。 */
+const PATTERNS={
+  tap:{name:"点按",step:()=>({shape:1.0,on:300,off:400})},
+  pulse:{name:"脉冲",step:()=>({shape:0.7,on:600,off:300})},
+  heartbeat:{name:"心跳",step:i=>i%2===0?{shape:0.60,on:150,off:100}:{shape:0.80,on:150,off:600}},
+  ramp:{name:"渐强",step:(i,n)=>({shape:0.2+0.8*Math.min(i,n-1)/(n-1),on:500,off:0})},
+  ramp_down:{name:"渐弱",step:(i,n)=>({shape:1.0-0.8*Math.min(i,n-1)/(n-1),on:500,off:0})},
+  stutter:{name:"连抖",step:()=>({shape:0.8,on:150,off:150})},
+  hold:{name:"全开",step:()=>({shape:1.0,on:60000,off:0})}
+};
+let runToken=0;
+function stopRun(){runToken++}
 
 async function findChar(server){
   for(const set of SETS){
@@ -134,8 +150,39 @@ function waitAck(ms=700){
 }
 async function stopNow(reason){
   clearTimeout(S.stopTimer);S.stopTimer=null;
+  stopRun();S.cur=null;
   if(!S.char)return;
   try{await write("Vibrate:0;");log("停止（"+reason+"）","warn")}catch(e){}
+}
+/* 跑一条六十秒的预设：按 steps 循环，到点就停；token 变了就立刻放弃。 */
+async function runPattern(id,base,totalMs){
+  const def=PATTERNS[id];
+  if(!def)return log("未知预设 "+id,"bad");
+  const token=++runToken;
+  const start=performance.now();
+  const n=Math.max(2,Math.round(totalMs/500));
+  let i=0;
+  while(token===runToken){
+    const left=totalMs-(performance.now()-start);
+    if(left<=0)break;
+    const st=def.step(i++,n);
+    const lv=clampLevel(base*st.shape);
+    await write(`Vibrate:${lv};`);
+    if(token!==runToken)return;
+    S.cur={level:lv,shape:st.shape,continuous:st.off<=0};
+    await sleep(Math.min(st.on,left));
+    if(token!==runToken)return;
+    if(st.off>0){
+      await write("Vibrate:0;");
+      S.cur=null;
+      await sleep(Math.min(st.off,Math.max(0,totalMs-(performance.now()-start))));
+    }
+  }
+  if(token===runToken){
+    try{await write("Vibrate:0;")}catch(e){}
+    S.cur=null;
+    log("预设「"+def.name+"」结束","warn");
+  }
 }
 function sendState(){
   if(S.ws&&S.ws.readyState===1)
@@ -170,18 +217,48 @@ function openHostWS(){
     let d;try{d=JSON.parse(ev.data)}catch{return}
     if(d.t==="guest_joined"){log("有人扫码接入了","ok");$("#sharestate").textContent="对方正在控制"}
     if(d.t==="cmd"){
-      const n=Math.max(0,Math.min(20,Math.round(d.level*20)));
+      clearTimeout(S.stopTimer);S.stopTimer=null;
+      stopRun();S.cur=null;
+      const base=Math.max(0,Math.min(1,d.level||0));
       try{
-        await write(`Vibrate:${n};`);
-        const ack=await waitAck();
-        S.ws.send(JSON.stringify({t:"ack",id:d.id,ok:!!ack,raw:ack||"sent"}));
-        clearTimeout(S.stopTimer);
-        S.stopTimer=setTimeout(()=>stopNow("到时"),Math.max(200,d.duration_ms||1000));
+        if(d.pattern){
+          const def=PATTERNS[d.pattern];
+          if(!def){
+            S.ws.send(JSON.stringify({t:"ack",id:d.id,ok:false,raw:"unknown pattern"}));
+          }else{
+            const total=Math.max(200,d.total_ms||60000);
+            S.ws.send(JSON.stringify({t:"ack",id:d.id,ok:true,raw:"pattern:"+d.pattern}));
+            log("收到预设「"+def.name+"」"+(total/1000)+" 秒 · 强度 "+Math.round(base*100)+"%","ok");
+            runPattern(d.pattern,base,total).catch(e=>log("预设中断："+e.message,"bad"));
+          }
+        }else{
+          const n=clampLevel(base);
+          await write(`Vibrate:${n};`);
+          const ack=await waitAck();
+          S.ws.send(JSON.stringify({t:"ack",id:d.id,ok:!!ack,raw:ack||"sent"}));
+          S.cur={level:n,shape:1.0,continuous:true};
+          S.stopTimer=setTimeout(()=>stopNow("到时"),Math.max(200,d.duration_ms||1000));
+        }
       }catch(e){
         S.ws.send(JSON.stringify({t:"ack",id:d.id,ok:false,raw:String(e.message||e)}));
         log("执行失败："+e.message,"bad");
       }
-      $("#sharestate").textContent="对方正在控制（最近 "+(d.level*100).toFixed(0)+"%）";
+      $("#sharestate").textContent=d.pattern
+        ? "对方正在控制（预设 "+((PATTERNS[d.pattern]||{}).name||d.pattern)+"）"
+        : "对方正在控制（最近 "+(d.level*100).toFixed(0)+"%）";
+    }
+    if(d.t==="level"){
+      const v=Math.max(0,Math.min(1,d.value||0));
+      if(v<=0){await stopNow("强度归零");return}
+      // 正在长震/渐强里：立刻改写当前档位；否则只影响下一步
+      if(S.cur&&S.char){
+        const nv=clampLevel(v*S.cur.shape);
+        if(nv!==S.cur.level){
+          S.cur.level=nv;
+          try{await write(`Vibrate:${nv};`)}catch(e){}
+        }
+      }
+      log("实时强度 "+Math.round(v*100)+"%","dim");
     }
     if(d.t==="stop"){await stopNow(d.reason||"对方要求")}
   };

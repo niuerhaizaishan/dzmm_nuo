@@ -1,4 +1,4 @@
-﻿"""网页分享控制：房间、PIN、限幅与生命周期（不含真实蓝牙）。"""
+"""网页分享控制：房间、PIN、限幅与生命周期（不含真实蓝牙）。"""
 import asyncio
 import time
 
@@ -100,3 +100,67 @@ def test_host_ws_rejects_wrong_pin_and_guest_respects_capacity():
         finally:
             await asyncio.wait_for(server.close(), timeout=10)
     asyncio.run(scenario())
+
+
+class _FakeHost:
+    """假的房主 WS：只记录服务端转发过来的消息。"""
+
+    def __init__(self):
+        self.sent = []
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+
+
+def test_pattern_command_relays_id_and_total_ms():
+    async def scenario():
+        hub = Hub()
+        session = hub.create("https://example.com")
+        session.host = _FakeHost()
+        cmd_id, level, duration, reason, pattern, total_ms = await share._relay_cmd(
+            session, {"level": 0.5, "pattern": "pulse", "total_ms": 60000})
+        assert reason is None and cmd_id == 1
+        assert pattern == "pulse" and total_ms == 60000 and duration == 60000
+        relayed = session.host.sent[-1]
+        assert relayed["t"] == "cmd" and relayed["pattern"] == "pulse"
+        assert relayed["total_ms"] == 60000
+    asyncio.run(scenario())
+
+
+def test_pattern_command_clamps_total_ms_and_rejects_unknown_id():
+    async def scenario():
+        hub = Hub()
+        session = hub.create("https://example.com")
+        session.host = _FakeHost()
+        _, _, _, reason, _, _ = await share._relay_cmd(session, {"pattern": "no_such"})
+        assert reason == "未知预设", "白名单之外的预设必须拒绝"
+        _, _, duration, _, _, total_ms = await share._relay_cmd(
+            session, {"level": 0.3, "pattern": "tap", "total_ms": 999999})
+        assert total_ms == share.MAX_PATTERN_MS and duration == share.MAX_PATTERN_MS
+        _, _, _, _, _, total_ms = await share._relay_cmd(
+            session, {"level": 0.3, "pattern": "tap", "total_ms": 1})
+        assert total_ms == 200, "过短的预设时长也要抬到 200ms 下限"
+    asyncio.run(scenario())
+
+
+def test_level_message_reaches_host_and_is_clamped():
+    async def scenario():
+        hub = Hub()
+        session = hub.create("https://example.com")
+        session.host = _FakeHost()
+        value, why = await share._relay_level(session, {"value": 0.42})
+        assert why is None and abs(value - 0.42) < 1e-9
+        relayed = session.host.sent[-1]
+        assert relayed["t"] == "level" and abs(relayed["value"] - 0.42) < 1e-9
+        assert abs(session.state()["level"] - 0.42) < 1e-9, "实时强度要能回读"
+        value, why = await share._relay_level(session, {"value": 5})
+        assert value == 1.0 and why is None, "超上限要夹到 1.0"
+        value, why = await share._relay_level(session, {"value": -3})
+        assert value == 0.0
+        value, why = await share._relay_level(session, {"value": "abc"})
+        assert value is None and why == "强度不对"
+        session.host = None
+        value, why = await share._relay_level(session, {"value": 0.5})
+        assert value is None and why == "房主不在线"
+    asyncio.run(scenario())
+

@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -21,8 +21,15 @@
   button.primary{background:#b0533f;color:#fff}
   button.danger{background:#7d2b22;color:#fff;font-weight:600}
   button:disabled{opacity:.45;cursor:default}
-  #log{font:12px/1.6 ui-monospace,Consolas,monospace;color:#9aa4b2;max-height:30vh;overflow:auto;white-space:pre-wrap}
+  .row{display:flex;gap:8px;margin-top:10px}
+  .row button{width:50%;margin-top:0}
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:8px}
+  .grid button{margin-top:0;font-size:14px;padding:12px 6px}
+  .grid button.playing{background:#b0533f;color:#fff}
+  #log{font:12px/1.6 ui-monospace,Consolas,monospace;color:#9aa4b2;max-height:26vh;overflow:auto;white-space:pre-wrap}
   .dim{color:#6f7784;font-size:12px}
+  .bar{height:6px;border-radius:999px;background:#2a2f38;overflow:hidden;margin-top:8px}
+  .bar>i{display:block;height:100%;width:0;background:#b0533f;transition:width .2s linear}
 </style>
 </head>
 <body><main>
@@ -30,17 +37,30 @@
 
   <div class="card">
     <div id="who" class="dim">正在连接房主的设备…</div>
-    <label>强度 <span class="big" id="lvl">30</span>%<span class="dim" id="capnote"></span></label>
-    <input type="range" id="level" min="1" max="100" value="30">
+    <label>强度 <span class="big" id="lvl">50</span>%<span class="dim" id="capnote"></span></label>
+    <input type="range" id="level" min="1" max="100" value="50">
+    <div class="dim">拖着滑条就能实时调，正在震的时候也生效；预设节奏会按这个强度整体缩放。</div>
     <label>时长 <span class="big" id="dur">1200</span> ms</label>
     <input type="range" id="duration" min="200" max="10000" step="100" value="1200">
     <button id="btn-send" class="primary">振动一下</button>
+    <div class="row">
+      <button id="btn-short">短 · 0.4 秒</button>
+      <button id="btn-long">长 · 2.5 秒</button>
+    </div>
     <button id="btn-stop" class="danger">立即停止</button>
-    <div class="dim" style="margin-top:10px">最短间隔 300ms。上限由房主那侧设定，默认不限。</div>
   </div>
 
   <div class="card">
-    <div class="dim">状态</div>
+    <div class="dim" style="margin-top:0">预设节奏 · 每条 60 秒（再点一下换节奏，随时可停）</div>
+    <div id="presets" class="grid"></div>
+    <div id="runbar" hidden>
+      <div id="runtext" class="dim" style="margin-top:10px"></div>
+      <div class="bar"><i id="barfill"></i></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="dim" style="margin-top:0">状态</div>
     <div id="log"></div>
   </div>
 </main>
@@ -52,7 +72,11 @@ const $=s=>document.querySelector(s);
 const logBox=$("#log");
 function log(m,c=""){const d=document.createElement("div");if(c)d.className=c;d.textContent=`[${new Date().toTimeString().slice(0,8)}] ${m}`;logBox.appendChild(d);logBox.scrollTop=logBox.scrollHeight}
 function pill(text,on){const p=$("#pill");p.className="pill "+(on?"on":"off");p.textContent=text}
-let ws=null,busy=false,lastSent=0;
+let ws=null,lastSent=0;
+
+const PRESETS=[["tap","点按"],["pulse","脉冲"],["heartbeat","心跳"],["ramp","渐强"],
+               ["ramp_down","渐弱"],["stutter","连抖"],["hold","全开"]];
+const PRESET_MS=60000;
 
 if(!SID){pill("链接缺少房间号",false);log("这个链接不完整，请重新扫房主的二维码","bad");}
 else connect();
@@ -68,35 +92,97 @@ function connect(){
       if(s.caps){
         const lvCap=Math.round((s.caps.max_level||1)*100);
         $("#level").max=lvCap;
-        if(Number($("#level").value)>lvCap)$("#level").value=lvCap;
+        if(Number($("#level").value)>lvCap){$("#level").value=lvCap;$("#lvl").textContent=lvCap}
         $("#capnote").textContent=s.caps.capped?("（上限 "+lvCap+"%）"):"（不限）";
         if(s.caps.max_duration_ms>0)
           $("#capnote").textContent+="（时长上限 "+s.caps.max_duration_ms+"ms）";
       }
       if(d.t==="welcome")pill(s.host?"已接入":"房主不在线",!!s.host);
     }
-    if(d.t==="sent")log(`已下发 ${Math.round(d.level*100)}% / ${d.duration_ms}ms`,"ok");
+    if(d.t==="sent"){
+      if(d.pattern){
+        const name=presetName(d.pattern);
+        log(`已下发预设「${name}」${Math.round(d.total_ms/1000)} 秒 · 强度 ${Math.round(d.level*100)}%`,"ok");
+        startRunUI(name,d.total_ms||PRESET_MS,d.pattern);
+      }else{
+        log(`已下发 ${Math.round(d.level*100)}% / ${d.duration_ms}ms`,"ok");
+      }
+    }
     if(d.t==="executed")log(`设备回执：${d.ok?"OK":"未确认"}`,"ok");
     if(d.t==="denied")log("被拒绝："+d.reason,"bad");
-    if(d.t==="closed"){pill("房主已断开",false);log("房主结束了分享（"+d.reason+"）","bad")}
+    if(d.t==="closed"){pill("房主已断开",false);log("房主结束了分享（"+d.reason+"）","bad");stopRunUI()}
     if(d.t==="result"&&d.id!==null)log("回执："+(d.ok?"OK":"未确认")+(d.raw?" "+d.raw:""),"dim");
   };
   ws.onclose=()=>{pill("已断开",false);log("连接已断开（可能是 PIN 错、房间已结束，或已有别人在控制）","bad")};
   ws.onerror=()=>log("连接出错","bad");
 }
-$("#level").addEventListener("input",()=>$("#lvl").textContent=$("#level").value);
+
+/* ---------- 实时强度 ---------- */
+let lastLevelAt=0,levelTimer=null;
+function sendLevel(){
+  if(!ws||ws.readyState!==1)return;
+  const now=performance.now(),gap=now-lastLevelAt;
+  if(gap<150){
+    if(!levelTimer)levelTimer=setTimeout(()=>{levelTimer=null;sendLevel()},150-gap);
+    return;
+  }
+  lastLevelAt=now;
+  ws.send(JSON.stringify({t:"level",value:Number($("#level").value)/100}));
+}
+
+/* ---------- 播报条 ---------- */
+let runTimer=null;
+function presetName(id){for(const p of PRESETS)if(p[0]===id)return p[1];return id}
+function markPlaying(id){
+  for(const b of document.querySelectorAll("#presets button"))
+    b.classList.toggle("playing",b.dataset.id===id);
+}
+function startRunUI(name,ms,id){
+  markPlaying(id);
+  const box=$("#runbar");box.hidden=false;
+  const endAt=performance.now()+ms;
+  clearInterval(runTimer);
+  const tick=()=>{
+    const left=endAt-performance.now();
+    if(left<=0){stopRunUI();return}
+    $("#barfill").style.width=((1-left/ms)*100).toFixed(1)+"%";
+    $("#runtext").textContent=`正在播「${name}」· 还剩 ${Math.ceil(left/1000)} 秒`;
+  };
+  tick();runTimer=setInterval(tick,200);
+}
+function stopRunUI(){
+  clearInterval(runTimer);runTimer=null;
+  $("#runbar").hidden=true;$("#barfill").style.width="0%";
+  markPlaying("");
+}
+
+/* ---------- 交互 ---------- */
+$("#level").addEventListener("input",()=>{$("#lvl").textContent=$("#level").value;sendLevel()});
 $("#duration").addEventListener("input",()=>$("#dur").textContent=$("#duration").value);
-$("#btn-send").addEventListener("click",()=>{
+function sendCmd(extra){
   if(!ws||ws.readyState!==1)return log("还没连上","warn");
   const now=Date.now();
   if(now-lastSent<300)return log("慢一点（300ms 间隔）","warn");
   lastSent=now;
-  ws.send(JSON.stringify({t:"cmd",level:Number($("#level").value)/100,duration_ms:Number($("#duration").value)}));
-});
+  ws.send(JSON.stringify(Object.assign({t:"cmd",level:Number($("#level").value)/100},extra)));
+}
+$("#btn-send").addEventListener("click",()=>sendCmd({duration_ms:Number($("#duration").value)}));
+$("#btn-short").addEventListener("click",()=>sendCmd({duration_ms:400}));
+$("#btn-long").addEventListener("click",()=>sendCmd({duration_ms:2500}));
 $("#btn-stop").addEventListener("click",()=>{
   if(!ws||ws.readyState!==1)return;
-  ws.send(JSON.stringify({t:"stop"}));log("已发送停止","warn");
+  ws.send(JSON.stringify({t:"stop"}));
+  stopRunUI();log("已发送停止","warn");
 });
+(function buildPresets(){
+  const box=$("#presets");
+  for(const [id,label] of PRESETS){
+    const b=document.createElement("button");
+    b.textContent=label;b.dataset.id=id;
+    b.addEventListener("click",()=>sendCmd({pattern:id,total_ms:PRESET_MS}));
+    box.appendChild(b);
+  }
+})();
 window.addEventListener("pagehide",()=>{try{if(ws&&ws.readyState===1)ws.send(JSON.stringify({t:"stop"}))}catch(e){}});
 log("页面已加载，房间 "+SID);
 </script>

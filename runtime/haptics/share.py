@@ -1,4 +1,4 @@
-﻿"""网页分享控制：一个房间（房主＝拿着玩具的人）＋ 一个扫码进来的控制者。
+"""网页分享控制：一个房间（房主＝拿着玩具的人）＋ 一个扫码进来的控制者。
 
 链路：
     控制者浏览器 ──WSS──▶ 本服务 ──WSS──▶ 房主浏览器 ──BLE──▶ 玩具
@@ -28,6 +28,11 @@ SESSION_TTL = 30 * 60     # 闲置 30 分钟回收
 MAX_GUESTS = 1            # 一次只允许一个人控制
 PIN_ATTEMPTS = 5          # 连续错 5 次锁房
 PROGRAM_TOKEN = os.environ.get("DZMM_SHARE_PROGRAM_TOKEN", "")  # 机器人（小小糯）用的令牌；没配就关掉程序通道
+# 预设白名单：页面里定义的 id，服务端只做校验不透传细节。
+PATTERN_IDS = {"tap", "pulse", "heartbeat", "ramp", "ramp_down", "stutter", "hold"}
+MAX_PATTERN_MS = 60000       # 单条预设上限 60 秒
+MAX_DURATION_MS_CAP = 60000  # 单条单脉冲上限（预设之外的兜底）
+LEVEL_MIN_INTERVAL_MS = 150  # 实时强度消息的节流
 LOCK_SECONDS = 300
 STATIC_DIR = "runtime/haptics/static"
 
@@ -52,6 +57,7 @@ class Session:
         self.program = None          # 机器人那条 WS
         self.last_cmd = {}
         self.last_ack = {}
+        self.level = 0.0             # 当前实时强度（预设/长按执行期间可随时改）
         self.seq = 0
         self.stop_task = None
 
@@ -65,7 +71,7 @@ class Session:
         return {"host": self.host is not None, "guests": len(self.guests),
                 "program": self.program is not None, "allow_program": self.allow_program,
                 "device": self.device, "last_cmd": self.last_cmd,
-                "last_ack": self.last_ack,
+                "last_ack": self.last_ack, "level": self.level,
                 "caps": {"max_level": MAX_LEVEL, "max_duration_ms": MAX_DURATION_MS,
                          "capped": MAX_LEVEL < 1.0 or MAX_DURATION_MS > 0},
                 "locked": self.locked_until > time.monotonic()}
@@ -136,26 +142,56 @@ def _program_ok(value):
 
 
 async def _relay_cmd(session, data):
-    """夹紧参数并转发给房主。成功返回 (cmd_id, level, duration, None)，失败返回 (None,None,None,原因)。"""
+    """夹紧参数并转发给房主。成功返回 (cmd_id, level, duration, None, pattern, total_ms)。"""
     try:
         level = float(data.get("level", 0))
     except (TypeError, ValueError):
         level = 0.0
+    pattern = data.get("pattern") or ""
+    if pattern and pattern not in PATTERN_IDS:
+        return None, None, None, "未知预设", None, None
     try:
         duration = int(data.get("duration_ms") or 1000)
     except (TypeError, ValueError):
         duration = 1000
+    total_ms = 0
+    if pattern:
+        try:
+            total_ms = int(data.get("total_ms") or MAX_PATTERN_MS)
+        except (TypeError, ValueError):
+            total_ms = MAX_PATTERN_MS
+        total_ms = max(200, min(total_ms, MAX_PATTERN_MS))
+        duration = total_ms
     level = max(0.0, min(level, MAX_LEVEL)) if MAX_LEVEL < 1.0 else min(max(level, 0.0), 1.0)
-    duration = max(200, min(duration, MAX_DURATION_MS)) if MAX_DURATION_MS > 0 else max(200, duration)
+    if not pattern:
+        duration = max(200, min(duration, MAX_DURATION_MS)) if MAX_DURATION_MS > 0 else max(200, min(duration, MAX_DURATION_MS_CAP))
     if session.host is None:
-        return None, None, None, "房主不在线"
+        return None, None, None, "房主不在线", None, None
     session.seq += 1
     cmd_id = session.seq
     session.last_cmd = {"id": cmd_id, "level": level, "duration_ms": duration, "at": time.time()}
-    if not await _to_host(session, {"t": "cmd", "id": cmd_id, "level": level,
-                                    "duration_ms": duration}):
-        return None, None, None, "房主不在线"
-    return cmd_id, level, duration, None
+    payload = {"t": "cmd", "id": cmd_id, "level": level, "duration_ms": duration}
+    if pattern:
+        payload["pattern"] = pattern
+        payload["total_ms"] = total_ms
+    if not await _to_host(session, payload):
+        return None, None, None, "房主不在线", None, None
+    return cmd_id, level, duration, None, pattern, total_ms
+
+
+async def _relay_level(session, data):
+    """实时强度：只改"下一条脉冲用多大"，本身不产生事件。成功返回 (level, None)。"""
+    try:
+        level = float(data.get("value", 0))
+    except (TypeError, ValueError):
+        return None, "强度不对"
+    level = min(max(level, 0.0), MAX_LEVEL if MAX_LEVEL < 1.0 else 1.0)
+    if session.host is None:
+        return None, "房主不在线"
+    session.level = level
+    if not await _to_host(session, {"t": "level", "value": level}):
+        return None, "房主不在线"
+    return level, None
 
 
 def create_app(*, base_url="", hub=None):
@@ -239,6 +275,7 @@ def create_app(*, base_url="", hub=None):
         session.guests.add(ws)
         session.touched = time.monotonic()
         last_send = 0.0
+        last_level = 0.0
         log("haptics-share: 控制者接入 " + session.sid)
         await ws.send_json({"t": "welcome", "state": session.state()})
         await _to_host(session, {"t": "guest_joined"})
@@ -249,6 +286,17 @@ def create_app(*, base_url="", hub=None):
                 session.touched = time.monotonic()
                 data = message.json() if hasattr(message, "json") else {}
                 kind = data.get("t")
+                if kind == "level":
+                    now_lv = time.monotonic()
+                    if (now_lv - last_level) * 1000 < LEVEL_MIN_INTERVAL_MS:
+                        continue
+                    last_level = now_lv
+                    value, why = await _relay_level(session, data)
+                    if why:
+                        await ws.send_json({"t": "denied", "reason": why})
+                        continue
+                    await ws.send_json({"t": "level_ok", "value": value})
+                    continue
                 if kind == "stop":
                     await _to_host(session, {"t": "stop", "reason": "控制者停止"})
                     await ws.send_json({"t": "result", "id": None, "ok": True, "raw": "stop"})
@@ -259,13 +307,16 @@ def create_app(*, base_url="", hub=None):
                 if (now - last_send) * 1000 < MIN_INTERVAL_MS:
                     await ws.send_json({"t": "denied", "reason": "太快了，慢一点"})
                     continue
-                cmd_id, level, duration, reason = await _relay_cmd(session, data)
+                cmd_id, level, duration, reason, pattern, total_ms = await _relay_cmd(session, data)
                 if reason:
                     await ws.send_json({"t": "denied", "reason": reason})
                     continue
                 last_send = now
-                await ws.send_json({"t": "sent", "id": cmd_id, "level": level,
-                                    "duration_ms": duration})
+                sent = {"t": "sent", "id": cmd_id, "level": level, "duration_ms": duration}
+                if pattern:
+                    sent["pattern"] = pattern
+                    sent["total_ms"] = total_ms
+                await ws.send_json(sent)
                 await _broadcast_guests(session, {"t": "state", "state": session.state()})
                 if session.stop_task:
                     session.stop_task.cancel()
@@ -344,6 +395,7 @@ def create_app(*, base_url="", hub=None):
         session.graceful = False   # 客户端发 bye 表示"指令发完就走"，别再补停止
         session.touched = time.monotonic()
         last_send = 0.0
+        last_level = 0.0
         log("haptics-share: 机器人接入 " + session.sid)
         await ws.send_json({"t": "welcome", "state": session.state()})
         try:
@@ -353,6 +405,17 @@ def create_app(*, base_url="", hub=None):
                 session.touched = time.monotonic()
                 data = message.json() if hasattr(message, "json") else {}
                 kind = data.get("t")
+                if kind == "level":
+                    now_lv = time.monotonic()
+                    if (now_lv - last_level) * 1000 < LEVEL_MIN_INTERVAL_MS:
+                        continue
+                    last_level = now_lv
+                    value, why = await _relay_level(session, data)
+                    if why:
+                        await ws.send_json({"t": "denied", "reason": why})
+                        continue
+                    await ws.send_json({"t": "level_ok", "value": value})
+                    continue
                 if kind == "stop":
                     await _to_host(session, {"t": "stop", "reason": "机器人停止"})
                     await ws.send_json({"t": "result", "id": None, "ok": True, "raw": "stop"})
@@ -366,13 +429,16 @@ def create_app(*, base_url="", hub=None):
                 if (now - last_send) * 1000 < MIN_INTERVAL_MS:
                     await ws.send_json({"t": "denied", "reason": "rate_limited"})
                     continue
-                cmd_id, level, duration, reason = await _relay_cmd(session, data)
+                cmd_id, level, duration, reason, pattern, total_ms = await _relay_cmd(session, data)
                 if reason:
                     await ws.send_json({"t": "denied", "reason": reason})
                     continue
                 last_send = now
-                await ws.send_json({"t": "sent", "id": cmd_id, "level": level,
-                                    "duration_ms": duration})
+                sent = {"t": "sent", "id": cmd_id, "level": level, "duration_ms": duration}
+                if pattern:
+                    sent["pattern"] = pattern
+                    sent["total_ms"] = total_ms
+                await ws.send_json(sent)
                 await _broadcast_guests(session, {"t": "state", "state": session.state()})
                 if session.stop_task:
                     session.stop_task.cancel()
