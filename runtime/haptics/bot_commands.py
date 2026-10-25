@@ -29,6 +29,24 @@ def allow_file():
 
 COMMAND = re.compile(r"^[/#](震|停|预设|节奏)(?=\s|$)(.*)$", re.S)
 HELP_CMD = re.compile(r"^[/#](?:帮助|help|指令|菜单|命令)\s+(\S.*)$", re.S)
+# 群里常把 OOC 指令包在 (( )) / （） / 【】 里 —— 先剥掉再认，不然永远匹配不上
+_TRIM_CHARS = "()（）[]［］ \t\r\n"
+
+
+def clean(text):
+    """剥掉包在指令外面的括号与空白：'((#预设 心跳))' → '#预设 心跳'。"""
+    value = (text or "").strip()
+    changed = True
+    while changed and value:
+        changed = False
+        if value and value[0] in _TRIM_CHARS:
+            value = value[1:].lstrip()
+            changed = True
+        if value and value[-1] in _TRIM_CHARS:
+            value = value[:-1].rstrip()
+            changed = True
+    return value
+
 TOY_TOPICS = ("玩具", "糯控", "触觉", "震动", "振动", "设备", "小恶魔")
 DEFAULT_LEVEL = 0.30
 DEFAULT_DURATION_MS = 800
@@ -75,7 +93,7 @@ def is_allowed(uid):
 
 def command(text):
     """返回动作名（震/预设/停/帮助）或 None。"""
-    raw = (text or "").strip()
+    raw = clean(text)
     match = COMMAND.match(raw)
     if match:
         kind = match.group(1)
@@ -132,7 +150,7 @@ def parse_preset(name):
 
 def parse(text):
     """解析成动作 dict；参数不合法返回 (None, 提示)。"""
-    match = COMMAND.match((text or "").strip())
+    match = COMMAND.match(clean(text))
     if not match:
         if command(text) == "帮助":
             return {"action": "help"}, ""

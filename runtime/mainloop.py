@@ -456,10 +456,16 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                         if B._feat_on(cid, "slash_cmds"):
                             for _m in pending:
                                 _t = ((_m.get("content") or {}).get("text") or "").strip()
+                                _uid = _m.get("sent_by", "")
+                                # 诊断：静默群里像指令的消息留一行，方便对账
+                                if (_t.startswith("/") or _t.startswith("#")
+                                        or _haptics_bot.command(_t) is not None):
+                                    log("🔍 [{}] 静默群消息 {}: {!r}".format(
+                                        cid[:8], (_uid or "")[:8], _t[:30]))
                                 if not _t or _haptics_bot.command(_t) is None:
                                     continue
-                                _uid = _m.get("sent_by", "")
                                 if B.is_self(_uid):
+                                    log("🔍 [{}] 静默群指令被判成自己发的，跳过".format(cid[:8]))
                                     continue
                                 try:
                                     _rep = await _haptics_bot.handle(
