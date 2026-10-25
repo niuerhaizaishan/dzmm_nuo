@@ -34,6 +34,8 @@
   <div class="card">
     <div class="row"><button id="btn-connect" class="primary">连接设备</button>
     <button id="btn-stop" class="danger">立即停止</button></div>
+    <div class="row"><button id="btn-short">自测 · 短 0.4 秒</button>
+    <button id="btn-long">自测 · 长 2.5 秒</button></div>
     <div id="devstate" class="dim" style="margin-top:10px">未连接设备</div>
   </div>
 
@@ -276,6 +278,18 @@ async function endShare(){
 }
 $("#btn-connect").addEventListener("click",connect);
 $("#btn-stop").addEventListener("click",()=>stopNow("房主手动"));
+async function testFire(ms){
+  clearTimeout(S.stopTimer);S.stopTimer=null;stopRun();
+  const n=clampLevel(0.5);
+  try{
+    await write(`Vibrate:${n};`);
+    S.cur={level:n,shape:1.0,continuous:true};
+    S.stopTimer=setTimeout(()=>stopNow("到时"),ms);
+    log("自测 "+ms+"ms","ok");
+  }catch(e){log("自测失败："+e.message,"bad")}
+}
+$("#btn-short").addEventListener("click",()=>testFire(400));
+$("#btn-long").addEventListener("click",()=>testFire(2500));
 $("#btn-share").addEventListener("click",createShare);
 $("#btn-end").addEventListener("click",endShare);
 $("#allowbot").addEventListener("change",async()=>{
