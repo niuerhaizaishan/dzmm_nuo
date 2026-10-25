@@ -28,6 +28,7 @@ from runtime.haptics import share_client as _share
 
 DEFAULT_FILE = "/app/data/haptics_raid.json"
 CONFIG_TTL = 2.0          # 配置缓存：热改文件 2 秒内生效，不用重启
+MIN_NARRATION = 80        # (b) 少于这么多字的段落不调模型（状态栏/短回复不值得震）
 
 _CFG = {"at": 0.0, "data": None}
 _LAST_ROLE = {}           # 角色 → 上次触发的 monotonic
@@ -114,7 +115,8 @@ def collect(texts, conf):
         if not text:
             continue
         found = []
-        if conf.get("mode") == "b":
+        # (b) 只判"像叙述"的段落：状态栏/短回复不值得调模型，也不该震
+        if conf.get("mode") == "b" and len(text) >= MIN_NARRATION:
             judged = _judge(text)
             if judged is not None:
                 found = [judged]
@@ -127,19 +129,30 @@ def collect(texts, conf):
     return out
 
 
-def _allowed(cue, conf):
-    """冷却检查：同角色 cooldown_s 内不重复，任意两条至少隔 3 秒。"""
+def _allowed_cues(picked, conf):
+    """一条 watch() 里的整批筛选。
+
+    * 「两次触发之间至少 3 秒」按**批次**算：同一回合解析出的两条是排着队发的
+      （发一条等 duration+250ms），本来就隔着时间，不能按条再卡一次 3 秒
+      ——那样同一个回合永远只能发一条。
+    * 同一角色 `cooldown_s` 内不重复（跨回合）。
+    """
     global _LAST_ANY
     now = time.monotonic()
-    gap = float(conf.get("cooldown_s") or 10)
     if _LAST_ANY and now - _LAST_ANY < 3.0:
-        return False
-    last = _LAST_ROLE.get(cue.role)
-    if last and now - last < gap:
-        return False
-    _LAST_ANY = now
-    _LAST_ROLE[cue.role] = now
-    return True
+        return []
+    gap = float(conf.get("cooldown_s") or 10)
+    ready = []
+    for cue in picked:
+        last = _LAST_ROLE.get(cue.role)
+        if last and now - last < gap:
+            continue
+        ready.append(cue)
+    for cue in ready:
+        _LAST_ROLE[cue.role] = now
+    if ready:
+        _LAST_ANY = now
+    return ready
 
 
 async def _worker_loop(queue):
@@ -189,7 +202,7 @@ async def watch(cid, pending, *, dry=False, is_self=None):
         picked = collect(texts, conf)
         if not picked:
             return 0
-        ready = [cue for cue in picked if _allowed(cue, conf)]
+        ready = _allowed_cues(picked, conf)
         if dry:
             for cue in ready or picked:
                 log("[dry] 📳 剧情触觉 " + _cues.describe(cue))

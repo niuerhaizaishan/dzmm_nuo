@@ -126,8 +126,20 @@ def test_collect_falls_back_to_prompt_tier_when_model_fails(monkeypatch):
 def test_collect_prefers_model_answer_in_mode_b(monkeypatch):
     monkeypatch.setattr(raid, "_judge", lambda text: cues.Cue("模型", 0.6, 1500))
     conf = {"mode": "b", "per_turn": 2}
-    got = raid.collect(["【震动】警官 25% 600ms"], conf)
+    long_text = "管道检修口的栅格被军靴第二下就踹松了。" * 6 + "【震动】警官 25% 600ms"
+    got = raid.collect([long_text], conf)
     assert got and got[0].role == "模型" and got[0].duration_ms == 1500
+
+
+def test_mode_b_skips_short_texts_to_save_model_calls(monkeypatch):
+    """状态栏/短回复不该调模型，也不该震；短文本只走 a 的兜底解析。"""
+    calls = []
+    monkeypatch.setattr(raid, "_judge", lambda text: calls.append(text) or None)
+    conf = {"mode": "b", "per_turn": 2}
+    assert raid.collect(["【进度】密码 ①— ②— ③—｜钥匙 有/无"], conf) == []
+    assert calls == [], "太短，不该调模型"
+    assert len("【进度】密码 ①— ②— ③—｜钥匙 有/无") < raid.MIN_NARRATION
+
 
 
 def test_watch_ignores_groups_not_registered(_clean, monkeypatch):
@@ -191,4 +203,38 @@ def test_watch_without_program_token_does_nothing(_clean, monkeypatch):
     async def scenario():
         got = await raid.watch("c1", [{"content": {"text": "【震动】警官 30% 800ms"}}])
         assert got == 0
+    asyncio.run(scenario())
+
+
+def test_same_turn_two_cues_both_go_out(_clean, monkeypatch):
+    """同一回合解析出两条时，是排着队发两条 —— 不能被 3 秒间隔按条误伤。"""
+    _write_config(_clean)
+    monkeypatch.setenv("DZMM_SHARE_PROGRAM_TOKEN", "t")
+    called = []
+
+    async def _fake_command(level, duration_ms):
+        called.append((round(level, 2), duration_ms))
+        return {"ok": True}
+
+    monkeypatch.setattr(raid._share, "client", lambda: type(
+        "C", (), {"command": staticmethod(_fake_command)})())
+
+    async def scenario():
+        got = await raid.watch("c1", [{"content": {"text":
+            "【震动】警官 25% 600ms 又【震动】侠盗 45% 900ms 再【震动】警官 70% 3000ms"}}])
+        assert got == 2, "每回合上限 2 条，两条都要发出去"
+        if raid._QUEUE is not None:
+            await asyncio.wait_for(raid._QUEUE.join(), timeout=8)
+        assert called == [(0.25, 600), (0.45, 900)]
+    asyncio.run(scenario())
+
+
+def test_third_cue_of_same_turn_is_dropped(_clean, monkeypatch):
+    _write_config(_clean, per_turn=2)
+    monkeypatch.setenv("DZMM_SHARE_PROGRAM_TOKEN", "t")
+
+    async def scenario():
+        got = await raid.watch("c1", [{"content": {"text":
+            "【震动】警官 25% 600ms【震动】侠盗 45% 900ms【震动】警官 70% 3000ms"}}])
+        assert got == 2
     asyncio.run(scenario())
