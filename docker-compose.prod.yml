@@ -10,7 +10,7 @@
 #   DZMM_BOT_TOKEN / DZMM_BOT_ID / DZMM_BOT_CID / DZMM_BOT_ROUTING
 services:
   dzmm-gallery:
-    image: dzmm-bot:gallery-20261023
+    image: dzmm-bot:gallery-20261029
     container_name: dzmm-gallery
     entrypoint: ["python", "-m", "runtime.gallery_api"]
     restart: unless-stopped
@@ -23,6 +23,8 @@ services:
       DZMM_GALLERY_GAME_ID: "${DZMM_GALLERY_GAME_ID}"
       DZMM_GALLERY_ORIGINS: "${DZMM_GALLERY_ORIGINS}"
       DZMM_GALLERY_DB: /app/data/gallery.db
+      DZMM_IMAGEGEN_DB: /app/data/imagegen.db
+      DZMM_IMAGEGEN_PUBLIC_BASE: "${DZMM_IMAGEGEN_PUBLIC_BASE:-https://www.nuonuo.pw/api/gallery/generated}"
       DZMM_GALLERY_PORT: "8775"
       TZ: Asia/Shanghai
     volumes:
@@ -58,6 +60,12 @@ services:
     environment:
       DZMM_SESSION_OBS: "on"
       DZMM_CHAT_ARCHIVE: "${DZMM_CHAT_ARCHIVE:-off}"
+      # 茶水间员工只读接口；密钥仅由服务器 .env 注入，不写进镜像。
+      DZMM_INTEGRATION_BASE_URL: "${DZMM_INTEGRATION_BASE_URL:-}"
+      DZMM_INTEGRATION_API_KEY: "${DZMM_INTEGRATION_API_KEY:-}"
+      DZMM_EMPLOYEE_PROFILE_PATH: "${DZMM_EMPLOYEE_PROFILE_PATH:-}"
+      DZMM_EMPLOYEE_PROFILE_MODE: "${DZMM_EMPLOYEE_PROFILE_MODE:-profile}"
+      DZMM_EMPLOYEE_RANK_ORDER: "${DZMM_EMPLOYEE_RANK_ORDER:-}"
       CONTAINER_MODE: "1"
       # 本地走宿主机 Clash；云端香港/新加坡直连设空字符串（.env 里 DZMM_PROXY=）
       DZMM_PROXY: "${DZMM_PROXY:-}"
@@ -111,6 +119,14 @@ services:
       DZMM_BOT_SECRET_RUOJIN: "${DZMM_BOT_SECRET_RUOJIN:-}"
       # 认证群那个 Bot 的 Webhook Secret（P12-J；原来只有 ROSE 那个透传了）
       DZMM_BOT_SECRET: "${DZMM_BOT_SECRET:-}"
+      # 生图仅 bot A 读取密钥；生成结果与 gallery 服务共享持久卷。
+      XAI_API_KEY: "${XAI_API_KEY:-}"
+      # OpenAI 兼容提示词优化服务；仅机器人 A 使用，密钥只放服务器 .env。
+      PROMPT_OPTIMIZER_API_KEY: "${PROMPT_OPTIMIZER_API_KEY:-}"
+      PROMPT_OPTIMIZER_BASE_URL: "${PROMPT_OPTIMIZER_BASE_URL:-https://www.kurumiai.net/v1}"
+      PROMPT_OPTIMIZER_MODEL: "${PROMPT_OPTIMIZER_MODEL:-gpt-6.1-sol}"
+      DZMM_IMAGEGEN_DB: /app/data/imagegen.db
+      DZMM_IMAGEGEN_PUBLIC_BASE: "${DZMM_IMAGEGEN_PUBLIC_BASE:-https://www.nuonuo.pw/api/gallery/generated}"
       # ---- P12-J：官方 Bot Webhook 接收端（收消息走平台直推，不再只靠 Socket.IO）----
       # 0/不设 = 关闭（默认关，行为与之前一致）。开了之后容器监听这个端口，
       # 由宿主机 Caddy 终止 TLS 后反代进来（见 ports 里的 127.0.0.1 绑定）。

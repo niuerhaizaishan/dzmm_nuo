@@ -24,6 +24,7 @@
     {
       "cid": "bd7fe6a4-0065-4551-ad3d-94116dba8f9c",
       "alias": "认证妹子群",
+      "features": {"imagegen": true, "videogen": true, "prompt_optimize": true},
       "enabled": true,
       "mute": false,
       "screen": true,
