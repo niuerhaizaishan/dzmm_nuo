@@ -9,14 +9,15 @@ from uuid import UUID
 
 from aiohttp import web
 
-from runtime.gallery import ALL_CATEGORIES, CATEGORIES, PRIVATE_CATEGORY, GalleryError, GalleryConflict, GalleryUnavailable, GalleryPlatform, MAX_BYTES, Store, download_name, picture_title
+from runtime.gallery import ALL_CATEGORIES, CATEGORIES, PRIVATE_CATEGORY, GalleryError, GalleryConflict, GalleryUnavailable, GalleryPlatform, MAX_BYTES, MAX_VIDEO_BYTES, Store, download_name, picture_title, inspect_media, video_frame
+from runtime.imagegen_store import Store as ImagegenStore
 
 UID_KEY = web.RequestKey("gallery_uid", str)
 
 
-def make_thumbnail(data):
+def make_thumbnail(data, mime="image/png"):
     from PIL import Image, ImageOps
-    with Image.open(BytesIO(data)) as original:
+    with (video_frame(data) if mime.startswith("video/") else Image.open(BytesIO(data))) as original:
         image = ImageOps.exif_transpose(original)
         image.thumbnail((640, 640), Image.Resampling.LANCZOS)
         image = image.convert("RGBA" if "A" in image.getbands() or "transparency" in image.info else "RGB")
@@ -72,11 +73,12 @@ class PlayerAuth:
         return await asyncio.to_thread(decode)
 
 
-def create_app(*, store=None, platform=None, auth=None, origins=()):
+def create_app(*, store=None, platform=None, auth=None, origins=(), imagegen_store=None):
     store = store or Store()
     platform = platform or GalleryPlatform()
     auth = auth or PlayerAuth(os.environ.get("DZMM_GALLERY_GAME_ID", ""))
     allowed = frozenset(origins)
+    generated_store = imagegen_store or ImagegenStore()
 
     @web.middleware
     async def access(request, handler):
@@ -86,14 +88,15 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
             if origin not in allowed:
                 return web.Response(status=403, text="来源未获允许。", headers=headers)
             headers.update({"Access-Control-Allow-Origin": origin, "Vary": "Origin",
-                "Access-Control-Allow-Headers": "Authorization, Content-Type",
+                "Access-Control-Allow-Headers": "Authorization, Content-Type, Range",
                 "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS"})
         try:
             if request.method == "OPTIONS":
                 return web.Response(status=204, headers=headers)
             public_read = request.method in ("GET", "HEAD") and (
                 request.path == "/api/gallery/items" or
-                re.fullmatch(r"/api/gallery/images/\d+", request.path))
+                re.fullmatch(r"/api/gallery/images/\d+", request.path) or
+                re.fullmatch(r"/api/gallery/generated/[a-f0-9]{64}", request.path))
             private_read = request.method in ("GET", "HEAD") and (
                 request.path == "/api/gallery/private-items" or
                 re.fullmatch(r"/api/gallery/private-images/\d+", request.path))
@@ -120,7 +123,7 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
         response.headers.update(headers)
         return response
 
-    app = web.Application(middlewares=[access], client_max_size=MAX_BYTES * 30 + 65536)
+    app = web.Application(middlewares=[access], client_max_size=100 * 1024 * 1024 + 65536)
     # Derived previews stay in bounded memory; the stored original is never changed.
     thumbnails = OrderedDict()
     thumbnail_bytes = 0
@@ -129,7 +132,7 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
     async def listing(request, *, private=False):
         rows = await asyncio.to_thread(store.list, "", only_private=private)
         # 公开图集不公布上传者 ID/昵称、来源消息或个人收藏状态。
-        items = [{key: row[key] for key in ("id", "category", "title", "width", "height", "caption", "created", "saves")}
+        items = [{key: row[key] for key in ("id", "category", "title", "mime", "width", "height", "caption", "created", "saves")}
                  | {"filename": download_name(row["title"], row["mime"])} for row in rows]
         return web.json_response({"items": items, "categories": ([PRIVATE_CATEGORY] if private else CATEGORIES)})
 
@@ -167,7 +170,7 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
         if size == "thumb":
             async with thumbnail_workers:
                 if image_id not in thumbnails:
-                    data = await asyncio.to_thread(make_thumbnail, row["data"])
+                    data = await asyncio.to_thread(make_thumbnail, row["data"], row["mime"])
                     thumbnails[image_id] = data
                     thumbnail_bytes += len(data)
                     while thumbnail_bytes > 32 * 1024 * 1024:
@@ -177,9 +180,26 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
                 thumbnails.move_to_end(image_id)
             return web.Response(body=data, content_type="image/webp")
         from urllib.parse import quote
-        return web.Response(body=row["data"], content_type=row["mime"], headers={
-            "Content-Disposition": "inline; filename*=UTF-8''" + quote(download_name(row["title"], row["mime"])),
-            "Access-Control-Expose-Headers": "Content-Disposition"})
+        data = row["data"]
+        disposition = "attachment" if request.query.get("download") == "1" else "inline"
+        headers = {
+            "Content-Disposition": disposition + "; filename*=UTF-8''" + quote(download_name(row["title"], row["mime"])),
+            "Accept-Ranges": "bytes",
+            "Access-Control-Expose-Headers": "Content-Disposition, Content-Range, Accept-Ranges"}
+        status = 200
+        # 成员及软删除核验在 Range 处理和封面缓存之前完成。
+        if request.headers.get("Range"):
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", request.headers["Range"])
+            if not match or not any(match.groups()):
+                raise web.HTTPRequestRangeNotSatisfiable(headers={"Content-Range": f"bytes */{len(data)}"})
+            first, last = match.groups()
+            start = int(first) if first else max(0, len(data) - int(last))
+            end = min(int(last), len(data) - 1) if first and last else len(data) - 1
+            if start >= len(data) or start > end:
+                raise web.HTTPRequestRangeNotSatisfiable(headers={"Content-Range": f"bytes */{len(data)}"})
+            headers["Content-Range"] = f"bytes {start}-{end}/{len(data)}"
+            data, status = data[start:end + 1], 206
+        return web.Response(body=data, status=status, content_type=row["mime"], headers=headers)
 
     async def private_image(request):
         return await image(request, private=True)
@@ -235,7 +255,7 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
 
     async def upload(request):
         if request.content_type != "multipart/form-data":
-            raise web.HTTPBadRequest(text="请选择图片后再上传。")
+            raise web.HTTPBadRequest(text="请选择图片或视频后再上传。")
         reader = await request.multipart()
         category, caption, title, files = "", "", "", []
         total = 0
@@ -258,28 +278,29 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
                     title = value
             elif field.name == "images" and field.filename:
                 if len(files) >= 30:
-                    raise web.HTTPBadRequest(text="一次最多上传 30 张图片。")
+                    raise web.HTTPBadRequest(text="一次最多上传 30 个文件。")
                 data = bytearray()
                 while chunk := await field.read_chunk(65536):
                     data.extend(chunk)
                     total += len(chunk)
-                    if len(data) > MAX_BYTES or total > 100 * 1024 * 1024:
-                        raise web.HTTPRequestEntityTooLarge(max_size=MAX_BYTES, actual_size=len(data))
-                files.append((field.filename, bytes(data)))
+                    if len(data) > MAX_VIDEO_BYTES or total > 100 * 1024 * 1024:
+                        raise web.HTTPRequestEntityTooLarge(max_size=MAX_VIDEO_BYTES, actual_size=len(data))
+                files.append((field.filename, bytes(data), field.headers.get("Content-Type", "")))
             else:
                 raise web.HTTPBadRequest(text="上传字段无效。")
         if category not in ALL_CATEGORIES or not files or len(caption) > 160:
-            raise web.HTTPBadRequest(text="请选择图集和图片，配文最多 160 字。")
+            raise web.HTTPBadRequest(text="请选择图集和图片或视频，配文最多 160 字。")
         title = picture_title(title, "")
-        from runtime.gallery import inspect_image
-        for _, data in files:
-            await asyncio.to_thread(inspect_image, data)
+        for filename, data, content_type in files:
+            async with thumbnail_workers:
+                await asyncio.to_thread(inspect_media, data, filename, content_type)
         name = await platform.member(request[UID_KEY])
         ids = []
-        for filename, data in files:
-            image_id, _ = await asyncio.to_thread(store.save, category, data,
-                uploader=request[UID_KEY], name=name, filename=filename, caption=caption,
-                title=(title if len(files) == 1 else f"{title[:76]} {len(ids)+1}") if title else "")
+        for filename, data, content_type in files:
+            async with thumbnail_workers:
+                image_id, _ = await asyncio.to_thread(store.save, category, data,
+                    uploader=request[UID_KEY], name=name, filename=filename, caption=caption, content_type=content_type,
+                    title=(title if len(files) == 1 else f"{title[:76]} {len(ids)+1}") if title else "")
             ids.append(image_id)
         return web.json_response({"ids": ids}, status=201)
 
@@ -294,6 +315,28 @@ def create_app(*, store=None, platform=None, auth=None, origins=()):
         return web.Response(text='window.GALLERY_API_BASE="/api/gallery";',
                             content_type="application/javascript")
 
+    async def generated_image(request):
+        image = await asyncio.to_thread(generated_store.image, request.match_info["token"])
+        if image is None:
+            raise web.HTTPNotFound(text="图片不存在。")
+        data, status = image["data"], 200
+        headers = {"Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow",
+                   "Accept-Ranges": "bytes", "X-Content-Type-Options": "nosniff"}
+        # 视频播放器/平台拉取可按字节读取；URL 不变，原始数据不重复存储。
+        if request.headers.get("Range"):
+            match = re.fullmatch(r"bytes=(\d{0,20})-(\d{0,20})", request.headers["Range"])
+            if not match or not any(match.groups()):
+                raise web.HTTPRequestRangeNotSatisfiable(headers={"Content-Range": f"bytes */{len(data)}"})
+            first, last = match.groups()
+            start = int(first) if first else max(0, len(data) - int(last))
+            end = min(int(last), len(data) - 1) if first and last else len(data) - 1
+            if start >= len(data) or start > end:
+                raise web.HTTPRequestRangeNotSatisfiable(headers={"Content-Range": f"bytes */{len(data)}"})
+            headers["Content-Range"] = f"bytes {start}-{end}/{len(data)}"
+            data, status = data[start:end + 1], 206
+        return web.Response(body=data, status=status, content_type=image["mime"], headers=headers)
+
+    app.router.add_get("/api/gallery/generated/{token:[a-f0-9]{64}}", generated_image)
     app.router.add_get("/api/gallery/items", listing)
     app.router.add_get("/api/gallery/private-items", private_listing)
     app.router.add_get("/api/gallery/me", session)

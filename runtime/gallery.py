@@ -25,9 +25,10 @@ PRIVATE_CATEGORY = "私密相册"
 ALL_CATEGORIES = CATEGORIES + (PRIVATE_CATEGORY,)
 CATEGORY_ALIASES = {"脑洞大开": "大开脑洞"}
 MAX_BYTES = 10 * 1024 * 1024
+MAX_VIDEO_BYTES = 50 * 1024 * 1024
 MAX_PIXELS = 40_000_000
 COMMAND = re.compile(r"^/(漫画|保存|删除图片|恢复图片|移动图片)(?=$|\s)(.*)$", re.S)
-USAGE = "回复群里的一张图片，发送 /保存 个人立绘 图片名称\n名称可不填。可选图集：" + "、".join(ALL_CATEGORIES)
+USAGE = "回复群里的图片或视频，发送 /保存 个人立绘 名称\n名称可不填。可选图集：" + "、".join(ALL_CATEGORIES)
 MOVE_USAGE = "移动：/移动图片 图片编号 目标图集\n例如：/移动图片 123 姐妹日常\n可选图集：" + "、".join(ALL_CATEGORIES)
 MANAGE_USAGE = "删除：/删除图片 图片编号\n误删恢复：/恢复图片 图片编号\n" + MOVE_USAGE + "\n编号可在图集大图或保存回复中查看，仅妹子群成员可操作。"
 CARD_INTRO = "姐妹图集 · 好图一起存\n公开图集所有人可查看；私密相册仅妹子群成员可查看和操作。\n" + USAGE + "\n" + MANAGE_USAGE
@@ -79,7 +80,61 @@ def picture_title(value, fallback="未命名图片"):
 
 def download_name(title, mime):
     stem = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', "_", title).strip(" .")[:80] or "未命名图片"
-    return stem + {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[mime]
+    return stem + {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
+                    "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov"}[mime]
+
+
+def inspect_media(data, filename="", content_type=""):
+    if not data:
+        raise GalleryError("文件为空，未保存。")
+    ext = Path(filename.replace("\\", "/")).suffix.lower()
+    video_mimes = {".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime"}
+    hinted = str(content_type or "").split(";", 1)[0].lower()
+    is_video = (hinted.startswith("video/") or ext in video_mimes
+                or data[:4] == b"\x1a\x45\xdf\xa3" or data[4:8] == b"ftyp")
+    if is_video:
+        if len(data) > MAX_VIDEO_BYTES:
+            raise GalleryError("视频超过 50 MB，未保存。")
+        webm = data[:4] == b"\x1a\x45\xdf\xa3"
+        if not webm and data[4:8] != b"ftyp":
+            raise GalleryError("视频格式无法识别，请使用 MP4、WebM 或 MOV。")
+        frame = video_frame(data)
+        mime = "video/webm" if webm else ("video/quicktime" if data[8:12] == b"qt  " else "video/mp4")
+        return frame.width, frame.height, mime, {"video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov"}[mime]
+    return inspect_image(data)
+
+
+def video_frame(data):
+    """只从内存容器解码首帧；不接受引用外部媒体的容器或浏览器不兼容编码。"""
+    import av
+    try:
+        with av.open(BytesIO(data), options={"protocol_whitelist": "pipe", "enable_drefs": "0"}) as container:
+            if not set(container.format.name.split(",")) & {"mov", "mp4", "matroska", "webm"}:
+                raise GalleryError("请使用 MP4、WebM 或 MOV 视频。")
+            videos = list(container.streams.video)
+            if not videos:
+                raise GalleryError("文件没有视频画面，未保存。")
+            stream = videos[0]
+            webm = data[:4] == b"\x1a\x45\xdf\xa3"
+            codecs = {"vp8", "vp9", "av1"} if webm else {"h264"}
+            if stream.codec_context.name not in codecs:
+                raise GalleryError("视频编码暂不支持，请转为 H.264 MP4 后上传。")
+            if any(s.codec_context.name not in {"aac", "mp3", "opus", "vorbis"} for s in container.streams.audio):
+                raise GalleryError("视频音轨暂不支持，请转为 H.264/AAC MP4 后上传。")
+            width, height = stream.codec_context.width, stream.codec_context.height
+            if min(width, height) <= 0 or width * height > 4096 * 2160:
+                raise GalleryError("视频分辨率太大，请缩小至 4K 以内。")
+            stream.codec_context.thread_count = 1
+            for index, packet in enumerate(container.demux(stream)):
+                if index >= 256:
+                    break
+                for frame in packet.decode():
+                    return frame.to_image()
+    except (av.FFmpegError, OSError, ValueError) as exc:
+        if isinstance(exc, GalleryError):
+            raise
+        raise GalleryError("视频损坏或无法解码，未保存。") from exc
+    raise GalleryError("视频没有可读取的画面，未保存。")
 
 
 def inspect_image(data):
@@ -91,8 +146,8 @@ def inspect_image(data):
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(BytesIO(data)) as image:
                 kind, (width, height) = image.format, image.size
-                if kind not in ("JPEG", "PNG", "WEBP"):
-                    raise GalleryError("只支持 JPG、PNG、WebP 图片。")
+                if kind not in ("JPEG", "PNG", "WEBP", "GIF"):
+                    raise GalleryError("只支持 JPG、PNG、WebP、GIF 图片。")
                 if width * height > MAX_PIXELS:
                     raise GalleryError("图片尺寸太大，请缩小后再存。")
                 image.verify()
@@ -103,7 +158,7 @@ def inspect_image(data):
             Image.DecompressionBombWarning) as exc:
         raise GalleryError("图片损坏或尺寸太大，未保存。") from exc
     mime, extension = {"JPEG": ("image/jpeg", ".jpg"), "PNG": ("image/png", ".png"),
-                       "WEBP": ("image/webp", ".webp")}[kind]
+                       "WEBP": ("image/webp", ".webp"), "GIF": ("image/gif", ".gif")}[kind]
     return width, height, mime, extension
 
 
@@ -144,10 +199,10 @@ class Store:
                 conn.execute("ALTER TABLE gallery_images ADD COLUMN deleted_by TEXT NOT NULL DEFAULT ''")
         return conn
 
-    def save(self, category, data, *, uploader, name, filename="", caption="", source="", title=""):
+    def save(self, category, data, *, uploader, name, filename="", caption="", source="", title="", content_type=""):
         if category not in ALL_CATEGORIES or not uploader:
             raise GalleryError("图集名称无效。\n" + USAGE)
-        width, height, mime, extension = inspect_image(data)
+        width, height, mime, extension = inspect_media(data, filename=filename, content_type=content_type)
         digest = hashlib.sha256(data).hexdigest()
         filename = Path(filename.replace("\\", "/")).name
         # 只保留显示用文件名，响应头不用用户输入，文件名不会变成磁盘路径。
@@ -285,8 +340,22 @@ class GalleryPlatform:
         except (RuntimeError, requests.RequestException) as exc:
             raise platform_unavailable(exc, "original") from exc
 
-    async def download(self, url):
+    async def download(self, url, *, video=False):
         def load():
+            # Generated pictures are already durable local originals. Keep /保存 working
+            # even when sendPhoto stores our URL without copying it to the platform CDN.
+            generated_base = os.environ.get("DZMM_IMAGEGEN_PUBLIC_BASE",
+                "https://www.nuonuo.pw/api/gallery/generated").rstrip("/") + "/"
+            if isinstance(url, str) and url.startswith(generated_base):
+                from runtime.imagegen_store import Store as ImagegenStore
+                image = ImagegenStore().image(url[len(generated_base):])
+                if image is None:
+                    raise GalleryError("生成媒体不存在，请重新发送原文件后再保存。")
+                if video and not str(image.get("mime") or "").startswith("video/"):
+                    raise GalleryError("引用的生成文件不是视频。")
+                if not video and not str(image.get("mime") or "").startswith("image/"):
+                    raise GalleryError("引用的生成文件不是图片。")
+                return image["data"]
             parts = urlsplit(url)
             # 只从已观察到的平台图片 CDN 取原图；不跟随跳转、不发送账号 Cookie。
             if (parts.scheme != "https" or parts.hostname != "rls.cheggpt.com"
@@ -299,8 +368,9 @@ class GalleryPlatform:
                 started = time.monotonic()
                 for chunk in response.iter_content(65536):
                     data.extend(chunk)
-                    if len(data) > MAX_BYTES or time.monotonic() - started > 25:
-                        raise GalleryError("图片超过 10 MB 或下载超时，未保存。")
+                    limit = MAX_VIDEO_BYTES if video else MAX_BYTES
+                    if len(data) > limit or time.monotonic() - started > 60:
+                        raise GalleryError("视频超过 50 MB 或下载超时，未保存。" if video else "图片超过 10 MB 或下载超时，未保存。")
                 return bytes(data)
         return await asyncio.to_thread(load)
 
@@ -372,20 +442,26 @@ class Service:
             if original.get("message_id") != str(message_id):
                 raise GalleryError("原消息编号不一致，未保存。")
             if original.get("chatroom_id") not in (None, PRIMARY_CID):
-                raise GalleryError("只能保存妹子群里的图片。")
+                raise GalleryError("只能保存妹子群里的图片或视频。")
             image = original.get("content") or {}
-            url = image.get("url") or image.get("text")
-            if image.get("type") != "image" or not isinstance(url, str) or not url.startswith("https://"):
-                raise GalleryError("回复的消息不是可保存的图片，请回复原图消息。")
+            # 平台图片通常用 url/text，视频消息使用 videoUrl；兼容 webhook 与历史回查的两种命名。
+            url = (image.get("url") or image.get("text") or image.get("videoUrl")
+                   or image.get("video_url") or image.get("imageUrl") or image.get("image_url"))
+            media_type = str(image.get("type") or "").lower()
+            video = media_type == "video"
+            if media_type not in ("image", "video") or not isinstance(url, str) or not url.startswith("https://"):
+                raise GalleryError("回复的消息不是可保存的图片或视频，请回复原文件消息。")
             if dry:
                 return "[dry] 已核验原图，将保存到「" + category + "」，本次没有写入。"
-            data = await self.platform.download(url)
+            filename = str(image.get("filename") or image.get("fileName") or image.get("name") or "")
+            data = await self.platform.download(url, video=True) if video else await self.platform.download(url)
             # 下载可能花时间，写入前再次确认成员身份，权限失败绝不落库。
             name = await self.platform.member(uid)
             image_id, created = await asyncio.to_thread(self.store.save, category, data,
-                uploader=uid, name=name, source=str(message_id), title=title)
+                uploader=uid, name=name, filename=filename, source=str(message_id), title=title,
+                content_type="video/mp4" if video else "")
             return ("已保存到「" if created else "这张图已经在「") + category + (
-                "」啦～" if created else "」里啦，不会重复收录～") + "\n" + CARD_URL + "\n图片编号：" + str(image_id)
+                "」啦～" if created else "」里啦，不会重复收录～") + "\n" + CARD_URL + ("\n视频编号：" if video else "\n图片编号：") + str(image_id)
         except (GalleryError, GalleryUnavailable, ModerationUnavailable) as exc:
             log("gallery: 操作被拒 " + type(exc).__name__)
             return str(exc)

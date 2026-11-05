@@ -1,3 +1,4 @@
+(()=>{
 "use strict";
 
 // 未接服务的本地页面仍是预览；Gamefy 内验权失败时保持空白，不回退示例数据。
@@ -68,7 +69,7 @@ async function api(path,options={},privateAction=false){
   if(!response.ok){
     const message=(await response.text()).slice(0,200);
     if(privateAction&&(response.status===401||response.status===403)){
-      playerRequest=null;playerValidUntil=0;canEdit=false;updatePermissions();
+      playerRequest=null;playerValidUntil=0;canEdit=false;canViewPrivate=false;updatePermissions();
     }
     throw new Error(message||"图集暂时不可用，请稍后再试。");
   }
@@ -89,7 +90,7 @@ async function loadSession(){
 }
 function applyOwnership(){items.forEach(item=>{item.mine=myIds.has(item.id);});}
 function toItem(row){
-  return {id:row.id,category:row.category,cover:row.id,images:[row.id],filenames:[row.filename],ratio:row.width/row.height<.9?"portrait":row.width/row.height>1.5?"wide":"landscape",caption:row.caption,title:row.title,mine:false,order:row.created,saves:row.saves};
+  return {id:row.id,category:row.category,kind:row.mime?.startsWith("video/")?"video":"image",cover:row.id,images:[row.id],filenames:[row.filename],ratio:row.width/row.height<.9?"portrait":row.width/row.height>1.5?"wide":"landscape",caption:row.caption,title:row.title,mine:false,order:row.created,saves:row.saves};
 }
 async function loadPrivateItems(){
   if(!canViewPrivate)return;
@@ -100,6 +101,11 @@ async function loadPrivateItems(){
   applyOwnership();render();
 }
 function updatePermissions(){
+  if(!canViewPrivate){
+    if(current?.category===PRIVATE_CATEGORY){closeGalleryDialog($("#viewer"));current=null;}
+    for(const [key,promise]of sourceCache){if(privateIds.has(key.split(":")[0])){sourceCache.delete(key);promise.then(revoke).catch(()=>{});}}
+    for(let index=items.length-1;index>=0;index--)if(items[index].category===PRIVATE_CATEGORY)items.splice(index,1);
+  }
   $("#title-editor").hidden=!canEdit;
   $("#move-editor").hidden=!canEdit;
   $("#viewer-delete").hidden=!canEdit;
@@ -117,7 +123,7 @@ async function sourceURL(source,thumbnail=false){
   source=String(source);
   const key=`${source}:${thumbnail?"thumb":"original"}`;
   if(!sourceCache.has(key))sourceCache.set(key,(async()=>{
-    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),25000);
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),120000);
     try{const secret=privateIds.has(source);const response=await api(`${secret?"/private-images/":"/images/"}${source}${thumbnail?"?size=thumb":""}`,{signal:controller.signal},secret);const url=URL.createObjectURL(await response.blob());objectURLs.add(url);return url;}
     finally{clearTimeout(timer);}
   })().catch(error=>{sourceCache.delete(key);throw error;}));
@@ -176,8 +182,23 @@ async function refreshGallery(){
 function el(tag,className,text){const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=text;return node;}
 function icon(name){const node=el("i",`ph ph-${name}`);node.setAttribute("aria-hidden","true");return node;}
 function showToast(message){clearTimeout(toastTimer);$("#toast").textContent=message;$("#toast").hidden=false;toastTimer=setTimeout(()=>$("#toast").hidden=true,3200);}
-function open(dialog){if(!dialog.open)dialog.showModal();}
-function close(dialog){if(dialog.open)dialog.close();}
+function openGalleryDialog(dialog){
+  if(dialog.hasAttribute("open"))return;
+  if(typeof dialog.showModal==="function")dialog.showModal();
+  else{
+    dialog.setAttribute("open","");
+    dialog.classList.add("dialog-fallback");
+  }
+}
+function closeGalleryDialog(dialog){
+  if(!dialog.hasAttribute("open"))return;
+  if(!dialog.classList.contains("dialog-fallback")&&typeof dialog.close==="function")dialog.close();
+  else{
+    dialog.removeAttribute("open");
+    dialog.classList.remove("dialog-fallback");
+    dialog.dispatchEvent(new Event("close"));
+  }
+}
 function avatar(item){const node=el("span","avatar",item.avatar);node.style.background=item.color;return node;}
 function visibleItems(){
   const query=$("#search").value.trim().toLocaleLowerCase();
@@ -189,8 +210,9 @@ function render(){
   $("#gallery").replaceChildren(...matches.map(item=>{
     const card=el("article","image-card");card.dataset.id=item.id;
     const wrap=el("div","card-image-wrap"),button=el("button",`card-image-button ratio-${item.ratio}`);button.type="button";button.setAttribute("aria-label",`查看图片：${item.title}`);
-    const image=el("img");image.dataset.source=String(item.cover);image.alt=item.title;image.style.objectPosition=item.position||"50% 50%";
+    const image=el(!liveMode&&item.kind==="video"?"video":"img");if(image.tagName==="VIDEO"){image.muted=true;image.playsInline=true;image.preload="metadata";image.src=item.cover;}image.dataset.source=String(item.cover);image.alt=item.title;image.style.objectPosition=item.position||"50% 50%";
     const status=el("span","image-status","图片加载中…");status.hidden=!liveMode;button.append(image,status);
+    if(item.kind==="video")button.append(el("span","video-badge","▶ 视频"));
     button.addEventListener("click",()=>{if(button.dataset.loadState==="error")setImage(image,item.cover,false,true);else openViewer(item);});wrap.append(button);
     if(item.images.length>1){const count=el("span","image-count");count.append(icon("images"),document.createTextNode(`${item.images.length} 张`));wrap.append(count);}
     const save=el("button",`card-save${favorites.has(item.id)?" saved":""}`);save.type="button";save.setAttribute("aria-label",`${favorites.has(item.id)?"取消收藏":"收藏"}${item.title}`);save.setAttribute("aria-pressed",String(favorites.has(item.id)));save.append(icon("heart"));save.addEventListener("click",()=>toggleSave(item));wrap.append(save);card.append(wrap);
@@ -227,26 +249,41 @@ async function toggleSave(item){
 function updateSave(){if(!current)return;const saved=favorites.has(current.id);$("#viewer-save").classList.toggle("saved",saved);$("#viewer-save").setAttribute("aria-pressed",String(saved));$("#viewer-save span").textContent=saved?"已经存好":"存到喜欢";}
 function updateImage(){
   if(!current)return;
-  const image=$("#viewer-image");setImage(image,current.images[imageIndex]);image.alt=`${current.title} · 第 ${imageIndex+1} 张`;
+  const image=$("#viewer-image"),video=$("#viewer-video"),isVideo=current.kind==="video";
+  video.pause();video.removeAttribute("src");video.load();image.hidden=isVideo;video.hidden=!isVideo;$("#viewer-zoom").hidden=isVideo;
+  if(!isVideo){setImage(image,current.images[imageIndex]);image.alt=`${current.title} · 第 ${imageIndex+1} 张`;}
+  else{
+    const item=current;
+    video.removeAttribute("poster");
+    sourceURL(item.images[imageIndex],true).then(url=>{if(current===item&&$("#viewer").open)video.poster=url;}).catch(()=>{});
+    sourceURL(item.images[imageIndex]).then(url=>{if(current===item&&$("#viewer").open){video.src=url;}}).catch(error=>showToast(error.message));
+  }
   $("#viewer-page").textContent=`${imageIndex+1} / ${current.images.length}`;$("#viewer-page").hidden=current.images.length===1;
   $("#previous").hidden=current.images.length===1;$("#next").hidden=current.images.length===1;
   $("#previous").disabled=imageIndex===0;$("#next").disabled=imageIndex===current.images.length-1;
   $("#image-scroll").classList.remove("zoomed");$("#viewer-zoom").setAttribute("aria-pressed","false");
-  const download=$("#viewer-download"),source=current.images[imageIndex];download.removeAttribute("href");sourceURL(source).then(url=>{if(current?.images[imageIndex]===source&&memberReady)download.href=url;}).catch(error=>showToast(error.message));download.download=downloadFilename(current,imageIndex);
+  const download=$("#viewer-download"),source=current.images[imageIndex],secret=privateIds.has(String(source));
+  download.removeAttribute("href");
+  // Gamefy iframe 的 sandbox 会拦截 blob 自动下载；公开原图改走带 attachment 头的直链，交给宿主浏览器处理。
+  if(liveMode&&!secret&&/^\d+$/.test(String(source))) download.href=`${apiBase}/images/${source}?download=1`;
+  else sourceURL(source).then(url=>{if(current?.images[imageIndex]===source&&memberReady)download.href=url;}).catch(error=>showToast(error.message));
+  download.download=downloadFilename(current,imageIndex);
   $("#viewer-thumbs").hidden=current.images.length===1;
   $("#viewer-thumbs").replaceChildren(...current.images.map((src,index)=>{const button=el("button",`viewer-thumb${index===imageIndex?" active":""}`);button.type="button";button.setAttribute("aria-label",`查看第 ${index+1} 张`);button.setAttribute("aria-pressed",String(index===imageIndex));const thumb=el("img");setImage(thumb,src);thumb.alt="";button.append(thumb);button.addEventListener("click",()=>{imageIndex=index;updateImage();});return button;}));
 }
 function downloadFilename(item,index=0){
-  const extension=(item.filenames?.[index]||"").match(/\.(png|jpe?g|webp)$/i)?.[0]||".jpg";
+  const extension=(item.filenames?.[index]||"").match(/\.(png|jpe?g|webp|gif|mp4|webm|mov)$/i)?.[0]||(item.kind==="video"?".mp4":".jpg");
   return (item.title||"未命名图片").replace(/[\\/:*?"<>|\x00-\x1f\x7f]/g,"_").replace(/[ .]+$/g,"").slice(0,80)+extension;
 }
 function openViewer(item){
   current=item;imageIndex=0;$("#viewer-category").textContent=item.category;
   $("#viewer-name").textContent=item.title;$("#viewer-title-input").value=item.title;
-  $("#viewer-id").textContent=liveMode?`图片编号：${item.id}`:"本地预览图片";
+  $("#viewer-id").textContent=liveMode?`${item.kind==="video"?"视频":"图片"}编号：${item.id}`:"本地预览";
+  $("#viewer-download").lastChild.textContent=item.kind==="video"?"保存视频":"保存图片";
+  $("#delete-heading").textContent=item.kind==="video"?"删除这个视频？":"删除这张图片？";
   $("#viewer-caption").textContent=item.caption||"";$("#title-error").hidden=true;$("#title-status").hidden=true;
   $("#viewer-category-select").value=item.category;$("#move-error").hidden=true;$("#move-status").hidden=true;updateMoveButton();
-  $("#sample-source").hidden=liveMode||item.mine;updateImage();updateSave();updatePermissions();open($("#viewer"));$("#viewer").scrollTop=0;
+  $("#sample-source").hidden=liveMode||item.mine;updateImage();updateSave();updatePermissions();openGalleryDialog($("#viewer"));$("#viewer").scrollTop=0;
 }
 async function renameCurrent(){
   if(!current||!canEdit||$("#title-submit").disabled)return;
@@ -290,7 +327,7 @@ function askDelete(){
   deleteTarget={id:current.id,title:current.title};
   $("#delete-target").textContent=`「${current.title}」${liveMode?` · 编号 ${current.id}`:""}`;
   $("#delete-description").textContent=liveMode?`删除后，画廊、收藏和我的中都不再显示。误删可在妹子群发送 /恢复图片 ${current.id} 找回。`:"从本地预览中删除这张图，刷新页面后重置。";
-  $("#delete-error").hidden=true;open($("#delete-dialog"));
+  $("#delete-error").hidden=true;openGalleryDialog($("#delete-dialog"));
 }
 async function deletePicture(){
   if(!deleteTarget||!canEdit||deleting)return;
@@ -299,40 +336,50 @@ async function deletePicture(){
     if(liveMode)await api(`/images/${target.id}`,{method:"DELETE"},true);
     const index=items.findIndex(item=>item.id===target.id);if(index>=0)items.splice(index,1);
     favorites.delete(target.id);
-    close($("#delete-dialog"));if(current?.id===target.id){close($("#viewer"));current=null;}
+    closeGalleryDialog($("#delete-dialog"));if(current?.id===target.id){closeGalleryDialog($("#viewer"));current=null;}
     render();showToast(liveMode?`图片已删除；误删可发送 /恢复图片 ${target.id}`:"已从本地预览删除，刷新后重置");deleteTarget=null;
   }catch(error){$("#delete-error").textContent=error.message;$("#delete-error").hidden=false;}
   finally{deleting=false;$("#delete-confirm").disabled=false;$("#delete-cancel").disabled=false;}
 }
 $("#viewer-delete").addEventListener("click",askDelete);
 $("#delete-confirm").addEventListener("click",deletePicture);
-$("#delete-cancel").addEventListener("click",()=>{if(!deleting)close($("#delete-dialog"));});
+$("#delete-cancel").addEventListener("click",()=>{if(!deleting)closeGalleryDialog($("#delete-dialog"));});
 $("#delete-dialog").addEventListener("cancel",event=>{if(deleting)event.preventDefault();});
 
 function moveImage(direction){if(!current)return;const next=imageIndex+direction;if(next>=0&&next<current.images.length){imageIndex=next;updateImage();}}
 function uploadTab(group){$("#device-tab").classList.toggle("active",!group);$("#group-tab").classList.toggle("active",group);$("#upload-form").hidden=group;$("#group-guide").hidden=!group;}
-function openUpload(group=false){if(liveMode&&!canEdit){loadSession().then(()=>{if(canEdit)openUpload(group);else showToast("所有人都能看图，上传和编辑仅限妹子群成员。请从 DZMM 登录后重试。");});return;}uploadTab(group);$("input[name='category'][value='"+category+"']").checked=true;open($("#upload-dialog"));}
+function openUpload(group=false){if(liveMode&&!canEdit){loadSession().then(()=>{if(canEdit)openUpload(group);else showToast("所有人都能看图，上传和编辑仅限妹子群成员。请从 DZMM 登录后重试。");});return;}uploadTab(group);$("input[name='category'][value='"+category+"']").checked=true;openGalleryDialog($("#upload-dialog"));}
 function revoke(url){URL.revokeObjectURL(url);objectURLs.delete(url);}
 async function addFiles(files){
   if(adding){showToast("图片还在读取，稍等一下～");return;}
   adding=true;$("#publish").disabled=true;const errors=[];
   try{
     for(const file of files){
-      if(selectedFiles.length>=30){errors.push("预览一次最多放 30 张图。");break;}
-      if(!["image/jpeg","image/png","image/webp"].includes(file.type)){errors.push(`${file.name}：换成 JPG、PNG 或 WebP 再试试。`);continue;}
-      if(file.size>10*1024*1024){errors.push(`${file.name} 超过 10 MB，缩小一点再来。`);continue;}
+      if(selectedFiles.length>=30){errors.push("一次最多放 30 个文件。");break;}
+      const isVideo=["video/mp4","video/webm","video/quicktime"].includes(file.type)||/\.(mp4|webm|mov)$/i.test(file.name);
+      if(!isVideo&&!['image/jpeg','image/png','image/webp','image/gif'].includes(file.type)&&!/\.gif$/i.test(file.name)){errors.push(`${file.name}：支持 JPG、PNG、WebP、GIF 图片，MP4、WebM、MOV 视频。`);continue;}
+      const limit=isVideo?50:10;
+      if(file.size>limit*1024*1024){errors.push(`${file.name} 超过 ${limit} MB，缩小一点再来。`);continue;}
       if(selectedFiles.reduce((total,item)=>total+item.file.size,0)+file.size>100*1024*1024){errors.push("这组图超过 100 MB 了，少放几张试试。");break;}
       const url=URL.createObjectURL(file);objectURLs.add(url);
-      try{const image=new Image();image.src=url;await image.decode();if(image.naturalWidth*image.naturalHeight>40000000){revoke(url);errors.push(`${file.name} 尺寸太大，缩小后再试。`);continue;}selectedFiles.push({file,url,width:image.naturalWidth,height:image.naturalHeight});}
-      catch{revoke(url);errors.push(`${file.name} 读不出来，换张图片试试。`);}
+      try{
+        let width,height;
+        if(isVideo){
+          const video=document.createElement("video");video.preload="metadata";
+          try{await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error("timeout")),15000);video.onloadedmetadata=()=>{clearTimeout(timer);resolve();};video.onerror=()=>{clearTimeout(timer);reject(new Error("decode"));};video.src=url;});width=video.videoWidth;height=video.videoHeight;}
+          finally{video.removeAttribute("src");video.load();}
+        }else{const image=new Image();image.src=url;await image.decode();width=image.naturalWidth;height=image.naturalHeight;}
+        if(width*height>(isVideo?4096*2160:40000000)){throw new Error("dimensions");}
+        selectedFiles.push({file,url,width,height,kind:isVideo?"video":"image"});
+      }catch{revoke(url);errors.push(`${file.name} 无法读取或尺寸过大；视频可转为 H.264 MP4 后重试。`);}
     }
   }finally{adding=false;$("#publish").disabled=false;$("#file-input").value="";}
   $("#upload-error").textContent=errors.join(" ");$("#upload-error").hidden=!errors.length;renderPreviews();
 }
 function renderPreviews(){
-  $("#preview-heading").hidden=selectedFiles.length===0;$("#preview-count").textContent=`选了 ${selectedFiles.length} 张`;
+  $("#preview-heading").hidden=selectedFiles.length===0;$("#preview-count").textContent=`选了 ${selectedFiles.length} 个文件`;
   $("#upload-previews").replaceChildren(...selectedFiles.map((item,index)=>{
-    const card=el("div","upload-preview"),image=el("img");image.src=item.url;image.alt=`第 ${index+1} 张：${item.file.name}`;const controls=el("div","page-controls");controls.append(el("span","",!liveMode&&index===0?"封面":`${index+1}`));
+    const card=el("div","upload-preview"),image=el(item.kind==="video"?"video":"img");image.src=item.url;if(item.kind==="video"){image.muted=true;image.playsInline=true;image.preload="metadata";}image.setAttribute("aria-label",item.file.name);const controls=el("div","page-controls");controls.append(el("span","",item.kind==="video"?"视频":`${index+1}`));
     for(const [direction,symbol,name]of [[-1,"←","前移"],[1,"→","后移"]]){const button=el("button","",symbol);button.type="button";button.disabled=index+direction<0||index+direction>=selectedFiles.length;button.setAttribute("aria-label",`${name}第 ${index+1} 张`);button.addEventListener("click",()=>{[selectedFiles[index],selectedFiles[index+direction]]=[selectedFiles[index+direction],selectedFiles[index]];renderPreviews();});controls.append(button);}
     const remove=el("button","remove","×");remove.type="button";remove.setAttribute("aria-label",`移除第 ${index+1} 张`);remove.addEventListener("click",()=>{revoke(item.url);selectedFiles.splice(index,1);renderPreviews();});controls.append(remove);card.append(image,controls);return card;
   }));
@@ -378,29 +425,42 @@ $("#title-editor").addEventListener("submit",event=>event.preventDefault());
 $("#viewer-title-input").addEventListener("keydown",event=>{if(event.key==="Enter"&&!event.isComposing){event.preventDefault();renameCurrent();}});
 $("#group-open").addEventListener("click",()=>openUpload(true));
 $("#device-tab").addEventListener("click",()=>uploadTab(false));$("#group-tab").addEventListener("click",()=>uploadTab(true));
-$("#upload-close").addEventListener("click",()=>close($("#upload-dialog")));
-$("#viewer-close").addEventListener("click",()=>close($("#viewer")));$("#viewer-save").addEventListener("click",()=>current&&toggleSave(current));
+$("#upload-close").addEventListener("click",()=>closeGalleryDialog($("#upload-dialog")));
+$("#viewer-close").addEventListener("click",()=>closeGalleryDialog($("#viewer")));$("#viewer-save").addEventListener("click",()=>current&&toggleSave(current));
+$("#viewer-download").addEventListener("click",event=>{
+  const url=$("#viewer-download").getAttribute("href");
+  if(!url){event.preventDefault();showToast("原图还在准备，请稍等后再点一次。");return;}
+  // Gamefy 的 iframe 会拦截 download 属性；宿主允许 window.open，API 的 attachment 头负责下载。
+  event.preventDefault();
+  try{
+    window.open(url,"_blank","noopener");
+    // noopener 下打开成功也可能返回 null，不能据此判定为被拦截。
+    showToast("已请求打开下载页面；若未出现，请允许浏览器弹出窗口。");
+  }catch{showToast("无法打开下载页面，请检查浏览器的弹出窗口设置。");}
+});
+$("#viewer").addEventListener("close",()=>{const video=$("#viewer-video");video.pause();video.removeAttribute("src");video.load();});
+$("#viewer-video").addEventListener("error",()=>{if($("#viewer-video").getAttribute("src"))showToast("浏览器无法播放此视频，可以保存后查看，或转为 H.264 MP4 后重新上传。");});
 $("#previous").addEventListener("click",()=>moveImage(-1));$("#next").addEventListener("click",()=>moveImage(1));
 $("#viewer-zoom").addEventListener("click",()=>{const zoomed=$("#image-scroll").classList.toggle("zoomed");$("#viewer-zoom").setAttribute("aria-pressed",String(zoomed));});
-for(const id of ["info-open","footer-info"])$("#"+id).addEventListener("click",()=>open($("#info-dialog")));
-document.querySelectorAll(".info-close").forEach(node=>node.addEventListener("click",()=>close($("#info-dialog"))));
-document.querySelectorAll("dialog").forEach(dialog=>dialog.addEventListener("click",event=>{if(event.target===dialog&&!(dialog.id==="delete-dialog"&&deleting)){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)dialog.close();}}));
+for(const id of ["info-open","footer-info"])$("#"+id).addEventListener("click",()=>openGalleryDialog($("#info-dialog")));
+document.querySelectorAll(".info-close").forEach(node=>node.addEventListener("click",()=>closeGalleryDialog($("#info-dialog"))));
+document.querySelectorAll("dialog").forEach(dialog=>dialog.addEventListener("click",event=>{if(event.target===dialog&&!(dialog.id==="delete-dialog"&&deleting)){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)closeGalleryDialog(dialog);}}));
 $("#file-input").addEventListener("change",event=>addFiles([...event.target.files]));
 for(const name of ["dragenter","dragover"])$("#dropzone").addEventListener(name,event=>{event.preventDefault();$("#dropzone").classList.add("dragging");});
 for(const name of ["dragleave","drop"])$("#dropzone").addEventListener(name,event=>{event.preventDefault();$("#dropzone").classList.remove("dragging");if(name==="drop")addFiles([...event.dataTransfer.files]);});
 async function uploadPictures(){
   if(adding)return;
-  if(!selectedFiles.length){$("#upload-error").textContent="先选一张喜欢的图片吧。";$("#upload-error").hidden=false;return;}
+  if(!selectedFiles.length){$("#upload-error").textContent="先选一张图片或一个视频吧。";$("#upload-error").hidden=false;return;}
   const selectedCategory=$("input[name='category']:checked").value,first=selectedFiles[0],ratio=first.width/first.height;
   if(liveMode){
     const form=new FormData();form.append("category",selectedCategory);form.append("caption",$("#caption-input").value.trim());form.append("title",$("#title-input").value.trim());selectedFiles.forEach(item=>form.append("images",item.file));
     adding=true;$("#publish").disabled=true;$("#publish").textContent="正在上传…";
-    try{await api("/upload",{method:"POST",body:form},true);selectedFiles.forEach(item=>revoke(item.url));selectedFiles=[];$("#upload-form").reset();renderPreviews();close($("#upload-dialog"));category=selectedCategory;showToast("已保存到图集啦～");await refreshGallery();setView("shared");}
+    try{await api("/upload",{method:"POST",body:form},true);selectedFiles.forEach(item=>revoke(item.url));selectedFiles=[];$("#upload-form").reset();renderPreviews();closeGalleryDialog($("#upload-dialog"));category=selectedCategory;showToast("已保存到图集啦～");await refreshGallery();setView("shared");}
     catch(error){$("#upload-error").textContent=error.message;$("#upload-error").hidden=false;}
     finally{adding=false;$("#publish").disabled=false;$("#publish").textContent="放进图集";}return;
   }
-  items.unshift({id:`upload-${Date.now()}`,category:selectedCategory,cover:first.url,images:selectedFiles.map(item=>item.url),filenames:selectedFiles.map(item=>item.file.name),ratio:ratio<.9?"portrait":ratio>1.5?"wide":ratio>1.1?"landscape":"square",caption:$("#caption-input").value.trim(),title:$("#title-input").value.trim()||first.file.name.replace(/\.[^.]+$/,""),saves:0,name:"小小糯",avatar:"糯",color:"#e8dfc6",mine:true,order:Date.now()});
-  selectedFiles=[];$("#upload-form").reset();$("#upload-error").hidden=true;renderPreviews();close($("#upload-dialog"));category=selectedCategory;setView("shared");showToast("放进预览图集啦，刷新后会清空");
+  selectedFiles.forEach((file,index)=>items.unshift({id:`upload-${Date.now()}-${index}`,category:selectedCategory,kind:file.kind,cover:file.url,images:[file.url],filenames:[file.file.name],ratio:file.width/file.height<.9?"portrait":"landscape",caption:$("#caption-input").value.trim(),title:$("#title-input").value.trim()||file.file.name.replace(/\.[^.]+$/,""),saves:0,mine:true,order:Date.now()}));
+  selectedFiles=[];$("#upload-form").reset();$("#upload-error").hidden=true;renderPreviews();closeGalleryDialog($("#upload-dialog"));category=selectedCategory;setView("shared");showToast("放进预览图集啦，刷新后会清空");
 }
 $("#publish").addEventListener("click",uploadPictures);
 $("#upload-form").addEventListener("submit",event=>event.preventDefault());
@@ -419,8 +479,10 @@ if(liveMode){
   $(".upload-footer span").textContent="保存到妹子群的共享图集";
   $("#footer-info").textContent="所有人可看 · 妹子群可传图";
   $("#info-open").setAttribute("aria-label","查看图集说明");
-  $("#preview-heading span:last-child").textContent="每张图片分别收进所选分区";
-  $("#info-dialog p:last-of-type").textContent="公开图集所有人可查看和保存原图；私密相册只有当前妹子群成员能查看和操作。当前妹子群成员可上传、编辑图片名称和删除图片。大图中可查看图片编号，群里发送 /删除图片 编号，误删发送 /恢复图片 编号；发送 /移动图片 编号 分区名 可换分区（含私密相册）。群里回复原图发送 /保存 分区名 图片名称，名称可不填。";
+  $("#preview-heading span:last-child").textContent="每个图片或视频分别收进所选分区";
+  $("#info-dialog p:last-of-type").textContent="公开图集所有人可查看和保存图片、视频；私密相册只有当前妹子群成员能查看和操作。当前妹子群成员可上传、改名、移动和删除图片或视频。视频支持 MP4、WebM、MOV，推荐 H.264 MP4，单个不超过 50 MB。大图中可查看图片编号，群里发送 /删除图片 编号，误删发送 /恢复图片 编号；发送 /移动图片 编号 分区名 可换分区（含私密相册）。群里回复原图或视频发送 /保存 分区名 名称，名称可不填。";
   $("#empty-message").textContent="正在加载画廊…";
   refreshGallery();
 }
+
+})();
