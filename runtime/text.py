@@ -14,6 +14,7 @@ import unicodedata
 
 __all__ = [
     "_get_opencc", "_normalize_cn", "_simplify", "_strip_parenthesis",
+    "_normalize_command_prefix",
     "_is_stop_word", "_dedupe_options", "_normalize_choice",
     "_extract_deadline_seconds", "_squash", "_clean_name", "_norm_poem",
     "_spice_emoji", "_ensure_decor", "_humanize_chat",
@@ -23,6 +24,22 @@ __all__ = [
 # 句末标点：撒表情只在它们**后面**动手
 _SPICE_END = "。！？～…"
 _SPICE_SPLIT = re.compile(r"[\s,，、|/]+")
+
+
+def _normalize_command_prefix(text: str) -> str:
+    """把命令开头的全角/半角斜杠、井号统一成半角。
+
+    只归一化第一个字符，避免改动命令载荷里的全角文字；空白由调用方
+    的命令解析器按原规则处理。这样所有共享主循环的命令都能一致识别
+    ``#写诗`` 与 ``＃写诗``（以及 ``/``/``／``）。
+    """
+    value = str(text or "").strip()
+    if not value:
+        return value
+    prefix = unicodedata.normalize("NFKC", value[0])
+    if prefix in ("/", "#"):
+        return prefix + value[1:]
+    return value
 
 
 def _ensure_decor(text: str, heart: str = "", bang: bool = True) -> str:

@@ -262,6 +262,20 @@ _FEATURES_RAW = (
         Param("perf.novel_max_chunks", "单次最多分块", 12, "块", 1, 24,
               note="调大堵死主循环（2026-09-14 堵过 37 分钟）"),
     )),
+    Feature("imagegen", "生图与引用图片编辑", "content", default=False,
+            note="默认关；按群打开后，仅妹子认证群可用 /生图；引用图片时修改原图", params=(
+        Param("imagegen.cooldown", "每人提交冷却", 60, "秒", 10, 3600),
+        Param("imagegen.input_limit", "提示词上限", 2000, "字", 100, 2000),
+        Param("imagegen.timeout", "生成等待上限", 150, "秒", 10, 180),
+    )),
+    Feature("videogen", "生视频与引用图片动画", "content", default=False,
+            note="默认关；按群打开后，仅妹子认证群可用 /生视频；引用图片时生成短视频", params=(
+        Param("videogen.cooldown", "每人提交冷却", 60, "秒", 10, 3600),
+        Param("videogen.input_limit", "提示词上限", 2000, "字", 100, 2000),
+        Param("videogen.timeout", "生成等待上限", 300, "秒", 30, 600),
+    )),
+    Feature("prompt_optimize", "视频提示词优化", "content", default=False,
+            note="默认关；按群打开后，用 /提示词 视频 把简短想法整理成 Grok 视频提示词"),
     Feature("personal_story", "我的故事", "content", default=False,
             note="默认关；按群打开后，仅小小糯在认证群生成发起者本人的归档故事", params=(
         Param("personal_story.cooldown", "每人冷却", 300, "秒", 30, 86400),
@@ -284,7 +298,7 @@ _FEATURES_RAW = (
                    "万一有人反复给同一个人写，后台改个数字就能开，不用重新部署"),
     )),
     Feature("office", "茶水间双人办公室剧情", "game", default=False,
-            note="默认关；仅茶水间小小糯，同部门职级校验、个人自愿开关、每天一次；关闭后结束会话"),
+            note="默认关；仅茶水间小小糯，可跨部门、职级校验、个人自愿开关、每天一次；关闭后结束会话"),
     Feature("dream", "小小糯解梦", "content", default=False,
             note="默认关，不改变现有群聊；按群打开后，仅小小糯的认证群和顶层茶水间可用", params=(
         Param("dream.hash_cmd", "允许 #解梦", 0, "", 0, 1,
@@ -433,6 +447,17 @@ _FEATURES_RAW = (
     Feature("rose_moderation", "Rose 管理确认", "room", default=False,
             note="关：不处理管理指令。开：仅 Rose 群管理员可确认撤回和踢出；"
                  "需执行账号具备群管理权限，不设有效期，模糊失败不自动重试。"),
+    # P12-CG（2026-11-02 屋主）：瑞雯の酒馆的魔法小剧场。两个都默认关、按群开；
+    # 瑞雯群 at_only=on 且 slash_cmds=off，指令入口在 mainloop 闸门前放行
+    # （tavern_magic/tavern_mute 任一开着就放行，分派时再各自看开关）。
+    Feature("tavern_magic", "酒馆魔法（三条咒语）", "content", default=False,
+            stage="wired",
+            note="开＝/除你衣物 /荧光闪烁 /塔朗泰拉舞 生效（纯文案小剧场，"
+                 "回复别人或空格加对方全名）；关＝指令不生效"),
+    Feature("tavern_mute", "酒馆禁言", "content", default=False, stage="wired",
+            note="开＝/小嘴巴闭起来（10分钟/1小时/24小时/7天/永久）与"
+                 " /恢复如初 生效；仅本群管理员可发起，执行账号也需管理权限；"
+                 "关＝指令不生效"),
 
     # ---- G. 告警（4）
     Feature("alert_send_fail", "连续发送失败告警", "alert"),
@@ -452,7 +477,7 @@ _FEATURES_RAW = (
 # bot.py / runtime/*.py 里的 `_feat_on(cid, "key")`，两边不一致就报错。
 # 加闸门忘了改这里、或改了这里忘了加闸门，都会当场红。
 _WIRED = (
-    "office",
+    "office", "imagegen", "videogen",
     "lambda_greetings", "lambda_control",
     # --- 第一批（定时/事件类入口，不与命令分派链耦合）---
     "greet_morning", "greet_noon", "greet_evening",   # 定时问候（按群过滤）
@@ -476,7 +501,7 @@ _WIRED = (
     "screen_captcha_notice", "screen_pending",
     "person_summary", "profile_card", "archive_build",
     "dice_timeout", "diaojiao_idle", "heat", "heat_climax", "devil_cold",
-    "perf_enrich", "perf_novel",
+    "perf_enrich", "perf_novel", "prompt_optimize",
     "alert_cookie", "alert_token", "alert_captcha", "auto_recover",
     "heartbeat", "health_check",
 )

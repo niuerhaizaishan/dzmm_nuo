@@ -323,12 +323,17 @@ def _scan(cid, texts):
                              and child.func.attr == "is_hash_request" for child in ast.walk(node)))
     bridge = SimpleNamespace(
         is_self=lambda uid: uid == "self", _feat_on=features.on, _tune=tuning.get,
-        is_fortune_cmd=is_fortune_cmd, is_at_me=lambda text, cid: text.startswith("@小小糯"),
+        is_fortune_cmd=is_fortune_cmd, is_poem_cmd=dispatch.is_poem_cmd,
+        is_at_me=lambda text, cid: text.startswith("@小小糯"),
         _quote_reply_on=lambda cid: False, _quotes_self=lambda message: False,
         _is_other_bot_noise=lambda cid, text: "记忆考核" in text,
         _chat_cooling=lambda cid, uid: 0, _is_room_trigger=lambda *args: False)
     env = {"B": bridge, "_dream": dream, "_rose_moderation": mainloop._rose_moderation,
+           "_tavern": mainloop._tavern,
            "_gallery": mainloop._gallery, "_office": mainloop._office,
+           "_imagegen": mainloop._imagegen,
+           "_videogen": mainloop._videogen,
+           "_prompt_optimizer": mainloop._prompt_optimizer,
            "cid": cid, "log": lambda *args: None,
            "pending": [{"message_id": str(index), "sent_by": "guest", "content": {"text": text}}
                        for index, text in enumerate(texts)],
@@ -339,21 +344,22 @@ def _scan(cid, texts):
     return env
 
 
-def test_office_specific_slash_whitelist_preserves_other_bots_and_batch():
+@pytest.mark.parametrize("prefix", ["#", "＃"])
+def test_office_specific_hash_whitelist_preserves_other_bots_and_batch(prefix):
     features.set_overrides({dream.TEA_CID + "|office": True, dream.TEA_CID + "|at_only": True,
                             dream.TEA_CID + "|slash_cmds": False})
-    result = _scan(dream.TEA_CID, ["/别家游戏", "/允许潜规则", "/潜规则 @成员 办公室", "/潜规则继续 第二天"])
-    assert result["cmd"] == "/允许潜规则"
-    assert [m["content"]["text"] for m in result["_leftover"]] == ["/潜规则 @成员 办公室", "/潜规则继续 第二天"]
+    result = _scan(dream.TEA_CID, ["/别家游戏", "/潜规则 @成员", "#潜规则外传", prefix + "允许潜规则", "#潜规则 @成员 办公室", "#潜规则继续 第二天"])
+    assert result["cmd"] == "#允许潜规则"
+    assert [m["content"]["text"] for m in result["_leftover"]] == ["#潜规则 @成员 办公室", "#潜规则继续 第二天"]
     features.set_overrides({dream.TEA_CID + "|office": False, dream.TEA_CID + "|at_only": True,
                             dream.TEA_CID + "|slash_cmds": True})
-    assert not _scan(dream.TEA_CID, ["/潜规则 @成员"])["cmd"]
+    assert not _scan(dream.TEA_CID, ["#潜规则 @成员"])["cmd"]
 
 
 def test_real_selection_whitelists_hash_before_at_only_and_preserves_batch():
     features.set_overrides({dream.TEA_CID + "|dream": True, dream.TEA_CID + "|at_only": True,
                             dream.TEA_CID + "|slash_cmds": False})
-    result = _scan(dream.TEA_CID, ["#解梦 梦见下雨", "#解梦 梦见跑步", "/解梦 梦见猫", "#帮助", "#解梦游戏"])
+    result = _scan(dream.TEA_CID, ["＃解梦 梦见下雨", "#解梦 梦见跑步", "/解梦 梦见猫", "#帮助", "#解梦游戏"])
     assert result["cmd"] == "#解梦 梦见下雨"
     assert [message["content"]["text"] for message in result["_leftover"]] == ["#解梦 梦见跑步"]
     assert not _scan(dream.TEA_CID, ["#解梦 梦见记忆考核"])["cmd"]
@@ -362,6 +368,41 @@ def test_real_selection_whitelists_hash_before_at_only_and_preserves_batch():
         assert not _scan("other-group", ["#解梦 梦见下雨"])["cmd"]
     tuning.set_overrides({})
     assert not _scan(dream.TEA_CID, ["#解梦 梦见下雨"])["cmd"]
+
+
+def test_fullwidth_hash_dream_command_is_recognized():
+    assert dream.command_payload("＃解梦 梦见下雨") == "梦见下雨"
+
+
+@pytest.mark.parametrize("prefix", ["#", "＃"])
+@pytest.mark.parametrize("command", ["写诗", "作诗", "赋诗"])
+@pytest.mark.parametrize("payload", ["", "  ", " 秋天"])
+def test_poem_hash_selection_accepts_empty_payload(prefix, command, payload):
+    features.set_overrides({dream.TEA_CID + "|poem": True,
+                            dream.TEA_CID + "|at_only": True,
+                            dream.TEA_CID + "|slash_cmds": False})
+    tuning.set_overrides({dream.TEA_CID + "|poem.hash_cmd": 1})
+    text = prefix + command + payload
+    result = _scan(dream.TEA_CID, [text])
+    assert result["cmd"] == ("#" + command + payload).strip()
+    assert result["_cmd_msg"]["content"]["text"] == text
+
+
+def test_poem_hash_selection_preserves_batch_and_gates():
+    features.set_overrides({dream.TEA_CID + "|poem": True,
+                            dream.TEA_CID + "|at_only": True,
+                            dream.TEA_CID + "|slash_cmds": False})
+    tuning.set_overrides({dream.TEA_CID + "|poem.hash_cmd": 1})
+    result = _scan(dream.TEA_CID, ["#帮助", "#写诗", "＃写诗 秋天"])
+    assert result["cmd"] == "#写诗"
+    assert [m["content"]["text"] for m in result["_leftover"]] == ["＃写诗 秋天"]
+    assert not _scan(dream.TEA_CID, ["/写诗", "／写诗"])["cmd"]
+    tuning.set_overrides({})
+    assert not _scan(dream.TEA_CID, ["#写诗", "＃写诗"])["cmd"]
+    tuning.set_overrides({dream.TEA_CID + "|poem.hash_cmd": 1})
+    features.set_overrides({dream.TEA_CID + "|poem": False,
+                            dream.TEA_CID + "|at_only": True})
+    assert not _scan(dream.TEA_CID, ["#写诗", "＃写诗"])["cmd"]
 
 
 def test_hash_selection_keeps_fortune_working():

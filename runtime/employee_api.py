@@ -1,4 +1,5 @@
-"""DDZM 员工只读接入；资料接口尚待确认，缺配置时不访问网络。"""
+"""DDZM 员工只读接入；职级可按明确配置的顺序比较，不使用游戏额度推导。"""
+import json
 import os
 import threading
 import time
@@ -20,6 +21,8 @@ class Client:
         self.key = os.environ.get("DZMM_INTEGRATION_API_KEY", "").strip()
         # 不把建议中的 /profile 当作已经存在的正式接口。
         self.profile_template = os.environ.get("DZMM_EMPLOYEE_PROFILE_PATH", "").strip()
+        self.profile_mode = os.environ.get("DZMM_EMPLOYEE_PROFILE_MODE", "profile").strip()
+        self.rank_order = os.environ.get("DZMM_EMPLOYEE_RANK_ORDER", "").strip()
 
     def _request(self, method, path, body=None):
         if not self.key or not self.base:
@@ -72,21 +75,48 @@ class Client:
     def profile(self, uid):
         template = self.profile_template
         if template.count("{platform_id}") != 1 or "{" in template.replace("{platform_id}", ""):
-            raise EmployeeUnavailable("部门、职级资料接口尚未配置，这次不会扣次数。")
+            raise EmployeeUnavailable("职级资料接口尚未配置，这次不会扣次数。")
+        if self.profile_mode not in ("profile", "game_quota"):
+            raise EmployeeUnavailable("员工资料接口类型配置不完整，请联系管理员。")
+        levels = configured_rank_levels(self.rank_order) if self.profile_mode == "game_quota" else None
         data = self._request("GET", template.replace("{platform_id}", quote(uid, safe="")))
+        if levels is not None:
+            rank = data.get("rank_name")
+            rank = rank.strip() if isinstance(rank, str) else ""
+            if rank not in levels:
+                raise EmployeeUnavailable("暂时无法判断这个职级的高低，请联系管理员确认职级顺序，不会扣次数。")
+            # game-quota 仅提供职级名称；高低来自管理员确认的顺序，与额度字段无关。
+            data = {**data, "rank_name": rank, "rank_level": levels[rank]}
         return normalize_profile(data, uid)
+
+
+def configured_rank_levels(raw):
+    try:
+        ranks = json.loads(raw)
+    except (TypeError, ValueError):
+        ranks = None
+    if (not isinstance(ranks, list) or not ranks
+            or any(not isinstance(name, str) or not name.strip() for name in ranks)):
+        raise EmployeeUnavailable("职级顺序尚未正确配置，这次不会扣次数。")
+    names = [name.strip() for name in ranks]
+    if len(set(names)) != len(names):
+        raise EmployeeUnavailable("职级顺序尚未正确配置，这次不会扣次数。")
+    return {name: level for level, name in enumerate(names, 1)}
 
 
 def normalize_profile(data, uid):
     """待联调合同：rank_level 越大越高；不根据游戏次数推导职级。"""
     level = data.get("rank_level")
     if (data.get("platform_id") != uid or isinstance(level, bool) or not isinstance(level, int)
-            or not isinstance(data.get("department_id"), str) or not data["department_id"].strip()
             or not isinstance(data.get("rank_name"), str) or not data["rank_name"].strip()
             or data.get("employment_status", "active") != "active"):
-        raise EmployeeUnavailable("暂时查不到完整的部门或职级资料，这次不能开始，也不会扣次数。")
+        raise EmployeeUnavailable("暂时查不到完整的身份或职级资料，这次不能开始，也不会扣次数。")
+    # 部门仅作可选展示，不参与资格判定；缺失或类型异常时保留未知。
+    department_id = data.get("department_id")
+    department_name = data.get("department_name")
     genders = {"male": "男", "female": "女", "男": "男", "女": "女", "男生": "男", "女生": "女"}
     return {"platform_id": uid, "name": str(data.get("display_name") or uid)[:100],
-            "department_id": data["department_id"], "department_name": str(data.get("department_name") or ""),
+            "department_id": department_id.strip() if isinstance(department_id, str) else "",
+            "department_name": department_name.strip() if isinstance(department_name, str) else "",
             "rank_name": data["rank_name"], "rank_level": level,
             "gender": genders.get(str(data.get("gender") or "unknown").lower(), "未知")}

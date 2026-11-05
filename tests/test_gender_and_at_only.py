@@ -123,7 +123,11 @@ def _scan(cid, texts):
     env = {"B": bridge,
            "_dream": SimpleNamespace(is_hash_request=lambda c, t: False),
            "_rose_moderation": mainloop._rose_moderation,
+           "_tavern": mainloop._tavern,
            "_gallery": mainloop._gallery, "_office": mainloop._office,
+           "_imagegen": mainloop._imagegen,
+           "_videogen": mainloop._videogen,
+           "_prompt_optimizer": mainloop._prompt_optimizer,
            "cid": cid, "log": lambda *a: None,
            "pending": [{"message_id": str(i), "sent_by": "guest", "content": {"text": x}}
                        for i, x in enumerate(texts)],
@@ -171,9 +175,102 @@ def test_roster_cmd_still_blocked_when_slash_cmds_off():
         features.set_overrides({})
 
 
+# ---------------------------------------------------------------- ④ 酒馆指令闸门（P12-CG）
+
+def test_tavern_cmd_passes_at_only_gate_when_enabled():
+    """at_only + slash_cmds=off 的群里，酒馆指令（功能开着）必须进指令分支。"""
+    cid = "13a7287a-2ec6-419e-9646-7f30a5154e6c"   # 瑞雯の酒馆
+    features.set_overrides({cid + "|at_only": True, cid + "|slash_cmds": False,
+                            cid + "|tavern_magic": True, cid + "|tavern_mute": True})
+    try:
+        assert _scan(cid, ["/除你衣物 张三"])["cmd"] == "/除你衣物 张三"
+        assert _scan(cid, ["/小嘴巴闭起来 10分钟"])["cmd"] == "/小嘴巴闭起来 10分钟"
+    finally:
+        features.set_overrides({})
+
+
+def test_tavern_cmd_swallowed_when_feature_off():
+    """功能关着：酒馆指令跟其他 /xxx 一样静默（别吞别家 bot 的语法）。"""
+    cid = "13a7287a-2ec6-419e-9646-7f30a5154e6c"
+    features.set_overrides({cid + "|at_only": True, cid + "|slash_cmds": False})
+    try:
+        assert not _scan(cid, ["/除你衣物 张三"])["cmd"]
+    finally:
+        features.set_overrides({})
+
+
 def test_roster_whitelist_kept_in_sync_with_dispatch_matchers():
     """闸门白名单前缀必须与 dispatch 的两个匹配器保持一致（防漂移）。"""
     src = (ROOT / "runtime" / "mainloop.py").read_text(encoding="utf-8")
     seg = src[src.index("P12-CA"):src.index("P12-CA") + 700]
     for prefix in ("/查", "/whois", "/资料", "/注册", "/register"):
         assert prefix in seg, prefix
+
+
+@pytest.mark.parametrize("prefix", ["#", "＃"])
+@pytest.mark.parametrize("payload", ["", " 第二天"])
+@pytest.mark.parametrize("action", ["继续", "结束", "潜规则结束", "潜规则"])
+def test_tea_short_continue_bypasses_at_only_gate(prefix, payload, action):
+    cid = mainloop._office.TEA_CID
+    saved = features.overrides()
+    features.set_overrides({cid + "|at_only": True, cid + "|slash_cmds": False,
+                            cid + "|office": True})
+    try:
+        selected = _scan(cid, [prefix + action + payload])
+        assert selected["cmd"] == "#" + action + payload
+        assert selected["_cmd_msg"]["content"]["text"] == prefix + action + payload
+    finally:
+        features.set_overrides(saved)
+
+
+@pytest.mark.parametrize("prefix", ["/", "／"])
+def test_imagegen_without_at_and_multiple_commands_are_not_lost(prefix):
+    cid = mainloop._imagegen.PRIMARY_CID
+    saved = features.overrides()
+    features.set_overrides({cid + "|imagegen": True, cid + "|at_only": True,
+                            cid + "|slash_cmds": True})
+    try:
+        selected = _scan(cid, [prefix + "生图 橘猫", "/生图 水彩"])
+        assert selected["cmd"] == "/生图 橘猫"
+        assert len(selected["_leftover"]) == 1
+        features.set_overrides({cid + "|imagegen": False})
+        assert not _scan(cid, ["/生图 橘猫"])["cmd"]
+        features.set_overrides({cid + "|imagegen": True, cid + "|slash_cmds": False})
+        assert not _scan(cid, ["/生图 橘猫"])["cmd"]
+    finally:
+        features.set_overrides(saved)
+
+
+@pytest.mark.parametrize("prefix", ["/", "／"])
+def test_videogen_without_at_and_multiple_commands_are_not_lost(prefix):
+    cid = mainloop._videogen.PRIMARY_CID
+    saved = features.overrides()
+    features.set_overrides({cid + "|videogen": True, cid + "|at_only": True,
+                            cid + "|slash_cmds": True})
+    try:
+        selected = _scan(cid, [prefix + "生视频 橘猫", "/生视频 水彩"])
+        assert selected["cmd"] == "/生视频 橘猫"
+        assert len(selected["_leftover"]) == 1
+        features.set_overrides({cid + "|videogen": False})
+        assert not _scan(cid, ["/生视频 橘猫"])["cmd"]
+        features.set_overrides({cid + "|videogen": True, cid + "|slash_cmds": False})
+        assert not _scan(cid, ["/生视频 橘猫"])["cmd"]
+    finally:
+        features.set_overrides(saved)
+
+
+@pytest.mark.parametrize("prefix", ["/", "／"])
+def test_prompt_optimizer_without_at_respects_gates_and_keeps_second_command(prefix):
+    cid = mainloop._prompt_optimizer.PRIMARY_CID
+    saved = features.overrides()
+    try:
+        features.set_overrides({cid + "|prompt_optimize": True, cid + "|at_only": True,
+                                cid + "|slash_cmds": True})
+        selected = _scan(cid, [prefix + "提示词 视频 橘猫", "/提示词 视频 星空"])
+        assert selected["cmd"] == "/提示词 视频 橘猫" and len(selected["_leftover"]) == 1
+        features.set_overrides({cid + "|prompt_optimize": False})
+        assert not _scan(cid, ["/提示词 视频 猫"])["cmd"]
+        features.set_overrides({cid + "|prompt_optimize": True, cid + "|slash_cmds": False})
+        assert not _scan(cid, ["/提示词 视频 猫"])["cmd"]
+    finally:
+        features.set_overrides(saved)

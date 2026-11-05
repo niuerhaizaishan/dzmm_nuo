@@ -80,7 +80,7 @@ class Store:
     @staticmethod
     def _allowed(conn, cid, uid):
         row = conn.execute("SELECT allowed FROM preferences WHERE cid=? AND uid=?", (cid, uid)).fetchone()
-        return bool(row and row[0])
+        return row is None or bool(row[0])
 
     @staticmethod
     def _close(conn, session, status):
@@ -128,7 +128,7 @@ class Store:
         now = time.time() if now is None else now
         with self.transaction() as conn:
             if not self._allowed(conn, cid, target):
-                raise RuleError("对方还没开启允许哦～等对方自己发送 /允许潜规则 再来。")
+                raise RuleError("对方已拒绝潜规则，等对方自己发送 #允许潜规则 再来。")
             if self._current(conn, cid, actor) or self._current(conn, cid, target):
                 raise RuleError("你们当中有人还在另一场剧情里哦～先结束当前会话再来。")
             sid, operation, day = str(uuid.uuid4()), str(uuid.uuid4()), local_day(now)
@@ -151,7 +151,7 @@ class Store:
                     or (expected_sid is not None and row["id"] != expected_sid)):
                 raise RuleError("当前没有可以继续的会话，可能已经结束或正在处理上一段。")
             if row["continues"] >= limit:
-                raise RuleError("本场续写次数已经用完啦～请发送 /潜规则结束 收尾。")
+                raise RuleError("本场续写次数已经用完啦～请发送 #潜规则结束 收尾。")
             if not self._allowed(conn, cid, row["target"]):
                 self._close(conn, row, "refused")
                 return None

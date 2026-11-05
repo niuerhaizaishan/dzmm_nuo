@@ -9,6 +9,16 @@ import brains
 _MODEL_LIMIT = threading.BoundedSemaphore(4)
 
 
+class SceneGenerationError(ValueError):
+    """仅保留安全的失败原因、字数及结束状态，不携带正文。"""
+    def __init__(self, reason, *, length=0, finish="", attempts=0):
+        super().__init__(reason)
+        self.reason = reason
+        self.length = length
+        self.finish = finish if finish in ("stop", "length", "content_filter") else "other"
+        self.attempts = attempts
+
+
 def visible_length(text):
     return len(re.sub(r"\s", "", text))
 
@@ -16,7 +26,7 @@ def visible_length(text):
 def generate(profiles, history, direction, timeout=45):
     # 超时或取消 await 不会杀掉工作线程；额度由真正结束的线程释放。
     if not _MODEL_LIMIT.acquire(blocking=False):
-        raise ValueError("office_model_busy")
+        raise SceneGenerationError("office_model_busy")
     try:
         return _generate(profiles, history, direction, timeout)
     finally:
@@ -25,17 +35,32 @@ def generate(profiles, history, direction, timeout=45):
 
 def _generate(profiles, history, direction, timeout):
     payload = {"participants": profiles, "history": history[-4:], "direction": direction}
-    prompt = brains.OFFICE_SCENE_PROMPT
+    prompt = brains.OFFICE_SCENE_PROMPT + (
+        "\n本段必须是一个连续自然段，不换行、不留空行。"
+        "以400～600个非空白字符为目标；完整自然的200～399字正文也可以，低于400字不必凑字。"
+        "收到 previous_draft 和 length_correction 时，按测得字数修订整稿，仍只输出完整正文。")
     deadline = time.monotonic() + timeout
-    for attempt in range(2):
+    length, finish, attempts = 0, "", 0
+    for attempt in range(3):
         remaining = deadline - time.monotonic()
         if remaining < 1:
             break
         text, finish = brains._call_llm_raw(prompt, json.dumps(payload, ensure_ascii=False),
                                           max_tokens=1600, timeout=max(1, int(remaining)))
-        text = (text or "").strip()
-        if (finish != "length" and 400 <= visible_length(text) <= 600
+        attempts += 1
+        text = " ".join((text or "").split())
+        length = visible_length(text)
+        if (finish not in ("length", "content_filter") and 200 <= length <= 600
                 and not text.startswith("```") and text[-1:] in "。！？.!?～…）”」"):
             return text
-        payload["length_correction"] = "上一稿未满足400～600字或完整结尾，请重新写完整一段，不截断。"
-    raise ValueError("office_scene_invalid_length_or_finish")
+        payload["previous_draft"] = text
+        adjustment = ("请补充具体环境、动作和对话，至少增加{}字。".format(500 - length)
+                      if length < 200 else
+                      "请精简重复描写，至少减少{}字。".format(length - 550) if length > 600 else
+                      "请修正输出格式并写完完整句子。")
+        payload["length_correction"] = (
+            "程序实测上一稿为{}个非空白字符，结束状态{}。{}"
+            "请修订到500～550字的完整单段正文，不要解释、不截断，也不要只输出补写片段。"
+        ).format(length, finish, adjustment)
+    raise SceneGenerationError("office_scene_invalid_length_or_finish", length=length,
+                               finish=finish, attempts=attempts)

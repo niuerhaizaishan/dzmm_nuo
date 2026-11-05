@@ -89,9 +89,16 @@ def test_registry_has_69_features():
     73 → 74（P12-CB，2026-10-13）：新增 `absent`（缺席名册 /寻人）——
     屋主要"查询超过半个月没发言的群友 + 她们的故事和最后一句话"。
     数据面只在认证群聊天归档上跑，是**新增的触发入口**，默认关（见 `_DELIBERATE_OFF`）。
+
+    78 → 80（P12-CG，2026-11-02）：新增 `tavern_magic`（三条魔法咒语文案）与
+    `tavern_mute`（真禁言/解禁）——屋主为瑞雯の酒馆点的小剧场功能，都是
+    **新增的触发入口**，默认关（见 `_DELIBERATE_OFF`）。
+
+    80 → 81（2026-11-02 并行会话）：新增 `videogen`（生视频）——同期另一会话
+    的工作，随本次 deploy 一起上生产（日志"已接线=81"），测试账在此补齐。
     """
-    assert len(F.FEATURES) == 77
-    assert len(set(F.keys())) == 77, "key 必须唯一"
+    assert len(F.FEATURES) == 82
+    assert len(set(F.keys())) == 82, "key 必须唯一"
 
 
 def test_every_feature_is_well_formed():
@@ -110,15 +117,17 @@ def test_category_counts_match_the_plan():
     people 少 1 = 删掉 `rewrite`；people 多 1 = P12-AC 新增 `chat`（@ 问答回复）；
     people 再多 1 = P12-AE 新增 `quote_reply`（引用回复也接话）；
     people 再多 1 = P12-AK 新增 `slash_cmds`（接群内斜杠指令的闸门）；
-    people 再多 1 = P12-AL 新增 `at_only`（只 @ 才回复）。
+    people 再多 1 = P12-AL 新增 `at_only`（只 @ 才回复）；
+    content 18→20 = P12-CG 新增 `tavern_magic` / `tavern_mute`（酒馆小剧场）。
     """
     got = {c: len(v) for c, v in F.by_category().items()}
-    assert got == {"game": 16, "content": 17, "people": 14, "screen": 7,
+    assert got == {"game": 16, "content": 22, "people": 14, "screen": 7,
                    "schedule": 10, "room": 9, "alert": 4}
 
 
 # 唯一允许 default=False 的功能，且必须写明理由（别让它悄悄变长）。
 _DELIBERATE_OFF = {
+    "imagegen",  # 新增付费生图入口，仅认证群显式开启。
     "office",  # 新增茶水间双人玩法，资料接口尚待联调，默认关闭。
     # P12-AE：这是一条**新增的触入口**（别人右键回复我也接话）。今天的行为是
     # "只有 @ 才答"，所以它默认必须是关的 —— 默认打开等于在所有群悄悄改了行为，
@@ -138,6 +147,17 @@ _DELIBERATE_OFF = {
     # P12-CB（2026-10-13）：缺席名册 /寻人。数据面是认证群聊天归档（只有妹子群在跑），
     # 也是**新增的触发入口**；默认打开等于在所有群多一类指令，其中多数群连归档都没有。
     "absent",
+    # P12-CG（2026-11-02）：酒馆魔法三条咒语（/除你衣物 /荧光闪烁 /塔朗泰拉舞），
+    # 屋主只为瑞雯の酒馆点的小剧场，是**新增的触发入口**；默认打开会在所有群
+    # 多出三条整活指令。
+    "tavern_magic",
+    # P12-CG（2026-11-02）：酒馆禁言（/小嘴巴闭起来 /恢复如初），真调平台
+    # groupChat.setMemberSilence——只该在 Λʌ 有管理员权限的瑞雯群按群开。
+    "tavern_mute",
+    # 2026-11-02 并行会话：生视频（新付费入口），照 imagegen 的口径默认关、
+    # 仅显式开启的群可用。
+    "videogen",
+    "prompt_optimize",
 }
 
 
