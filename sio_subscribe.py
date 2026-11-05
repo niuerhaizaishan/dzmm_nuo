@@ -37,7 +37,7 @@ import requests
 import socketio
 import aiohttp
 import env_config
-from runtime.reply_delivery import ReplyNotSent
+from runtime.reply_delivery import ReplyContentRejected, ReplyNotSent
 
 ORIGIN = env_config.get_dzmm_origin()
 env_config.set_process_proxy_env()  # 设置/清空 HTTP(S)_PROXY + WS(S)_PROXY（直连时清空）
@@ -117,6 +117,22 @@ class SioSubscriber:
         """非阻塞取某群累积的新消息（一次性取空）。"""
         return self._buffer.pop(cid, [])
 
+    async def join_room(self, cid: str) -> bool:
+        """运行时加入某个群的 socket 房间（团本监控热加载用）。
+
+        加入后 `message:new` 的推送会照常进 `_buffer`（因为 cid 已在 self.groups 里），
+        房间动作（撤回等）也才有权限。连接没就绪时返回 False，由调用方稍后重试。
+        """
+        sio = getattr(self, "_sio", None)
+        if sio is None or not self._connected.is_set():
+            return False
+        try:
+            ack = await sio.call("message:join-room", {"chatroomId": cid}, timeout=10)
+        except Exception as exc:                               # noqa: BLE001
+            print("[sio] 动态 join {} 失败: {}".format(cid[:8], str(exc)[:60]), flush=True)
+            return False
+        return isinstance(ack, dict) and ack.get("success") is True
+
     def drain_private(self) -> dict:
         """非阻塞取所有私聊累积的新消息，返回 {cid: [msg, ...]}（一次性取空）。"""
         out = dict(self._private_buffer)
@@ -181,6 +197,8 @@ class SioSubscriber:
             print("[sio] ⚠️ {} 被平台拒绝: {}".format(event, repr(acknowledgement)[:200]),
                   flush=True)
             if isinstance(acknowledgement, dict) and acknowledgement.get("success") is False:
+                if event == "message:send" and acknowledgement.get("error") == "请勿发送重复内容":
+                    raise ReplyContentRejected("平台拒绝重复内容")
                 raise ReplyNotSent("平台明确拒绝操作")
             raise RuntimeError("平台未确认操作成功")
         return True
@@ -214,6 +232,41 @@ class SioSubscriber:
                    "content": {"type": "text", "text": text, "reference": reference}}
         if await self.confirmed_action("message:send", {"chatroomId": cid, "message": message}, guard=guard) is False:
             return ""
+        return message_id
+
+    async def send_photo_reply_confirmed(self, cid: str, user_id: str, url: str,
+                                         reference: dict, caption: str = "") -> str:
+        """一条带原生引用的 image 消息；失败不拆成链接或另发无引用图片。"""
+        if not isinstance(url, str) or not url.startswith("https://"):
+            raise ValueError("图片地址无效")
+        if not isinstance(reference, dict) or not reference.get("id") or not reference.get("sentBy"):
+            raise ValueError("图片引用缺少原消息身份或编号")
+        message_id = str(uuid.uuid4())
+        # 平台前端的 image 消息契约要求 `alt`；缺少它会返回
+        # VALIDATION_ERROR「消息格式不正确」，即使 URL 本身有效。
+        content = {"type": "image", "url": url, "alt": caption or "image",
+                   "reference": reference}
+        message = {"message_id": message_id, "chatroom_id": cid, "sent_by": user_id,
+                   "sent_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                   "content": content}
+        await self.confirmed_action("message:send", {"chatroomId": cid, "message": message})
+        return message_id
+
+    async def send_video_reply_confirmed(self, cid: str, user_id: str, url: str,
+                                         reference: dict, caption: str = "", *, media=None) -> str:
+        """一条带原始指令引用的视频消息。"""
+        if not isinstance(url, str) or not url.startswith("https://"):
+            raise ValueError("视频地址无效")
+        if not isinstance(reference, dict) or not reference.get("id") or not reference.get("sentBy"):
+            raise ValueError("视频引用缺少原消息身份或编号")
+        message_id = str(uuid.uuid4())
+        content = {key: value for key, value in (media or {}).items()
+                   if key in ("thumbnailUrl", "blurhash", "duration", "width", "height")}
+        content.update({"type": "video", "status": "ready", "videoUrl": url, "reference": reference})
+        message = {"message_id": message_id, "chatroom_id": cid, "sent_by": user_id,
+                   "sent_at": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime()),
+                   "content": content}
+        await self.confirmed_action("message:send", {"chatroomId": cid, "message": message})
         return message_id
 
     async def send_character_confirmed(self, cid: str, user_id: str, resource_id: str) -> str:

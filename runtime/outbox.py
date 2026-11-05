@@ -460,6 +460,77 @@ class OutboxSender:
             self._store.mark_sent(oid, platform_sent_id=message_id)
             return message_id
 
+    async def send_photo_reply_with_id(self, url: str, cid: str, reference: dict,
+                                       caption: str = "") -> str:
+        if not isinstance(reference, dict) or not reference.get("id") or not reference.get("sentBy"):
+            raise ValueError("图片引用缺少原消息身份或编号")
+        return await self._send_photo(url, cid, caption, reference=reference)
+
+    async def send_photo_with_id(self, url: str, cid: str, caption: str = "") -> str:
+        return await self._send_photo(url, cid, caption)
+
+    async def send_video_reply_with_id(self, url: str, cid: str, reference: dict,
+                                       caption: str = "") -> str:
+        if not isinstance(reference, dict) or not reference.get("id") or not reference.get("sentBy"):
+            raise ValueError("视频引用缺少原消息身份或编号")
+        return await self._send_video(url, cid, caption, reference=reference)
+
+    async def _send_video(self, url: str, cid: str, caption: str, reference=None) -> str:
+        from runtime.transport_bot import BotApiRejected
+        if self._dry or _lambda_bot.suppress_outbound(cid):
+            raise BotApiRejected("视频发送已暂停")
+        payload = {"url": url, "caption": caption}
+        if reference is not None:
+            payload["reference"] = reference
+        oid = self._store.enqueue(chatroom_id=cid, text=json.dumps(payload, ensure_ascii=False),
+                                  content_type="generated_video")
+        async with self._lock(cid):
+            if _lambda_bot.suppress_outbound(cid):
+                self._store.mark_failed(oid, "视频发送已暂停")
+                raise BotApiRejected("视频发送已暂停")
+            if not self._store.lease(oid, self._worker_id, self._lease_ttl):
+                self._store.mark_failed(oid, "视频领取失败")
+                raise BotApiRejected("视频领取失败")
+            try:
+                mid = await self._inner.send_video_reply_with_id(url, cid, reference, caption=caption)
+                if not isinstance(mid, str) or not mid:
+                    raise RuntimeError("缺少视频平台编号")
+            except Exception as error:
+                self._store.mark_failed(oid, "视频未确认：" + type(error).__name__)
+                raise
+            self._store.mark_sent(oid, platform_sent_id=mid)
+            return mid
+
+    async def _send_photo(self, url: str, cid: str, caption: str, reference=None) -> str:
+        """生图图片单独记账；特殊类型不会被文本重试器当成文字重发。"""
+        from runtime.transport_bot import BotApiRejected
+        if self._dry or _lambda_bot.suppress_outbound(cid):
+            raise BotApiRejected("图片发送已暂停")
+        payload = {"url": url, "caption": caption}
+        if reference is not None:
+            payload["reference"] = reference
+        payload = json.dumps(payload, ensure_ascii=False)
+        oid = self._store.enqueue(chatroom_id=cid, text=payload, content_type="generated_image")
+        async with self._lock(cid):
+            if _lambda_bot.suppress_outbound(cid):
+                self._store.mark_failed(oid, "图片发送已暂停")
+                raise BotApiRejected("图片发送已暂停")
+            if not self._store.lease(oid, self._worker_id, self._lease_ttl):
+                self._store.mark_failed(oid, "图片领取失败")
+                raise BotApiRejected("图片领取失败")
+            try:
+                if reference is not None:
+                    mid = await self._inner.send_photo_reply_with_id(url, cid, reference, caption=caption)
+                else:
+                    mid = await self._inner.send_photo_with_id(url, cid, caption=caption)
+                if not isinstance(mid, str) or not mid:
+                    raise RuntimeError("缺少图片平台编号")
+            except Exception as error:
+                self._store.mark_failed(oid, "图片未确认：" + type(error).__name__)
+                raise
+            self._store.mark_sent(oid, platform_sent_id=mid)
+            return mid
+
     def cancel_lambda_pending(self, cid: str, before: float) -> int:
         if cid != _lambda_bot.RUIWEN_CID:
             return 0

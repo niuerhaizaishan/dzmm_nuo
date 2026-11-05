@@ -122,3 +122,65 @@ class RoutingSender:
         """官方文本接口不能携带 share，明确路由到账号通道。"""
         self._note("account", cid)
         return await self._account.send_character_with_id(resource_id, cid)
+
+    def can_send_photo_reply(self, cid: str) -> bool:
+        return self._account.can_send_photo_reply(cid)
+
+    async def send_photo_reply_with_id(self, url: str, cid: str, reference: dict,
+                                       caption: str = "") -> str:
+        """原生图片引用使用账号通道，不尝试不保留引用的官方 URL 图片接口。"""
+        from runtime import lambda_bot
+        if lambda_bot.suppress_outbound(cid):
+            raise BotApiRejected("图片引用发送已暂停")
+        if not self._account.can_send_photo_reply(cid):
+            raise BotApiRejected("图片引用账号连接不可用")
+        # 与网页一致，先上传到平台存储，再提交图片消息；原始文件的自家
+        # 下载地址可访问并不等于平台接受它作为图片消息。
+        from runtime.generated_media import official_photo_url
+        url = await official_photo_url(url, cid)
+        self._note("account", cid)
+        return await self._account.send_photo_reply_with_id(url, cid, reference, caption=caption)
+
+    async def send_photo_with_id(self, url: str, cid: str, caption: str = "") -> str:
+        """生成图片只走本群 Bot；不明确的失败绝不切换账号重发。"""
+        from runtime import lambda_bot
+        bot = self._bots.get(cid)
+        if bot is None or lambda_bot.suppress_outbound(cid):
+            raise BotApiRejected("本群图片通道不可用")
+        from runtime.generated_media import official_photo_url
+        url = await official_photo_url(url, cid)
+        mid = await asyncio.to_thread(bot.send_photo_url, cid, url, caption)
+        # ACK alone cannot prove that the platform kept an image rather than a URL text.
+        from dzmm import get_messages
+        try:
+            for attempt in range(3):
+                rows = await asyncio.to_thread(get_messages, cid, 30, timeout=5)
+                for row in rows or ():
+                    if row.get("message_id") == mid:
+                        if (row.get("content") or {}).get("type") == "image":
+                            return mid
+                        raise BotApiAmbiguous("图片读回类型不一致，不自动重发")
+                if attempt < 2:
+                    await asyncio.sleep(0.4 * (attempt + 1))
+        except BotApiAmbiguous:
+            raise
+        except Exception as exc:
+            raise BotApiAmbiguous("图片读回失败，不自动重发") from exc
+        raise BotApiAmbiguous("图片尚未读回，不自动重发")
+
+    def can_send_video_reply(self, cid: str) -> bool:
+        return bool(getattr(self._account, "can_send_video_reply", lambda _cid: False)(cid))
+
+    async def send_video_reply_with_id(self, url: str, cid: str, reference: dict,
+                                       caption: str = "") -> str:
+        """平台官方 Bot 尚无视频接口；视频使用账号原生引用。"""
+        from runtime import lambda_bot
+        if lambda_bot.suppress_outbound(cid):
+            raise BotApiRejected("视频发送已暂停")
+        if not self.can_send_video_reply(cid):
+            raise BotApiRejected("视频账号连接不可用")
+        from runtime.generated_media import platform_video_content
+        media = await platform_video_content(url, cid)
+        self._note("account", cid)
+        return await self._account.send_video_reply_with_id(media["videoUrl"], cid, reference,
+                                                           caption=caption, media=media)

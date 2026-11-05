@@ -27,7 +27,11 @@ from runtime import dream as _dream
 from runtime import session_obs as _session_obs
 from runtime import chat_archive as _chat_archive
 from runtime import rose_moderation as _rose_moderation
+from runtime import tavern as _tavern
 from runtime import gallery as _gallery
+from runtime import imagegen as _imagegen
+from runtime import videogen as _videogen
+from runtime import prompt_optimizer as _prompt_optimizer
 from runtime.haptics import bot_commands as _haptics_bot
 from runtime.haptics import raid as _haptics_raid
 from runtime.perf import OWNER_UID as _OWNER_UID
@@ -471,6 +475,8 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                         if B._feat_on(cid, "slash_cmds"):
                             for _m in pending:
                                 _t = ((_m.get("content") or {}).get("text") or "").strip()
+                                if _t.startswith("＃") or _t.startswith("／"):
+                                    _t = ("#" if _t[0] == "＃" else "/") + _t[1:]
                                 _uid = _m.get("sent_by", "")
                                 # 诊断：静默群里像指令的消息留一行，方便对账
                                 if (_t.startswith("/") or _t.startswith("#")
@@ -587,9 +593,33 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                         if B.is_self(m.get("sent_by")):
                             continue  # 跳过 bot 自己的消息，避免 self-echo
                         t = (m.get("content") or {}).get("text", "").strip()
-                        # 专用白名单绕过 at_only/slash_cmds；其他斜杠指令仍按原闸门处理。
+                        if t.startswith("＃") or t.startswith("／"):
+                            t = ("#" if t[0] == "＃" else "/") + t[1:]
+                        # 茶水间专用 # 指令白名单绕过 at_only；其他指令仍按原闸门处理。
                         if cid == _office.TEA_CID and _office.command(t) is not None:
                             if _office.enabled(cid):
+                                if not cmd:
+                                    cmd, cmd_sender, _cmd_msg = t, m.get("sent_by", ""), m
+                                else:
+                                    _leftover.append(m)
+                            continue
+                        if _prompt_optimizer.is_command(t):
+                            if B._feat_on(cid, "slash_cmds") and _prompt_optimizer.enabled(cid):
+                                if not cmd:
+                                    cmd, cmd_sender, _cmd_msg = t, m.get("sent_by", ""), m
+                                else:
+                                    _leftover.append(m)
+                            continue
+                        # 生图是明确指令，引用群图片时也无需额外 @。
+                        if _imagegen.in_scope(cid) and _imagegen.command_payload(t) is not None:
+                            if B._feat_on(cid, "slash_cmds") and _imagegen.enabled(cid):
+                                if not cmd:
+                                    cmd, cmd_sender, _cmd_msg = t, m.get("sent_by", ""), m
+                                else:
+                                    _leftover.append(m)
+                            continue
+                        if _videogen.in_scope(cid) and _videogen.command_payload(t) is not None:
+                            if B._feat_on(cid, "slash_cmds") and _videogen.enabled(cid):
                                 if not cmd:
                                     cmd, cmd_sender, _cmd_msg = t, m.get("sent_by", ""), m
                                 else:
@@ -640,7 +670,23 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                         # 只认诗族前缀，其他 `#xxx` 原样走原逻辑（别吞别家 bot 的语法）。
                         if t.startswith("#") and B._feat_on(cid, "poem") \
                                 and B._tune("poem.hash_cmd", cid) \
-                                and B.is_poem_cmd(t):
+                                and B.is_poem_cmd(t) is not None:
+                            if not cmd:
+                                cmd = t
+                                cmd_sender = m.get("sent_by", "")
+                                _cmd_msg = m
+                            else:
+                                _leftover.append(m)
+                            continue
+                        # P12-CG（2026-11-02 屋主）：酒馆魔法/禁言指令（瑞雯群，
+                        # tavern_magic/tavern_mute 按群开，默认关）。那群 at_only=on
+                        # 且 slash_cmds=off，`/` 路不通 —— 照 2026-10-13 /查 白名单的
+                        # 思路：闸门**之前**放行酒馆指令族，其他 /xxx 原样走原逻辑。
+                        # 前缀判定与 dispatch 的 `_tavern.is_tavern_cmd` 共用同一个
+                        # 函数；按 kind 查**各自的**开关（只开禁言时不放行魔法指令）。
+                        _tavern_hit = _tavern.is_tavern_cmd(t)
+                        if _tavern_hit is not None \
+                                and B._feat_on(cid, _tavern._FEATURES[_tavern_hit[0]]):
                             if not cmd:
                                 cmd = t
                                 cmd_sender = m.get("sent_by", "")
@@ -1147,6 +1193,9 @@ async def run_all(interval: float, dry: bool, once: bool, *, B) -> None:
                             state=state, subscriber=subscriber, is_primary=True)
     finally:
         sub_task.cancel()
+        await _imagegen.shutdown()
+        await _videogen.shutdown()
+        await _prompt_optimizer.shutdown()
         if wh_runner is not None:
             try:
                 await wh_runner.cleanup()

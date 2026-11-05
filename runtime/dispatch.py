@@ -62,7 +62,11 @@ from runtime import personal_story as _personal_story
 from runtime import personal_portrait as _personal_portrait
 from runtime import personal_letter as _personal_letter
 from runtime import rose_moderation as _rose_moderation
+from runtime import tavern as _tavern
 from runtime import gallery as _gallery
+from runtime import imagegen as _imagegen
+from runtime import videogen as _videogen
+from runtime import prompt_optimizer as _prompt_optimizer
 from runtime.haptics import bot_commands as _haptics_bot
 from runtime.perf import (OWNER_UID, _get_perf_content, _handle_perf_start,
                           _perf_end_bg, _perf_m_name, _perf_send,
@@ -837,6 +841,7 @@ _CMD_FEATURE_ORDER = (
     (("scene_end",), is_fasao_end_cmd, _gate_fasao),
     (("diaojiao",), is_dj_end_cmd, None),
     (("help",), lambda c: c.startswith("/ "), None),
+    (("prompt_optimize",), _prompt_optimizer.is_command, None),
     (("diaojiao",), lambda c: is_dj_command_cmd(c) is not None, None),
     (("diaojiao",), lambda c: is_diaojiao_cmd(c) is not None, None),
     (("scene_continue", "insult"), is_continue_cmd, None),
@@ -921,6 +926,28 @@ async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
 
     if _rose_moderation.is_command(cid, cmd):
         await _rose_moderation.handle(sender, cid, _cmd_msg or msgs[-1], dry)
+        return
+
+    # 酒馆魔法/禁言（瑞雯群，tavern_magic/tavern_mute 按群开；闸门在 mainloop
+    # 已放行——那边进 dispatch 的指令不会再被 slash_cmds 闸门吞）。
+    if _tavern.is_tavern_cmd(cmd) is not None:
+        await _tavern.handle(sender, cid, cmd_sender, cmd,
+                             _cmd_msg or msgs[-1], msgs, dry)
+        return
+
+    if _prompt_optimizer.is_command(cmd):
+        if _feat_on(cid, "slash_cmds") and _prompt_optimizer.enabled(cid):
+            await _prompt_optimizer.handle(sender, cid, cmd_sender, cmd, _cmd_msg or msgs[-1], dry=dry)
+        return
+
+    if _imagegen.command_payload(cmd) is not None:
+        if _feat_on(cid, "slash_cmds") and _imagegen.enabled(cid):
+            await _imagegen.handle(sender, cid, cmd_sender, cmd, _cmd_msg or msgs[-1], dry=dry)
+        return
+
+    if _videogen.command_payload(cmd) is not None:
+        if _feat_on(cid, "slash_cmds") and _videogen.enabled(cid):
+            await _videogen.handle(sender, cid, cmd_sender, cmd, _cmd_msg or msgs[-1], dry=dry)
         return
 
     if _gallery.command(cmd) is not None:
@@ -1140,6 +1167,12 @@ async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
         reply = p("help_text", cid) or _personas.fill(HELP_TEXT, cid)
         if _gallery.in_scope(cid):
             reply += "\n/漫画 - 打开姐妹图集（所有人可查看）\n回复图片 /保存 个人立绘 图片名称 - 名称可不填，仅妹子群可收图"
+        if _imagegen.enabled(cid):
+            reply += "\n/生图 提示词 - 生成一张图片；回复图片发送此指令可修改原图"
+        if _videogen.enabled(cid):
+            reply += "\n/生视频 提示词 - 生成短视频；回复图片发送此指令可让图片动起来"
+        if _prompt_optimizer.enabled(cid):
+            reply += "\n/提示词 视频 想法 - 整理 Grok 视频提示词；回复图片时结合原图设计动作与运镜"
         if _dream.enabled(cid):
             if cid == _dream.TEA_CID:
                 dream_command = "#解梦" if _dream.is_hash_request(cid, "#解梦") else "@" + _personas.me_full(cid) + " 解梦"

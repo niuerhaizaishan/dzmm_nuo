@@ -231,6 +231,62 @@ def remove_member(chatroom_id: str, member_id: str, cookies: dict | None = None)
     return True
 
 
+# 禁言时长档位（平台 UI 5 档，2026-11-02 前端 bundle 实锤）。
+# `duration=None` = 解除禁言（前端 onSuccess 以 silencedUntil 空否区分成功/解除）。
+SILENCE_DURATIONS = ("10m", "1h", "24h", "7d", "forever")
+
+
+def set_member_silence(chatroom_id: str, member_id: str,
+                       duration: str | None = None,
+                       cookies: dict | None = None) -> dict:
+    """禁言/解禁群成员（需群管理员权限）。
+
+    POST groupChat.setMemberSilence {"json": {chatroomId, memberId, duration}}；
+    `duration` ∈ 10m/1h/24h/7d/forever，**None = 解除禁言**。
+    成功返回服务端数据（含 silencedUntil）；失败抛 RuntimeError（服务端权限
+    校验是权威——"不能禁言群主、管理员或自己"等 403 消息原样透出，调用方
+    把它转成群里回复即可，不必自己实现角色判断）。
+    """
+    if duration is not None and duration not in SILENCE_DURATIONS:
+        raise RuntimeError("setMemberSilence: 非法时长 " + str(duration))
+    if cookies is None:
+        cookies = get_cookies()
+    url = ORIGIN + "/api/trpc/groupChat.setMemberSilence"
+    _throttle("trpc:groupChat.setMemberSilence")   # P5.2：与 api() 共用同一个桶
+    resp = requests.post(url, cookies=cookies, timeout=15, proxies=PROXIES,
+                         json={"json": {"chatroomId": chatroom_id,
+                                        "memberId": member_id,
+                                        "duration": duration}},
+                         headers={"Content-Type": "application/json",
+                                  "User-Agent": BROWSER_UA,
+                                  "Origin": ORIGIN, "Referer": ORIGIN + "/"})
+    try:
+        data = resp.json()
+    except Exception:
+        data = None
+    # 同 api()：只在出错响应上找标记（成功响应里可能是别的内容）
+    if getattr(resp, "status_code", 0) != 200 or not isinstance(data, dict) \
+            or data.get("error"):
+        _note_resp(resp, path="groupChat.setMemberSilence")
+    if not isinstance(data, dict):
+        raise RuntimeError("setMemberSilence: 响应不是 JSON（HTTP {}）".format(
+            getattr(resp, "status_code", 0)))
+    if data.get("error"):
+        msg = data["error"].get("json", {}).get("message", str(data["error"]))
+        raise RuntimeError("setMemberSilence: " + msg)
+    if getattr(resp, "status_code", 0) != 200:
+        raise RuntimeError("setMemberSilence: HTTP {}".format(resp.status_code))
+    result = data.get("result")
+    payload = result.get("data") if isinstance(result, dict) else data.get("data")
+    if isinstance(payload, dict) and "json" in payload:
+        payload = payload["json"]
+    if not isinstance(payload, dict) or "silencedUntil" not in payload:
+        raise RuntimeError("setMemberSilence: 无法确认禁言结果")
+    if (duration is None) != (not payload["silencedUntil"]):
+        raise RuntimeError("setMemberSilence: 返回状态与请求不一致")
+    return payload
+
+
 def get_verified(user_id: str, cookies: dict | None = None):
     """查询妹子认证状态，返回 {vipLevel, verified} 或 None（失败）。"""
     if cookies is None:

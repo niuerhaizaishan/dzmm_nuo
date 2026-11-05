@@ -181,12 +181,93 @@ class Sender:
                     content = row.get("content") or {}
                     actual_ref = content.get("reference") or {}
                     if (row.get("sent_by") == NUO_UID and content.get("text") == text
-                            and actual_ref.get("id") == reference.get("id")):
+                            and actual_ref.get("id") == reference.get("id")
+                            and actual_ref.get("sentBy") == reference.get("sentBy")
+                            and actual_ref.get("content") == reference.get("content")):
                         return mid
                     raise RuntimeError("引用回复读回不一致，不自动重发")
                 if attempt < 2:
                     await asyncio.sleep(0.4 * (attempt + 1))
             raise RuntimeError("引用回复未能读回，不自动重发")
+
+    def can_send_photo_reply(self, cid: str) -> bool:
+        return _LIVE_SIO is not None and _LIVE_SIO._connected.is_set()
+
+    async def send_photo_reply_with_id(self, url: str, cid: str, reference: dict,
+                                       caption: str = "") -> str:
+        from runtime.transport_bot import BotApiAmbiguous, BotApiRejected
+        from runtime.reply_delivery import ReplyNotSent
+        if not self.can_send_photo_reply(cid):
+            raise BotApiRejected("图片引用账号连接不可用")
+        lock = self._send_locks.setdefault(cid, asyncio.Lock())
+        async with lock:
+            try:
+                mid = await _LIVE_SIO.send_photo_reply_confirmed(cid, NUO_UID, url, reference, caption)
+            except ReplyNotSent as exc:
+                raise BotApiRejected("平台明确拒绝图片引用") from exc
+            except Exception as exc:
+                raise BotApiAmbiguous("图片引用发送未确认，不自动重发") from exc
+            try:
+                for attempt in range(3):
+                    rows = await asyncio.to_thread(get_messages, cid, 30, timeout=5)
+                    for row in rows or ():
+                        if row.get("message_id") != mid:
+                            continue
+                        content = row.get("content") or {}
+                        actual = content.get("reference") or {}
+                        if (row.get("sent_by") == NUO_UID and content.get("type") == "image"
+                                and actual.get("id") == reference.get("id")
+                                and actual.get("sentBy") == reference.get("sentBy")
+                                and actual.get("content") == reference.get("content")):
+                            return mid
+                        raise BotApiAmbiguous("图片或原生引用读回不一致，不自动重发")
+                    if attempt < 2:
+                        await asyncio.sleep(0.4 * (attempt + 1))
+            except BotApiAmbiguous:
+                raise
+            except Exception as exc:
+                raise BotApiAmbiguous("图片引用读回失败，不自动重发") from exc
+            raise BotApiAmbiguous("图片引用尚未读回，不自动重发")
+
+    def can_send_video_reply(self, cid: str) -> bool:
+        return _LIVE_SIO is not None and _LIVE_SIO._connected.is_set()
+
+    async def send_video_reply_with_id(self, url: str, cid: str, reference: dict,
+                                       caption: str = "", *, media=None) -> str:
+        from runtime.transport_bot import BotApiAmbiguous, BotApiRejected
+        from runtime.reply_delivery import ReplyNotSent
+        if not self.can_send_video_reply(cid):
+            raise BotApiRejected("视频引用账号连接不可用")
+        lock = self._send_locks.setdefault(cid, asyncio.Lock())
+        async with lock:
+            try:
+                mid = await _LIVE_SIO.send_video_reply_confirmed(cid, NUO_UID, url, reference, caption, media=media)
+            except ReplyNotSent as exc:
+                raise BotApiRejected("平台明确拒绝视频引用") from exc
+            except Exception as exc:
+                raise BotApiAmbiguous("视频引用发送未确认，不自动重发") from exc
+            try:
+                for attempt in range(3):
+                    rows = await asyncio.to_thread(get_messages, cid, 30, timeout=5)
+                    for row in rows or ():
+                        if row.get("message_id") != mid:
+                            continue
+                        content = row.get("content") or {}
+                        actual = content.get("reference") or {}
+                        if (row.get("sent_by") == NUO_UID and content.get("type") == "video"
+                                and content.get("videoUrl") == url
+                                and actual.get("id") == reference.get("id")
+                                and actual.get("sentBy") == reference.get("sentBy")
+                                and actual.get("content") == reference.get("content")):
+                            return mid
+                        raise BotApiAmbiguous("视频或原生引用读回不一致，不自动重发")
+                    if attempt < 2:
+                        await asyncio.sleep(0.4 * (attempt + 1))
+            except BotApiAmbiguous:
+                raise
+            except Exception as exc:
+                raise BotApiAmbiguous("视频引用读回失败，不自动重发") from exc
+            raise BotApiAmbiguous("视频引用尚未读回，不自动重发")
 
     async def send_character_with_id(self, resource_id: str, cid: str) -> str:
         """分享卡走当前账号连接，禁止当文本发送或模糊失败后换通道。"""
