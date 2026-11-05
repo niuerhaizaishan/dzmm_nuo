@@ -12,7 +12,10 @@ class ModerationUnavailable(RuntimeError):
 
 
 class Platform:
-    async def members(self, cid):
+    async def members(self, cid, *, limit=None):
+        member_limit = dzmm.MEMBER_FETCH_LIMIT if limit is None else limit
+        if isinstance(member_limit, bool) or not isinstance(member_limit, int) or member_limit <= 0:
+            raise ModerationUnavailable("成员查询上限配置异常")
         def load():
             chats = dzmm.api("chat.listAll", {"json": None,
                             "meta": {"values": ["undefined"], "v": 1}}, timeout=5)
@@ -21,9 +24,9 @@ class Platform:
             if not owner:
                 raise ModerationUnavailable("无法核验群主")
             result = dzmm.api("chatroom.getMembers", {
-                "json": {"chatroomId": cid, "limit": dzmm.MEMBER_FETCH_LIMIT}}, timeout=5)
+                "json": {"chatroomId": cid, "limit": member_limit}}, timeout=5)
             rows = result.get("members")
-            if (not isinstance(rows, list) or len(rows) >= dzmm.MEMBER_FETCH_LIMIT
+            if (not isinstance(rows, list) or len(rows) >= member_limit
                     or result.get("hasMore") or result.get("nextCursor")):
                 raise ModerationUnavailable("无法核验完整成员列表")
             members = {}

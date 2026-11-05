@@ -32,6 +32,7 @@ BOT_PY = (ROOT / "bot.py").read_text(encoding="utf-8")
 def test_hash_variants_are_commands():
     for c in ("#运势", "#算命", "#占卜", "#今日运势", "#今日运气", "#运气"):
         assert FT.is_fortune_cmd(c) is True, c
+    assert FT.is_fortune_cmd("＃运势") is True
     for c in ("#写诗", "#帮助", "运势", "#"):
         assert FT.is_fortune_cmd(c) is False, c
     # `/` 那套一个字没变

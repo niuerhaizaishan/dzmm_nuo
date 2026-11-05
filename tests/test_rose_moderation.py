@@ -424,6 +424,33 @@ def test_unknown_member_schema_fails_closed(monkeypatch, result):
         asyncio.run(Platform().authorize(CID, "owner"))
 
 
+@pytest.mark.parametrize("limit,count,extra,accepted", [
+    (None, 1000, {}, False),
+    (None, 1125, {}, False),
+    (2000, 1125, {}, True),
+    (2000, 2000, {}, False),
+    (2000, 2001, {}, False),
+    (2000, 1125, {"hasMore": True}, False),
+    (2000, 1125, {"nextCursor": "next"}, False),
+])
+def test_member_limit_accepts_large_complete_room_only(monkeypatch, limit, count, extra, accepted):
+    import dzmm
+    calls = []
+    def api(path, payload, **kwargs):
+        if path == "chat.listAll":
+            return [{"id": CID, "data": {"creatorId": "owner"}}]
+        calls.append(payload["json"]["limit"])
+        return {"members": [{"id": f"user-{n}"} for n in range(count)], **extra}
+    monkeypatch.setattr(dzmm, "api", api)
+    monkeypatch.setattr(dzmm, "MEMBER_FETCH_LIMIT", 1000)
+    if accepted:
+        assert len(asyncio.run(Platform().members(CID, limit=limit))) == count
+    else:
+        with pytest.raises(ModerationUnavailable, match="完整成员"):
+            asyncio.run(Platform().members(CID, limit=limit))
+    assert calls == [1000 if limit is None else limit]
+
+
 def test_old_message_rechecked_near_original_timestamp(monkeypatch):
     import dzmm
     calls = []

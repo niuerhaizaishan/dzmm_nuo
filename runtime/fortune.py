@@ -17,7 +17,7 @@ from profiles import get_profile
 from runtime import ctx
 from runtime.identity import get_full_name
 from runtime.members import _gender_of
-from runtime.text import _clean_name
+from runtime.text import _clean_name, _normalize_command_prefix
 from runtime.tuning import get as _tune        # P12-AW：按群参数（fortune.cooldown）
 from personas import me as _pme, p as _pp             # 自称 + 按群人设文案（小小糯/薇丝）
 import state_store
@@ -145,6 +145,7 @@ _ZHI_PENALTY = -15  # 日冲本命
 
 def is_fortune_cmd(cmd: str) -> bool:
     """识别算命指令（`/` 老入口 + P12-AW 给茶水间开的 `#` 新入口）."""
+    cmd = _normalize_command_prefix(cmd)
     return any(cmd.startswith(p) for p in [
         "/算命", "/运势", "/占卜", "/今日运势", "/今日运气", "/运气",
         # P12-AW：茶水间没有 Bot、又只接 @（`at_only`），`/` 那条路在那边被

@@ -110,6 +110,7 @@ def test_poem_hash_prefix_payload():
     assert bot.is_poem_cmd("#作诗 林九鹓") == "林九鹓"
     assert bot.is_poem_cmd("#赋诗") == ""
     assert bot.is_poem_cmd("#写诗游戏") == "游戏", "前缀语义与 / 写诗一致"
+    assert bot.is_poem_cmd("＃写诗 游戏") == "游戏", "全角井号与半角井号一致"
     assert bot.is_poem_cmd("/写诗 清歌") == "清歌", "/ 老入口保持不变"
 
 

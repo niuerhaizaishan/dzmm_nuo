@@ -16,7 +16,7 @@ from runtime.members import (_archive_text_from_profile, _find_in_profiles,
                              _member_profile_text)
 from runtime.memory import _refresh_profile_latest, _retrieve_memory
 from runtime.obs import log
-from runtime.text import _norm_poem
+from runtime.text import _norm_poem, _normalize_command_prefix
 import state_store
 
 __all__ = [
@@ -38,6 +38,7 @@ POEM_STYLE_KEYWORDS = {
 def is_poem_cmd(cmd: str) -> str:
     """识别写诗指令，返回目标（空串=给自己），None=不是写诗。
     P12-CF：茶水间的 `#` 入口（`#写诗/#作诗/#赋诗`）也认。"""
+    cmd = _normalize_command_prefix(cmd)
     for prefix in ["/写诗", "/作诗", "/赋诗", "#写诗", "#作诗", "#赋诗"]:
         if cmd.startswith(prefix):
             return cmd[len(prefix):].strip()

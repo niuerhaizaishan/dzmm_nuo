@@ -12,6 +12,7 @@ from runtime.ctx import PRIMARY_CID
 from runtime.dream_sources import SOURCES, candidates
 from runtime.obs import log
 from runtime.tuning import get as _tune
+from runtime.text import _normalize_command_prefix
 
 TEA_CID = "4fc4a2fd-465a-4436-9884-dbb5e60c6af2"
 ALLOWED_CIDS = frozenset((PRIMARY_CID, TEA_CID))
@@ -28,7 +29,7 @@ _UNSAFE = re.compile(r"(?:一定|必定|注定|预示|预言).{0,12}(?:死亡|�
 
 
 def command_payload(text: str):
-    match = _COMMAND.fullmatch((text or "").strip())
+    match = _COMMAND.fullmatch(_normalize_command_prefix(text))
     return match.group(1).strip() if match else None
 
 
@@ -53,6 +54,7 @@ def enabled(cid: str) -> bool:
 
 
 def is_hash_request(cid: str, text: str) -> bool:
+    text = _normalize_command_prefix(text)
     return (cid == TEA_CID and text.startswith("#")
             and command_payload(text) is not None and enabled(cid)
             and bool(_tune("dream.hash_cmd", cid)))
