@@ -48,3 +48,9 @@ tmp*/
 # Playwright
 pw_profile/
 .playwright/
+
+# 一次性发布工件（2026-11-03 发布用，不入库）
+patch.tar.gz
+release.json
+tmp_release_*.py
+tmp_config_now.json
