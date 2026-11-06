@@ -163,10 +163,6 @@ class Store:
     def _close(conn, session, status):
         conn.execute("UPDATE sessions SET status=? WHERE id=?", (status, session["id"]))
         conn.execute("DELETE FROM participants WHERE session_id=?", (session["id"],))
-        # 仅"未尝试投递的首段"可释放额度；sending / ambiguous 保守保留。
-        if session["status"] in ("generating", "ready") and not json.loads(session["history"]):
-            conn.execute("DELETE FROM quota WHERE session_id=? AND state='reserved'",
-                         (session["id"],))
 
     def preference(self, cid, uid, allowed, now=None):
         now = time.time() if now is None else now
@@ -195,16 +191,14 @@ class Store:
             return dict(row) if row else None
 
     def status(self, cid, uid, now=None):
-        now = time.time() if now is None else now
         with self.transaction() as conn:
-            used = conn.execute("SELECT 1 FROM quota WHERE cid=? AND uid=? AND day=?",
-                                (cid, uid, local_day(now))).fetchone()
             row = self._current(conn, cid, uid)
             pending = conn.execute("SELECT COUNT(*) FROM wallet_ops WHERE cid=? AND uid=? "
                                    "AND state IN ('pending','unknown','owed')",
                                    (cid, uid)).fetchone()[0]
             data = {"allowed": self._allowed(conn, cid, uid),
-                    "remaining": 0 if used else 1, "active": bool(row),
+                    "daily_limit": None,          # 2026-11-06 起不限次数，只看余额
+                    "active": bool(row),
                     "pending_ops": int(pending or 0)}
             if row:
                 current = dict(row)
@@ -218,7 +212,7 @@ class Store:
             return data
 
     def start(self, cid, actor, target, reference, profiles, now=None, **billing):
-        """预占额度并建会话。
+        """建会话（不再有每日次数限制，2026-11-06 屋主定；只保留"一次一场"）。
 
         billing 可带 fee/extra/base_probability/probability/roll/relation/split_ratio；
         缺省就是老行为（不收费）。返回 (sid, operation)。
@@ -230,11 +224,6 @@ class Store:
             if self._current(conn, cid, actor) or self._current(conn, cid, target):
                 raise RuleError("你们当中有人还在另一场剧情里哦～先结束当前会话再来。")
             sid, operation, day = str(uuid.uuid4()), str(uuid.uuid4()), local_day(now)
-            try:
-                conn.execute("INSERT INTO quota VALUES (?,?,?,?,?)",
-                             (cid, actor, day, sid, "reserved"))
-            except sqlite3.IntegrityError:
-                raise RuleError("今天的机会已经用掉啦～明天再来，先安心上班！") from None
             conn.execute(
                 "INSERT INTO sessions (id,cid,actor,target,day,status,deadline,last_ref,profiles,"
                 "operation,payer,fee,extra,base_probability,probability,roll,relation,split_ratio) "
@@ -326,7 +315,6 @@ class Store:
             if not row:
                 return None
             history = json.loads(row["history"])
-            conn.execute("UPDATE quota SET state='used' WHERE session_id=?", (sid,))
             if row["status"] != "sending":
                 return None
             final_outcome = outcome or row["outcome"] or "win"
@@ -361,11 +349,6 @@ class Store:
                 return False
             self._close(conn, row, status)
             return True
-
-    def release_quota(self, sid):
-        """系统失败：退还当日发起次数（只撤 reserved，已用掉的不动）。"""
-        with self.transaction() as conn:
-            conn.execute("DELETE FROM quota WHERE session_id=? AND state='reserved'", (sid,))
 
     def sweep(self, cid, now=None, enabled=True):
         now = time.time() if now is None else now

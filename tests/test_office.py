@@ -153,7 +153,7 @@ def test_explicit_refusal_and_allow_survive_restarts(store):
     assert not Store(store.path).status(TEA_CID, "b", 1000)["allowed"]
     with pytest.raises(RuleError, match="已拒绝"):
         Store(store.path).start(TEA_CID, "a", "b", REF, [], 1000)
-    assert store.status(TEA_CID, "a", 1000)["remaining"] == 1
+    assert store.current(TEA_CID, "a") is None
     assert Store(store.path).status(TEA_CID, "new-member", 1000)["allowed"]
     store.preference(TEA_CID, "b", True)
     assert Store(store.path).status(TEA_CID, "b")["allowed"]
@@ -178,23 +178,28 @@ def test_concurrent_starts_only_one_participant_and_quota(store):
     assert sum(row is not None for row in rows) == 1
 
 
-def test_daily_once_cannot_change_target_or_restart(store):
+def test_no_daily_limit_but_only_one_session_at_a_time(store):
+    """2026-11-06：每天次数不限；仍然一次只能在一场里。"""
     sid, _ = activate(store)
-    assert store.end(TEA_CID, "b")
-    assert not store.current(TEA_CID, "a")
     store.preference(TEA_CID, "c", True)
-    with pytest.raises(RuleError, match="今天的机会"):
+    with pytest.raises(RuleError, match="另一场剧情"):
         Store(store.path).start(TEA_CID, "a", "c", REF, [], 1001)
-    assert store.status(TEA_CID, "a", 1001)["remaining"] == 0
-    assert store.start(TEA_CID, "a", "c", REF, [], 1000 + 86400)
+    assert store.end(TEA_CID, "b")
+    # 同一天可以立刻再来一场（不再受每日一次限制）
+    same_day, _ = Store(store.path).start(TEA_CID, "a", "c", REF, [], 1001)
+    assert same_day
+    assert store.end(TEA_CID, "a")
+    again, _ = Store(store.path).start(TEA_CID, "a", "c", REF, [], 1002)
+    assert again
 
 
 def test_midnight_beijing_and_reserved_day():
     assert local_day(1792511999) != local_day(1792512000)  # 2026-10-20 16:00 UTC
 
 
-@pytest.mark.parametrize("stage,remaining", [("generating", 1), ("ready", 1), ("sending", 0), ("active", 0)])
-def test_refuse_releases_only_definitely_unsent_first_segment(store, stage, remaining):
+@pytest.mark.parametrize("stage", ["generating", "ready", "sending", "active"])
+def test_refuse_always_closes_and_never_delivers_after(store, stage):
+    """拒绝一定关掉会话；拒绝之后迟到的投递不会被接受（额度概念已移除）。"""
     store.preference(TEA_CID, "b", True)
     sid, op = store.start(TEA_CID, "a", "b", REF, [], 1000)
     if stage != "generating":
@@ -204,7 +209,7 @@ def test_refuse_releases_only_definitely_unsent_first_segment(store, stage, rema
     if stage == "active":
         store.delivered(sid, op, "mid", 1000)
     store.preference(TEA_CID, "b", False, 1001)
-    assert store.status(TEA_CID, "a", 1001)["remaining"] == remaining
+    assert store.get(sid)["status"] == "refused"
     assert not store.current(TEA_CID, "a")
     assert not store.ready(sid, op, TEXT, 1001)
     store.delivered(sid, op, "late", 1002)
@@ -225,7 +230,7 @@ def test_idle_deadline_and_continue_refresh_only_after_success(store):
     assert len(notes) == 1 and json.loads(notes[0]["reference"])["id"] == "continue"
     assert notes[0]["text"] == "已连续 5 分钟无互动，本场结束。"
     assert store.sweep(TEA_CID, 1700) == []
-    assert store.status(TEA_CID, "a", 1700)["remaining"] == 0
+    assert store.current(TEA_CID, "a") is None
 
 
 def test_failed_continue_restores_old_deadline_and_stale_operation_is_rejected(store):
@@ -258,7 +263,7 @@ def test_ambiguous_delivery_never_refunds_or_revives(store):
     store.ambiguous(sid, op)
     assert not store.dispatch(sid, op, 1001)
     store.sweep(TEA_CID, 1300)
-    assert store.status(TEA_CID, "a", 1301)["remaining"] == 0
+    assert store.get(sid)["status"] == "expired"
 
 
 def test_generation_crash_restores_quota_but_other_sessions_survive(store):
@@ -269,7 +274,7 @@ def test_generation_crash_restores_quota_but_other_sessions_survive(store):
     store.sweep(TEA_CID, 1120)
     assert store.get(sid)["status"] == "expired"
     assert store.get(other)["status"] == "generating"
-    assert store.status(TEA_CID, "a", 1120)["remaining"] == 1
+    assert store.current(TEA_CID, "a") is None
 
 
 @pytest.mark.parametrize("a,b", [(2, 3), (2, 2), (5, 2)])
@@ -509,7 +514,6 @@ def test_unverifiable_or_ineligible_quote_never_starts_or_charges(service, monke
         await drain()
     asyncio.run(run())
     assert store.current(TEA_CID, "a") is None
-    assert store.status(TEA_CID, "a")["remaining"] == 1
     assert len(sender.sent) == 1 and sender.sent[0][2]["id"] == "m1"
 
 
@@ -523,7 +527,7 @@ def test_malformed_quote_is_rejected_without_network(service, monkeypatch, quote
         await drain()
     asyncio.run(run())
     assert "引用消息" in service[0].sent[0][0]
-    assert service[1].status(TEA_CID, "a")["remaining"] == 1
+    assert service[1].current(TEA_CID, "a") is None
 
 
 @pytest.mark.parametrize("end", ["#结束", "＃结束", "#潜规则结束", "＃潜规则结束"])
@@ -572,7 +576,6 @@ def test_short_continue_without_session_replies_to_command(service):
     assert len(sender.sent) == 1
     assert "没有可以继续的会话" in sender.sent[0][0]
     assert sender.sent[0][2]["id"] == "m1"
-    assert store.status(TEA_CID, "a")["remaining"] == 1
 
 
 def test_two_sessions_finish_out_of_order_and_continue_with_own_history(service, monkeypatch):
@@ -659,7 +662,7 @@ def test_cross_department_snapshot_survives_rank_change(service, monkeypatch, mi
         row = store.current(TEA_CID, "a")
         assert row and row["status"] == "active"
         assert abs(row["split_ratio"] - 0.5) < 1e-9, "上级→下级：目标分账 50%"
-        assert store.status(TEA_CID, "a")["remaining"] == 0
+        assert store.current(TEA_CID, "a")["id"] == row["id"]
         await issue(service, "#潜规则继续", "m2", "b")
         await drain()
         assert store.current(TEA_CID, "a")["continues"] == 1
@@ -686,7 +689,6 @@ def test_cross_department_respects_explicit_target_refusal(service, monkeypatch)
     asyncio.run(run())
     assert len(sender.sent) == 1 and "已拒绝" in sender.sent[0][0]
     assert not store.current(TEA_CID, "a")
-    assert store.status(TEA_CID, "a")["remaining"] == 1
 
 
 def test_profiles_fill_missing_gender_from_existing_platform_lookup(service, monkeypatch):
@@ -735,12 +737,10 @@ def test_real_employee_adapter_starts_and_unknown_rank_preserves_quota(service, 
         await issue(adapter, "#潜规则 b")
         await drain()
         assert not store.current(TEA_CID, "a")
-        assert store.status(TEA_CID, "a")["remaining"] == 1
         ranks["a"] = "主管"
         await issue(adapter, "#潜规则 b", "m2")
         await drain()
         assert store.current(TEA_CID, "a")["status"] == "active"
-        assert store.status(TEA_CID, "a")["remaining"] == 0
         store.end(TEA_CID, "a")
         ranks["a"] = "未确认新职级"
         await issue(adapter, "#潜规则 b", "m3")
@@ -751,7 +751,7 @@ def test_real_employee_adapter_starts_and_unknown_rank_preserves_quota(service, 
     assert told[1][0].endswith(TEXT)
     assert "无法判断" in told[2][0]
     assert not store.current(TEA_CID, "a")
-    assert store.status(TEA_CID, "a")["remaining"] == 0
+    assert office._test_wallet.balances.get("a") == 999 - 5
     assert all(method in ("GET", "POST") and "/coins/" not in url for method, url in calls)
 
 
@@ -773,7 +773,6 @@ def test_refusal_during_generation_suppresses_stale_output(service, monkeypatch)
     told = stories(sender)
     assert len(told) == 1 and told[0][2]["id"] == "refuse"
     assert "已扣" in sender.sent[0][0], "扣费提醒在生成前就已经发出"
-    assert store.status(TEA_CID, "a")["remaining"] == 1
 
 
 def test_generation_failure_releases_first_quota(service, monkeypatch):
@@ -783,7 +782,6 @@ def test_generation_failure_releases_first_quota(service, monkeypatch):
         await issue(service, "#潜规则 b")
         await drain()
     asyncio.run(run())
-    assert store.status(TEA_CID, "a")["remaining"] == 1
     assert sender.sent[0][2]["id"] == "m1"
 
 
@@ -864,7 +862,6 @@ def test_specific_length_failure_quotes_command_and_preserves_quota(service, mon
     told = stories(sender)
     assert len(told) == 1 and "内容过短" in told[0][0]
     assert told[0][2]["id"] == "m1"
-    assert store.status(TEA_CID, "a")["remaining"] == 1
 
 
 @pytest.mark.parametrize("length", [200, 353, 381, 399, 400, 600])
@@ -958,7 +955,7 @@ def test_explicit_not_sent_retries_same_output_and_reference(service, monkeypatc
         await drain()
     asyncio.run(run())
     assert len(generate_calls) == 1 and len(calls) == 2 and calls[0] == calls[1]
-    assert store.status(TEA_CID, "a")["remaining"] == 0
+    assert store.current(TEA_CID, "a")["status"] == "active"
 
 
 @pytest.mark.parametrize("continuation", [False, True])
@@ -983,7 +980,7 @@ def test_content_rejection_does_not_retry_and_only_refunds_unsent_start(service,
     assert len(attempts) == 1
     assert "平台拒绝了本段内容" in sender.sent[-1][0]
     assert sender.sent[-1][2]["id"] == "rejected"
-    assert store.status(TEA_CID, "a")["remaining"] == (0 if continuation else 1)
+    assert store.current(TEA_CID, "a") is None or continuation
     row = store.current(TEA_CID, "a")
     if continuation:
         assert row["status"] == "active" and row["continues"] == 0
@@ -1030,7 +1027,7 @@ def test_uncertain_send_is_not_retried_or_refunded(service):
     asyncio.run(run())
     assert len(calls) == 1 and calls[0].endswith(TEXT)
     assert store.current(TEA_CID, "a")["status"] == "ambiguous"
-    assert store.status(TEA_CID, "a")["remaining"] == 0
+    assert office._test_wallet.balances.get("a") == 999 - 5
 
 
 def test_native_quote_must_survive_readback(dbdir, monkeypatch):
@@ -1111,7 +1108,6 @@ def test_paid_start_rejects_overpay_without_charging(service):
     asyncio.run(run())
     assert "50" in sender.sent[0][0]
     assert store.current(TEA_CID, "a") is None
-    assert store.status(TEA_CID, "a")["remaining"] == 1
     assert office._test_wallet.balances.get("a") in (None, 999)
 
 
@@ -1259,3 +1255,42 @@ def test_continue_keeps_first_segment_gender(service, monkeypatch):
 
     assert seen[0][1]["gender"] == "女"          # 首段：按名字
     assert seen[1][1]["gender"] == "女"          # 续写：沿用快照，不被平台新值改掉
+
+
+# ---------------------------------------------------------------- 帮助 / 规则（多行）
+
+def test_help_command_keeps_line_breaks_and_is_free(service):
+    sender, store, _ = service
+    before = dict(office._test_wallet.balances)
+
+    async def run():
+        await issue(service, "#潜规则帮助")
+        await drain()
+    asyncio.run(run())
+
+    assert len(sender.sent) == 1
+    text = sender.sent[0][0]
+    assert "潜规则怎么玩" in text and "发起：" in text and "#潜规则规则" in text
+    assert "\n" in text, "帮助是多行文案，不能被压成一行"
+    assert "扣费" not in text
+    assert office._test_wallet.balances == before, "帮助不花钱"
+    assert store.current(TEA_CID, "a") is None, "帮助不建会话"
+
+
+def test_rules_command_keeps_line_breaks(service):
+    sender, store, _ = service
+    async def run():
+        await issue(service, "#潜规则规则")
+        await drain()
+    asyncio.run(run())
+    text = sender.sent[0][0]
+    assert "潜规则规则" in text and "\n" in text and "次数：不限" in text
+
+
+def test_help_needs_no_payload_and_ignores_extra(service):
+    sender, store, _ = service
+    async def run():
+        await issue(service, "#潜规则帮助 多余参数")
+        await drain()
+    asyncio.run(run())
+    assert "不需要额外参数" in sender.sent[0][0]

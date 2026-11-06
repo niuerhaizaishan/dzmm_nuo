@@ -195,17 +195,13 @@ def test_split_owed_survives_for_compensation(store):
     assert len(pending) == 1 and pending[0]["kind"] == "split" and pending[0]["amount"] == 22
 
 
-def test_quota_release_only_touches_reserved(store):
+def test_status_reports_no_daily_limit_and_one_session(store):
+    """2026-11-06 起不再有每日次数：status 只报开关、当前会话与待处理账务。"""
     store.preference("tea", "b", True)
-    sid, op = store.start("tea", "a", "b", {"id": "m1"}, [])
-    assert store.status("tea", "a")["remaining"] == 0
-    store.release_quota(sid)
-    assert store.status("tea", "a")["remaining"] == 1
-    store.end("tea", "a")                       # 关掉上一场再开新的
-    # 已投递（quota 变 used）的会话不该被 release 撤回
-    sid2, op2 = store.start("tea", "a", "b", {"id": "m2"}, [])
-    assert store.ready(sid2, op2, "正文")
-    assert store.dispatch(sid2, op2)
-    store.delivered(sid2, op2, "mid")
-    store.release_quota(sid2)
-    assert store.status("tea", "a")["remaining"] == 0
+    status = store.status("tea", "a")
+    assert status["daily_limit"] is None and status["active"] is False
+    sid, _op = store.start("tea", "a", "b", {"id": "m1"}, [])
+    active = store.status("tea", "a")
+    assert active["active"] is True and active["session"] == sid
+    store.end("tea", "a")
+    assert store.status("tea", "a")["active"] is False

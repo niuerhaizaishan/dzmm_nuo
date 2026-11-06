@@ -32,7 +32,7 @@ from runtime.reply_delivery import ReplyContentRejected, ReplyNotSent
 from runtime.text import _normalize_command_prefix
 
 COMMAND = re.compile(
-    r"^#(允许潜规则|拒绝潜规则|潜规则状态|潜规则规则|潜规则继续|潜规则结束|潜规则|继续|结束)"
+    r"^#(允许潜规则|拒绝潜规则|潜规则状态|潜规则规则|潜规则帮助|潜规则继续|潜规则结束|潜规则|继续|结束)"
     r"(?=$|\s)(.*)$", re.S)
 TASKS = set()
 _feat_on = features.on
@@ -120,11 +120,12 @@ def eligibility(actor, target):
         raise RuleError("暂时无法判断双方的职级高低，请确认资料后再试，不会扣币。")
 
 
-async def reply(sender, cid, text, reference, *, guard=None, strict=False):
+async def reply(sender, cid, text, reference, *, guard=None, strict=False, keep_lines=False):
     # 原生引用区分作者；正文也区分指令，避免多人收到同一提示被平台判为重复内容。
     name = " ".join(get_full_name(reference.get("sentBy", "")).split())[:24]
     request_id = hashlib.sha256(reference["id"].encode()).hexdigest()[:8]
-    payload = "🤖 【回复 {} · 指令 {}】 {}".format(name, request_id, " ".join(text.split()))
+    body = text if keep_lines else " ".join(text.split())
+    payload = "🤖 【回复 {} · 指令 {}】 {}".format(name, request_id, body)
     try:
         return await sender.send_reply_with_id(payload, cid, reference, guard=guard)
     except Exception as error:
@@ -332,11 +333,9 @@ async def _charge_notice(sender, cid, reference, *, fee, extra, balance, probabi
 
 
 async def _refund(wallet, store, sid, cid, actor, fee, *, kind=KV_REFUND):
-    """系统失败退款 + 恢复当日次数。退款失败时标 owed，由补偿任务重试。"""
+    """系统失败退款。退款失败时标 owed，由补偿任务重试。"""
     key = "{}:{}".format(sid, kind)
-    result = await _credit(wallet, store, key, cid, sid, actor, fee, "refund")
-    store.release_quota(sid)
-    return result
+    return await _credit(wallet, store, key, cid, sid, actor, fee, "refund")
 
 
 async def _refund_notice(sender, cid, reference, wallet, store, sid, actor, fee, *, kind=KV_REFUND):
@@ -399,7 +398,6 @@ async def _run(sender, cid, uid, action, payload, reference, store, client, *, m
                                        bill["fee"], "fee", "首段费用")
             except WalletRefused as exc:
                 store.end(cid, uid, "failed", expected_sid=sid)
-                store.release_quota(sid)
                 raise RuleError(str(exc)) from None
             # 先告诉玩家钱已经扣了，再开始生成（生成要几十秒，不能让人干等）
             await _charge_notice(sender, cid, reference, fee=bill["fee"], extra=bill["extra"],
@@ -572,8 +570,10 @@ async def handle(sender, cid, uid, text, message, *, dry=False, store=None, clie
     if action not in ("潜规则", "潜规则继续") and payload:
         await reply(sender, cid, "这条命令不需要额外参数哦。", ref)
         return
-    if action == "潜规则规则":
-        await reply(sender, cid, rules.rules_text(), ref)
+    if action in ("潜规则规则", "潜规则帮助"):
+        # 这两条都是多行说明书，保留换行（其余回复仍然压成一行）
+        body = rules.help_text() if action == "潜规则帮助" else rules.rules_text()
+        await reply(sender, cid, body, ref, keep_lines=True)
     elif action in ("允许潜规则", "拒绝潜规则"):
         allow = action == "允许潜规则"
         store.preference(cid, uid, allow)
@@ -585,8 +585,8 @@ async def handle(sender, cid, uid, text, message, *, dry=False, store=None, clie
                     "已拒绝潜规则；你参与的会话已结束，尚未发送的内容已取消。", ref)
     elif action == "潜规则状态":
         status = store.status(cid, uid)
-        detail = "当前{}；今日剩余 {} 次发起；{}。".format(
-            "允许" if status["allowed"] else "拒绝", status["remaining"],
+        detail = "当前{}；发起不限次数（首段 {} 币起，看余额）；{}。".format(
+            "允许" if status["allowed"] else "拒绝", rules.BASE_FEE,
             "有进行中的会话" if status["active"] else "没有进行中的会话")
         if status.get("active"):
             detail += "续写进度 {}/{}，本场费用 {} 币".format(
