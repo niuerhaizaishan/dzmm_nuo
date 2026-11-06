@@ -33,6 +33,36 @@ def generate(profiles, history, direction, timeout=45):
         _MODEL_LIMIT.release()
 
 
+def generate_failure(profiles, direction, timeout=25):
+    """概率失败时的**简短失败情节**（这一段没有成事，费用照扣、不分账）。
+
+    方案 §9：程序先定结果，模型只负责把"没得手"这一个瞬间写出来；不需要走长稿三轮修订，
+    但同样要写完、不能是半句话。
+    """
+    if not _MODEL_LIMIT.acquire(blocking=False):
+        raise SceneGenerationError("office_model_busy")
+    try:
+        payload = {"participants": profiles, "direction": direction, "outcome": "fail"}
+        prompt = brains.OFFICE_SCENE_PROMPT + (
+            "\n【本次结果：失败】这一场没成事：发起者没能得手（被躲开、被反制、被打断、被拒绝）。"
+            "只写这一个瞬间的结尾，120～260 个可见字符，一个自然段；不写性行为、不写事后复盘、"
+            "不解释原因，结尾就落在「没成」上。只输出正文，不输出标题或说明。")
+        deadline = time.monotonic() + timeout
+        text, finish = brains._call_llm_raw(
+            prompt, json.dumps(payload, ensure_ascii=False),
+            max_tokens=600, timeout=max(1, int(deadline - time.monotonic())))
+        text = " ".join((text or "").split())
+        length = visible_length(text)
+        ok_finish = finish not in ("content_filter",)
+        if length < 40 or length > 400 or not ok_finish or text.startswith("```"):
+            raise SceneGenerationError("office_scene_invalid_length_or_finish",
+                                       length=length, finish=finish, attempts=1)
+        return text
+    finally:
+        _MODEL_LIMIT.release()
+
+
+
 def _generate(profiles, history, direction, timeout):
     payload = {"participants": profiles, "history": history[-4:], "direction": direction}
     prompt = brains.OFFICE_SCENE_PROMPT + (

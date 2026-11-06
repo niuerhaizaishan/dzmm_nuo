@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from runtime import employee_api, features, office, office_scene
+from runtime import employee_api, features, office, office_scene, office_wallet
 from runtime.office_store import Store, TEA_CID, RuleError, local_day
 from runtime.outbox import OutboxSender, OutboxStore
 from runtime.routing import RoutingSender
@@ -24,6 +24,7 @@ finally:
 
 REF = {"id": "cmd1", "sentBy": "a", "content": {"type": "text", "text": "#潜规则 b"}}
 TEXT = "办公室里灯光温柔，两个人放下文件聊起今天的趣事。" * 20
+FAIL_TEXT = "她伸手过去，被对方侧身让开，只抓到一把空气。" * 5
 
 
 def profile(uid, level=1, dept="d", gender="unknown"):
@@ -60,6 +61,50 @@ def store(dbdir):
     return Store(dbdir / "office.db")
 
 
+class _WalletStub:
+    """测试用钱包：默认余额 999，同一幂等键重复调用返回同一笔（不重复记账）。"""
+
+    def __init__(self, default=999):
+        self.default = default
+        self.balances = {}
+        self.ops = {}
+        self.fail_spend = False
+        self.fail_grant = False
+
+    def balance(self, uid):
+        return {"ok": True, "balance": self.balances.get(uid, self.default)}
+
+    def spend(self, uid, amount, key, reason=""):
+        if key in self.ops:
+            return dict(self.ops[key], replayed=True)
+        if self.fail_spend:
+            raise office_wallet.WalletUnavailable("钱包挂了")
+        bal = self.balances.get(uid, self.default)
+        if bal < amount:
+            raise office_wallet.WalletRefused("余额不足：现有 {} 币".format(bal))
+        bal -= amount
+        self.balances[uid] = bal
+        result = {"ok": True, "balance": bal, "tx": "tx-" + key, "amount": amount}
+        self.ops[key] = result
+        return result
+
+    def grant(self, uid, amount, key, reason=""):
+        if key in self.ops:
+            return dict(self.ops[key], replayed=True)
+        if self.fail_grant:
+            raise office_wallet.WalletUnavailable("发币失败")
+        bal = self.balances.get(uid, self.default) + amount
+        self.balances[uid] = bal
+        result = {"ok": True, "balance": bal, "tx": "tx-" + key, "amount": amount}
+        self.ops[key] = result
+        return result
+
+    def lookup(self, key):
+        if key not in self.ops:
+            return {"ok": True, "state": "absent"}
+        return {"ok": True, "state": "applied", "tx": self.ops[key]["tx"]}
+
+
 @pytest.fixture(autouse=True)
 def isolation(monkeypatch):
     saved = features.overrides()
@@ -68,9 +113,14 @@ def isolation(monkeypatch):
     monkeypatch.setattr(office, "log", lambda *a: None)
     monkeypatch.setattr(office, "TASKS", set())
     monkeypatch.setattr(office, "_gender_of", lambda *a: "未知")
+    # 平台性别默认"没有值"；要测平台优先的用例自己再 monkeypatch 一次
+    monkeypatch.setattr(office, "_platform_gender", lambda cid, uid: "")
     monkeypatch.setattr(office, "get_full_name", lambda uid: "成员-" + uid)
     monkeypatch.delenv("DZMM_EMPLOYEE_PROFILE_MODE", raising=False)
     monkeypatch.delenv("DZMM_EMPLOYEE_RANK_ORDER", raising=False)
+    wallet = _WalletStub()
+    monkeypatch.setattr(office, "wallet_adapter", lambda: wallet)
+    monkeypatch.setattr(office, "_test_wallet", wallet, raising=False)
     yield
     features.set_overrides(saved)
 
@@ -222,17 +272,22 @@ def test_generation_crash_restores_quota_but_other_sessions_survive(store):
     assert store.status(TEA_CID, "a", 1120)["remaining"] == 1
 
 
-@pytest.mark.parametrize("a,b,message", [(2, 3, office.RANK_DENIED), (2, 2, office.EQUAL_DENIED)])
+@pytest.mark.parametrize("a,b", [(2, 3), (2, 2), (5, 2)])
 @pytest.mark.parametrize("department", ["d", "other", None])
-def test_rank_restrictions_apply_regardless_of_department(a, b, message, department):
+def test_any_rank_direction_is_allowed_regardless_of_department(a, b, department):
+    """2026-11-05 起：任何方向都能发起（概率由职级差决定），部门不参与资格判定。"""
     p1, p2 = profile("a", a), profile("b", b)
     if department is None:
         p1.pop("department_id")
         p2.pop("department_id")
     else:
         p2["department_id"] = department
-    with pytest.raises(RuleError, match=message):
-        office.eligibility(p1, p2)
+    office.eligibility(p1, p2)
+
+
+def test_unverifiable_rank_is_refused_without_charging():
+    with pytest.raises(RuleError, match="职级"):
+        office.eligibility({"rank_level": None}, {"rank_level": 3})
 
 
 def test_higher_rank_can_target_other_or_unknown_department():
@@ -381,6 +436,9 @@ def service(monkeypatch, store):
         return {uid: {"protected": False, "name": uid} for uid in ("a", "b", "c", "d")}
     monkeypatch.setattr(office.Platform, "members", members)
     monkeypatch.setattr(office, "generate", lambda *a: TEXT)
+    monkeypatch.setattr(office, "generate_failure", lambda *a, **k: FAIL_TEXT)
+    # 默认钉成"一定赢"，需要测失败路径的用例自己再 monkeypatch 一次。
+    monkeypatch.setattr(office, "_roll", lambda: 0.0)
     store.preference(TEA_CID, "b", True)
     return FakeSender(), store, FakeClient()
 
@@ -397,6 +455,11 @@ async def drain():
     tasks = list(office.TASKS)
     if tasks:
         await asyncio.gather(*tasks)
+
+
+def stories(sender):
+    """只看剧情/提示正文：排除生成前那条「已扣 X 币」的即时扣费提醒。"""
+    return [item for item in sender.sent if "已扣" not in item[0]]
 
 
 @pytest.mark.parametrize("prefix", ["#", "＃"])
@@ -491,10 +554,11 @@ def test_service_start_continue_end_quote_each_command(service, continuation):
         await issue(service, "#潜规则结束", "m3", "b")
         await issue(service, "#潜规则 @b", "m1")  # 重放原指令
     asyncio.run(run())
-    assert [s[2]["id"] for s in sender.sent] == ["m1", "m2", "m3"]
-    assert sender.sent[0][0].endswith(TEXT) and len(sender.sent) == 3
-    assert "【会话 " in sender.sent[0][0] and "a × b" in sender.sent[0][0]
-    assert sender.sent[1][2]["content"]["text"] == continuation
+    told = stories(sender)
+    assert [s[2]["id"] for s in told] == ["m1", "m2", "m3"]
+    assert told[0][0].endswith(TEXT) and len(told) == 3
+    assert "【会话 " in told[0][0] and "a × b" in told[0][0]
+    assert told[1][2]["content"]["text"] == continuation
     assert all("\n" not in text and "\r" not in text for text, _, _ in sender.sent)
     assert not store.current(TEA_CID, "a")
 
@@ -520,8 +584,8 @@ def test_two_sessions_finish_out_of_order_and_continue_with_own_history(service,
 
     async def send(text, cid, reference, **kwargs):
         mid = await original_send(text, cid, reference, **kwargs)
-        if reference["sentBy"] == "c":
-            second_sent.set()
+        if reference["sentBy"] == "c" and "已扣" not in text:
+            second_sent.set()          # 等的是 c 的**正文**，不是扣费提醒
         return mid
     sender.send_reply_with_id = send
 
@@ -546,8 +610,14 @@ def test_two_sessions_finish_out_of_order_and_continue_with_own_history(service,
         await drain()
         return first["id"], second["id"]
     first_id, second_id = asyncio.run(run())
-    assert [s[2]["id"] for s in sender.sent] == ["start-c", "start-a", "next-c", "next-a"]
-    for text, _, ref in sender.sent:
+    told = stories(sender)
+    # 并发两场互不干扰：每条正文引用自己的指令，且各自的续写排在自己的首段之后。
+    # 不写死两场之间的全局交错顺序（那只是调度巧合）。
+    ids = [s[2]["id"] for s in told]
+    assert sorted(ids) == ["next-a", "next-c", "start-a", "start-c"]
+    for start, nxt in (("start-a", "next-a"), ("start-c", "next-c")):
+        assert ids.index(start) < ids.index(nxt)
+    for text, _, ref in told:
         actor = ref["sentBy"]
         sid = first_id if actor == "a" else second_id
         assert "会话 " + sid[:8] in text
@@ -572,7 +642,8 @@ def test_identical_errors_for_different_commands_are_distinct_and_quoted(service
 
 
 @pytest.mark.parametrize("missing_department", [False, True])
-def test_cross_department_start_and_continue_still_enforce_rank(service, monkeypatch, missing_department):
+def test_cross_department_snapshot_survives_rank_change(service, monkeypatch, missing_department):
+    """2026-11-05：任何方向都能续写；分账比例用首段快照，不随中途升降职改变。"""
     sender, store, client = service
     levels = {"a": 3, "b": 1}
     def employee(uid):
@@ -587,18 +658,21 @@ def test_cross_department_start_and_continue_still_enforce_rank(service, monkeyp
         await drain()
         row = store.current(TEA_CID, "a")
         assert row and row["status"] == "active"
+        assert abs(row["split_ratio"] - 0.5) < 1e-9, "上级→下级：目标分账 50%"
         assert store.status(TEA_CID, "a")["remaining"] == 0
         await issue(service, "#潜规则继续", "m2", "b")
         await drain()
         assert store.current(TEA_CID, "a")["continues"] == 1
-        levels["b"] = 4
+        assert abs(store.current(TEA_CID, "a")["split_ratio"] - 0.5) < 1e-9
+        levels["b"] = 4                       # 目标升职：续写仍按首段比例，且不再拒绝
         await issue(service, "#潜规则继续", "m3", "b")
         await drain()
     asyncio.run(run())
-    assert [s[2]["id"] for s in sender.sent] == ["m1", "m2", "m3"]
-    assert all(s[0].endswith(TEXT) for s in sender.sent[:2])
-    assert office.RANK_DENIED in sender.sent[2][0]
-    assert not store.current(TEA_CID, "a")
+    told = stories(sender)
+    assert [s[2]["id"] for s in told] == ["m1", "m2", "m3"]
+    assert all(s[0].endswith(TEXT) for s in told)
+    assert "续写进度2/5" in told[2][0]
+    assert abs(store.current(TEA_CID, "a")["split_ratio"] - 0.5) < 1e-9
 
 
 def test_cross_department_respects_explicit_target_refusal(service, monkeypatch):
@@ -672,9 +746,10 @@ def test_real_employee_adapter_starts_and_unknown_rank_preserves_quota(service, 
         await issue(adapter, "#潜规则 b", "m3")
         await drain()
     asyncio.run(run())
-    assert "无法判断" in sender.sent[0][0]
-    assert sender.sent[1][0].endswith(TEXT)
-    assert "无法判断" in sender.sent[2][0]
+    told = stories(sender)
+    assert "无法判断" in told[0][0]
+    assert told[1][0].endswith(TEXT)
+    assert "无法判断" in told[2][0]
     assert not store.current(TEA_CID, "a")
     assert store.status(TEA_CID, "a")["remaining"] == 0
     assert all(method in ("GET", "POST") and "/coins/" not in url for method, url in calls)
@@ -695,7 +770,9 @@ def test_refusal_during_generation_suppresses_stale_output(service, monkeypatch)
         release.set()
         await drain()
     asyncio.run(run())
-    assert len(sender.sent) == 1 and sender.sent[0][2]["id"] == "refuse"
+    told = stories(sender)
+    assert len(told) == 1 and told[0][2]["id"] == "refuse"
+    assert "已扣" in sender.sent[0][0], "扣费提醒在生成前就已经发出"
     assert store.status(TEA_CID, "a")["remaining"] == 1
 
 
@@ -784,8 +861,9 @@ def test_specific_length_failure_quotes_command_and_preserves_quota(service, mon
         await issue(service, "#潜规则 b")
         await drain()
     asyncio.run(run())
-    assert len(sender.sent) == 1 and "内容过短" in sender.sent[0][0]
-    assert sender.sent[0][2]["id"] == "m1"
+    told = stories(sender)
+    assert len(told) == 1 and "内容过短" in told[0][0]
+    assert told[0][2]["id"] == "m1"
     assert store.status(TEA_CID, "a")["remaining"] == 1
 
 
@@ -869,7 +947,8 @@ def test_explicit_not_sent_retries_same_output_and_reference(service, monkeypatc
     async def send(text, cid, reference, *, guard=None):
         if guard and not guard():
             return ""
-        calls.append((text, reference["id"]))
+        if "已扣" not in text:                 # 扣费提醒不算一次投递
+            calls.append((text, reference["id"]))
         if len(calls) < 2:
             raise ReplyNotSent("平台明确拒绝")
         return "confirmed"
@@ -941,7 +1020,8 @@ def test_uncertain_send_is_not_retried_or_refunded(service):
     async def send(text, cid, reference, *, guard=None):
         if guard:
             assert guard()
-        calls.append(text)
+        if "已扣" not in text:
+            calls.append(text)
         raise TimeoutError("test only")
     sender.send_reply_with_id = send
     async def run():
@@ -1002,3 +1082,180 @@ def test_native_guard_runs_after_waiting_for_action_lock(monkeypatch):
         sub._action_lock.release()
         assert await task == ""
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------- 付费概率玩法
+
+def test_paid_start_charges_and_splits(service):
+    sender, store, _ = service
+    async def run():
+        await issue(service, "#潜规则 b 40 开会")
+        await drain()
+    asyncio.run(run())
+    assert "已扣 45 币" in sender.sent[0][0], "生成之前先给扣费提醒"
+    head = stories(sender)[0][0]
+    assert "本次支付45币" in head
+    assert "基础5币＋加币40币" in head
+    assert "成功率90%" in head and "判定成功" in head
+    assert "b获得22币" in head
+    wallet = office._test_wallet
+    assert wallet.balances.get("a") == 999 - 45
+    assert wallet.balances.get("b") == 999 + 22
+
+
+def test_paid_start_rejects_overpay_without_charging(service):
+    sender, store, _ = service
+    async def run():
+        await issue(service, "#潜规则 b 51")
+        await drain()
+    asyncio.run(run())
+    assert "50" in sender.sent[0][0]
+    assert store.current(TEA_CID, "a") is None
+    assert store.status(TEA_CID, "a")["remaining"] == 1
+    assert office._test_wallet.balances.get("a") in (None, 999)
+
+
+def test_paid_losing_roll_charges_but_no_split(service, monkeypatch):
+    sender, store, _ = service
+    monkeypatch.setattr(office, "_roll", lambda: 0.999)
+    async def run():
+        await issue(service, "#潜规则 b 0")
+        await drain()
+    asyncio.run(run())
+    assert "已扣 5 币" in sender.sent[0][0]
+    head = stories(sender)[0][0]
+    assert "判定失败" in head and "今日发起次数已使用" in head
+    wallet = office._test_wallet
+    assert wallet.balances.get("a") == 999 - 5
+    assert wallet.balances.get("b") in (None, 999)
+    assert store.current(TEA_CID, "a") is None
+
+
+def test_rules_command_lists_fee_probability_and_split(service):
+    sender, store, _ = service
+    async def run():
+        await issue(service, "#潜规则规则")
+        await drain()
+    asyncio.run(run())
+    text = stories(sender)[0][0]
+    assert "5 币" in text and "99%" in text and "上级→下级 50%" in text
+
+
+def test_charge_notices_precede_generation_and_hide_result(service, monkeypatch):
+    """生成之前先发一条「已扣 X 币」，而且不能剧透判定结果。"""
+    sender, store, _ = service
+    order = []
+    monkeypatch.setattr(office, "generate", lambda *a: order.append("generate") or TEXT)
+    original = sender.send_reply_with_id
+
+    async def send(text, cid, reference, **kwargs):
+        order.append("notice" if "已扣" in text else "story")
+        return await original(text, cid, reference, **kwargs)
+    sender.send_reply_with_id = send
+
+    async def run():
+        await issue(service, "#潜规则 b 40 开会")
+        await drain()
+        await issue(service, "#潜规则继续 接着来", "m2")
+        await drain()
+    asyncio.run(run())
+
+    notices = [item[0] for item in sender.sent if "已扣" in item[0]]
+    assert len(notices) == 2
+    assert "已扣 45 币" in notices[0] and "成功率 90%" in notices[0]
+    assert "余额 954" in notices[0]
+    assert "续写第 1 段" in notices[1] and "已扣 5 币" in notices[1]
+    for text in notices:
+        assert "判定" not in text and "失败" not in text, "扣费提醒不能剧透判定结果"
+    assert order == ["notice", "generate", "story", "notice", "generate", "story"]
+
+
+# ---------------------------------------------------------------- 性别缺失时的处理
+
+@pytest.mark.parametrize("name,expected", [
+    ("奈宝姐姐", "女"), ("兔子酱", "女"), ("鸽子（🩷豚豚的主人🩷）", "女"),
+    ("夜班的大叔", "男"), ("阿辉先生", "男"), ("小少爷", "男"),
+    ("小小糯", ""), ("沐白", ""), ("彻", ""), ("", ""), (None, ""),
+])
+def test_guess_gender_from_name(name, expected):
+    assert office.rules.guess_gender(name) == expected
+
+
+def test_unknown_gender_is_guessed_from_name_and_told_to_player(service, monkeypatch):
+    """性别资料缺失：按名字选一个直接写，并在扣费提醒里说明。"""
+    sender, store, client = service
+    names = {"a": "发起者", "b": "奈宝姐姐"}
+    monkeypatch.setattr(client, "profile", lambda uid: employee_api.normalize_profile(
+        {**profile(uid, 3 if uid == "a" else 1), "display_name": names[uid]}, uid))
+    seen = []
+    monkeypatch.setattr(office, "generate",
+                        lambda people, history, direction: seen.append(people) or TEXT)
+
+    async def run():
+        await issue(service, "#潜规则 b")
+        await drain()
+    asyncio.run(run())
+
+    notice = sender.sent[0][0]
+    assert "性别资料没填" in notice and "按名字写作「女」" in notice
+    target = seen[0][1]
+    assert target["gender"] == "女"
+    assert "gender_note" not in target and "gender_source" not in target
+
+
+def test_unknown_gender_without_name_hint_uses_neutral_wording(service):
+    sender, store, _ = service
+    seen = []
+    import runtime.office as _office
+    original = office.generate
+    office.generate = lambda people, history, direction: seen.append(people) or TEXT
+    try:
+        async def run():
+            await issue(service, "#潜规则 b")
+            await drain()
+        asyncio.run(run())
+    finally:
+        office.generate = original
+    notice = sender.sent[0][0]
+    assert "中性写法" in notice
+    assert seen[0][1]["gender"] == "未知"
+
+
+def test_platform_gender_wins_and_no_note(service, monkeypatch):
+    sender, store, _ = service
+    monkeypatch.setattr(office, "_platform_gender",
+                        lambda cid, uid: "女" if uid == "b" else "男")
+    seen = []
+    monkeypatch.setattr(office, "generate",
+                        lambda people, history, direction: seen.append(people) or TEXT)
+
+    async def run():
+        await issue(service, "#潜规则 b")
+        await drain()
+    asyncio.run(run())
+
+    notice = sender.sent[0][0]
+    assert "性别资料没填" not in notice
+    assert seen[0][0]["gender"] == "男" and seen[0][1]["gender"] == "女"
+
+
+def test_continue_keeps_first_segment_gender(service, monkeypatch):
+    """首段按名字猜成「女」，之后平台补了性别也不在本场改口。"""
+    sender, store, client = service
+    names = {"a": "发起者", "b": "奈宝姐姐"}
+    monkeypatch.setattr(client, "profile", lambda uid: employee_api.normalize_profile(
+        {**profile(uid, 3 if uid == "a" else 1), "display_name": names[uid]}, uid))
+    seen = []
+    monkeypatch.setattr(office, "generate",
+                        lambda people, history, direction: seen.append(people) or TEXT)
+
+    async def run():
+        await issue(service, "#潜规则 b")
+        await drain()
+        monkeypatch.setattr(office, "_platform_gender", lambda cid, uid: "男")
+        await issue(service, "#潜规则继续", "m2")
+        await drain()
+    asyncio.run(run())
+
+    assert seen[0][1]["gender"] == "女"          # 首段：按名字
+    assert seen[1][1]["gender"] == "女"          # 续写：沿用快照，不被平台新值改掉
