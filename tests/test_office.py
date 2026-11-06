@@ -1120,7 +1120,7 @@ def test_paid_losing_roll_charges_but_no_split(service, monkeypatch):
     asyncio.run(run())
     assert "已扣 5 币" in sender.sent[0][0]
     head = stories(sender)[0][0]
-    assert "判定失败" in head and "今日发起次数已使用" in head
+    assert "判定失败" in head and "钱不退" in head
     wallet = office._test_wallet
     assert wallet.balances.get("a") == 999 - 5
     assert wallet.balances.get("b") in (None, 999)

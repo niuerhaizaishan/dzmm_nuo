@@ -270,7 +270,7 @@ def _win_head(pid, profiles, bill, split):
 
 
 def _lose_head(bill):
-    return ("本次支付{}币，成功率{}，判定失败；目标未获得分账，今日发起次数已使用。").format(
+    return ("本次支付{}币，成功率{}，判定失败；目标未获得分账，钱不退，本场结束。").format(
         bill["fee"], rules.format_probability(bill["probability"]))
 
 
