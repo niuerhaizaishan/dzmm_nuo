@@ -118,6 +118,36 @@ def _image_data_url(data):
     return "data:image/jpeg;base64," + base64.b64encode(stream.getvalue()).decode("ascii")
 
 
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+
+
+async def _post(session, url, payload, headers, timeout, *, attempts=2):
+    """POST 一次，403 时换同一份请求重试一次（网关抖动居多），返回 (status, body_bytes)。"""
+    status, body = 0, b""
+    for attempt in range(attempts):
+        async with session.post(
+                url, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout, connect=15),
+                allow_redirects=False) as response:
+            status = response.status
+            reader = getattr(response, "content", None)
+            if reader is None:                       # 测试替身可能没有 body
+                body = b""
+            elif hasattr(reader, "read"):
+                body = await reader.read(65537)
+            else:                                    # 只有 iter_chunked 的替身
+                chunks = [chunk async for chunk in reader.iter_chunked(8192)]
+                body = b"".join(chunks)[:65537]
+        if status != 403:
+            return status, body
+        log("prompt_optimizer: gateway_403 attempt={} body={}".format(
+            attempt + 1, body[:80].decode("utf-8", "replace")))
+        if attempt + 1 < attempts:
+            await asyncio.sleep(1.5)
+    return status, body
+
+
 async def generate(prompt, *, source=None, session=None, timeout=120):
     prompt = (prompt or "").strip()
     if not prompt:
@@ -136,33 +166,37 @@ async def generate(prompt, *, source=None, session=None, timeout=120):
         {"role": "system", "content": SYSTEM_PROMPT + (VISION_GUIDANCE if source is not None else TEXT_GUIDANCE)},
         {"role": "user", "content": content},
     ], "temperature": 0.7}
-    headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
+    headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json",
+               # 这家网关（Cloudflare）按 UA 拦人：Python/aiohttp 的默认 UA 会拿到 403 / 1010，
+               # 换成浏览器 UA 才稳定。403 是"被网关拦"，不等于密钥错，下面分开报。
+               "User-Agent": BROWSER_UA, "Accept": "application/json"}
     own_session = session is None
     if own_session:
         session = aiohttp.ClientSession()
     started = time.monotonic()
     try:
         try:
-            async with session.post(base + "/chat/completions", json=payload,
-                                    headers=headers, timeout=aiohttp.ClientTimeout(total=timeout, connect=15),
-                                    allow_redirects=False) as response:
-                if response.status in (401, 403):
-                    raise PromptOptimizeError("提示词服务认证失败，请联系管理员。")
-                if response.status == 429:
-                    raise PromptOptimizeError("提示词服务当前繁忙，请稍后再试。")
-                if response.status == 400 and source is not None:
-                    raise PromptOptimizeError("提示词服务暂未接受本次图文请求，请调整原图或要求后再试。")
-                if response.status != 200:
-                    raise PromptOptimizeError("提示词服务暂时不可用，请稍后再试。")
-                raw = bytearray()
-                async for chunk in response.content.iter_chunked(8192):
-                    raw.extend(chunk)
-                    if len(raw) > 65536:
-                        raise PromptOptimizeError("提示词服务返回内容过长，请稍后再试。")
-                result = _extract_content(json.loads(raw))
-                log("prompt_optimizer: request_ok vision=" + str(source is not None)
-                    + " seconds=" + str(round(time.monotonic() - started, 1)))
-                return result
+            status, raw = await _post(session, base + "/chat/completions", payload, headers, timeout)
+            if status == 401:
+                log("prompt_optimizer: http_401 密钥无效")
+                raise PromptOptimizeError("提示词服务密钥无效，请联系管理员（401）。")
+            if status == 403:
+                raise PromptOptimizeError("提示词服务被网关拦截了，稍后再试（403）。")
+            if status == 429:
+                raise PromptOptimizeError("提示词服务当前繁忙，请稍后再试。")
+            if status == 400 and source is not None:
+                raise PromptOptimizeError("提示词服务暂未接受本次图文请求，请调整原图或要求后再试。")
+            if status != 200:
+                log("prompt_optimizer: http_{} body={}".format(
+                    status, raw[:120].decode("utf-8", "replace")))
+                raise PromptOptimizeError(
+                    "提示词服务暂时不可用（{}），请稍后再试。".format(status))
+            if len(raw) > 65536:
+                raise PromptOptimizeError("提示词服务返回内容过长，请稍后再试。")
+            result = _extract_content(json.loads(raw))
+            log("prompt_optimizer: request_ok vision=" + str(source is not None)
+                + " seconds=" + str(round(time.monotonic() - started, 1)))
+            return result
         except PromptOptimizeError:
             raise
         except asyncio.TimeoutError:
