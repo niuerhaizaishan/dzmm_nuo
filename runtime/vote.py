@@ -9,13 +9,16 @@ from datetime import datetime, timedelta
 
 from brains import generate_vote_options
 from dzmm import get_messages_all
+from runtime import features
 from runtime.tuning import get as _tune   # P12-B：可调参数（唯一读口）
 from runtime.group_state import _get_vote_state, _set_vote_state
 from runtime.heat import HEAT_VOTE_STARTER, HEAT_VOTE_VOTER, _add_heat
 from runtime.identity import get_name, is_self
 from runtime.members import _extract_mentioned_members
 from runtime.obs import log
-from runtime.text import _dedupe_options, _extract_deadline_seconds, _is_stop_word, _normalize_choice
+from runtime.office_store import TEA_CID
+from runtime.text import (_dedupe_options, _extract_deadline_seconds, _is_stop_word,
+                          _normalize_choice, _normalize_command_prefix)
 import state_store
 
 
@@ -47,6 +50,44 @@ def is_vote_choice_cmd(cmd: str):
     return _normalize_choice(c)
 
 
+def tea_command(cid: str, text: str) -> tuple[str, str] | None:
+    if cid != TEA_CID:
+        return None
+    cmd = _normalize_command_prefix(text)
+    if not cmd.startswith("#"):
+        return None
+    if cmd == "#投票结束":
+        return "end", ""
+    head, *rest = cmd.split(maxsplit=1)
+    if head == "#投票":
+        return "start", rest[0] if rest else ""
+    if cmd.startswith("#选"):
+        choice = _normalize_choice(cmd[2:])
+    elif len(cmd) == 2 and cmd[1] in "123456789" and _get_vote_state(cid).get("active"):
+        choice = cmd[1:]
+    else:
+        return None
+    return ("choice", choice) if choice else None
+
+
+def tea_reply(cid: str, uid: str, request: tuple[str, str]) -> str | None:
+    action, payload = request
+    vote = _get_vote_state(cid)
+    if action == "start":
+        if vote.get("active"):
+            return "已经有进行中的投票啦～可以发 #投票结束 提前结算。"
+        return start_vote(cid, "#投票 " + payload, uid)
+    if not vote.get("active"):
+        return "当前没有进行中的投票。"
+    if action == "end" or vote.get("deadline", 0) <= time.time():
+        return _finish_vote(cid)
+    count = len(vote.get("options") or [])
+    if not 1 <= int(payload) <= count:
+        return f"请发送 #选 1 到 #选 {count} 之间的选项编号。"
+    _record_vote(cid, uid, payload)
+    return None
+
+
 def _extract_vote_title(text: str, mentioned: list) -> str:
     """去掉点名成员后的剩余文本作为标题（简单清理）."""
     title = text
@@ -72,15 +113,17 @@ def _vote_members_text(cid: str) -> str:
 
 def start_vote(cid: str, cmd: str, sender_uid: str) -> str:
     """发起投票：解析三种方式，返回投票消息."""
-    rest = cmd[len("/投票"):].strip() if cmd.startswith("/投票") else cmd
+    prefix = "#" if cid == TEA_CID else "/"
+    start = prefix + "投票"
+    rest = cmd[len("/投票"):].strip() if cmd.startswith(("/投票", start)) else cmd
     if not rest:
-        return "格式：/投票 主题 | 选项1 | 选项2（或 /投票 主题 让我生成选项，可加 5分钟 定时）"
+        return f"格式：{start} 主题 | 选项1 | 选项2（或 {start} 主题 让我生成选项，可加 5分钟 定时）"
     rest, deadline_secs = _extract_deadline_seconds(rest)
     title = rest
     options = []
     if "|" in rest:
         parts = [p.strip() for p in rest.split("|") if p.strip()]
-        title = parts[0]
+        title = parts[0] if parts else ""
         options = parts[1:]
     else:
         mentioned = _extract_mentioned_members(rest, cid)
@@ -93,10 +136,10 @@ def start_vote(cid: str, cmd: str, sender_uid: str) -> str:
             except Exception:
                 options = []
             if len(options) < 2:
-                return "没想好选项呢，你自己列一下吧：/投票 主题 | 选项1 | 选项2"
+                return f"没想好选项呢，你自己列一下吧：{start} 主题 | 选项1 | 选项2"
     options = _dedupe_options(options)[:6]
     if len(options) < 2:
-        return "选项太少啦，至少 2 个哦～格式 /投票 主题 | 选项1 | 选项2"
+        return f"选项太少啦，至少 2 个哦～格式 {start} 主题 | 选项1 | 选项2"
     _set_vote_state(cid, {
         "active": True,
         "title": title,
@@ -110,7 +153,11 @@ def start_vote(cid: str, cmd: str, sender_uid: str) -> str:
     lines = ["📊 投票：" + title]
     for i, opt in enumerate(options, 1):
         lines.append("【" + str(i) + "】" + opt)
-    if deadline_secs:
+    if cid == TEA_CID:
+        seconds = deadline_secs or _tune("vote.default_seconds", cid)
+        duration = f"{seconds // 60}分钟" if seconds % 60 == 0 else f"{seconds}秒"
+        footer = f"（发 #选 X 或 #X 投票，可改票，{duration}倒计时，#投票结束 可提前结算～）"
+    elif deadline_secs:
         if deadline_secs >= 60:
             footer = "（发 /选 X 或 /X 投票（X=序号），可改票，" + str(deadline_secs // 60) + "分钟倒计时～）"
         else:
@@ -159,7 +206,11 @@ def _finish_vote(cid: str) -> str:
         if uid and not is_self(uid) and uid != starter:
             _add_heat(cid, uid, _tune("heat.vote_voter", cid))
     _set_vote_state(cid, {})
-    lines.append("🎉 结算：发起人 +8，投票的人各 +5")
+    if cid != TEA_CID:
+        lines.append("🎉 结算：发起人 +8，投票的人各 +5")
+    elif features.on(cid, "heat"):
+        lines.append(f"🎉 结算：发起人 +{_tune('heat.vote_starter', cid)}，"
+                     f"其他投票人各 +{_tune('heat.vote_voter', cid)}")
     return "\n".join(lines)
 
 
@@ -175,5 +226,6 @@ def _check_vote(cid: str) -> str:
     if now - vote.get("last_remind", 0) >= 30:
         vote["last_remind"] = now
         _set_vote_state(cid, vote)
-        return "⏰ 还有 " + str(int(remaining)) + " 秒，想投的快 /选 X 或 /X 哦～"
+        prefix = "#" if cid == TEA_CID else "/"
+        return f"⏰ 还有 {int(remaining)} 秒，想投的快 {prefix}选 X 或 {prefix}X 哦～"
     return ""

@@ -5,12 +5,14 @@
 注：`start_vote()` 会调 LLM 生成选项，不在本测试范围（需要 mock）；
 这里覆盖**存取 + 记录 + 结算**三段纯状态逻辑。
 """
+import asyncio
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import bot  # noqa: E402
+from runtime import dispatch, vote
 
 
 def test_vote_state_roundtrip(state):
@@ -72,3 +74,55 @@ def test_finish_vote_excludes_bot_account(state):
     })
     bot._finish_vote("c1")
     assert (state.get("c1") or {}).get("heat_value") in (None, {})
+
+
+def test_tea_vote_from_topic_through_dispatch_and_end(state, monkeypatch):
+    cid = vote.TEA_CID
+    sent = []
+    monkeypatch.setattr(dispatch, "_feat_on", lambda group, key: group == cid and key == "vote")
+    monkeypatch.setattr(vote, "_vote_members_text", lambda *a: "")
+    monkeypatch.setattr(vote, "_extract_mentioned_members", lambda *a: [])
+    monkeypatch.setattr(vote, "generate_vote_options", lambda title, members: ["火锅", "烧烤"])
+    monkeypatch.setattr(vote, "get_name", lambda uid: uid)
+    bot._set_vote_state("c1", {"active": True, "votes": {"u-other": "1"}})
+
+    class Sender:
+        async def send(self, text, group):
+            assert group == cid
+            sent.append(text)
+            return True
+
+    async def issue(text, uid):
+        msg = {"message_id": text, "content": {"text": text}}
+        await dispatch.handle_slash(Sender(), cid, text, uid, False, {}, [msg], msg, {},
+            _save_group=lambda *a: None, _mark_inflight=lambda *a: None,
+            _remember_turn=lambda *a: None, rank_summary=lambda: "", sync_profiles=lambda: "")
+
+    async def run():
+        await issue("＃投票 晚上吃什么", "u-starter")
+        await issue("#选 1", "u-a")
+        await issue("#2", "u-a")
+        await issue("#选 9", "u-b")
+        await issue("#投票结束", "u-starter")
+        await issue("#投票结束", "u-starter")
+
+    asyncio.run(run())
+    assert len(sent) == 4
+    assert "#选 X 或 #X" in sent[0] and "【2】烧烤" in sent[0]
+    assert "之间的选项编号" in sent[1]
+    assert "火锅　0票" in sent[2] and "烧烤　1票(100%)　u-a" in sent[2]
+    assert "没有进行中的投票" in sent[3]
+    assert bot._get_vote_state(cid) == {}
+    assert bot._get_vote_state("c1")["votes"] == {"u-other": "1"}
+
+
+def test_tea_vote_timer_reminds_with_hash_then_finishes(state, monkeypatch):
+    cid = vote.TEA_CID
+    monkeypatch.setattr(vote.time, "time", lambda: 100)
+    intro = vote.start_vote(cid, "#投票 晚饭 | 火锅 | 烧烤", "u-starter")
+    assert "2分钟倒计时" in intro
+    monkeypatch.setattr(vote.time, "time", lambda: 131)
+    assert "#选 X 或 #X" in vote._check_vote(cid)
+    monkeypatch.setattr(vote.time, "time", lambda: 220)
+    assert "投票结果" in vote._check_vote(cid)
+    assert bot._get_vote_state(cid) == {}
