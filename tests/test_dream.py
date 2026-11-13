@@ -331,6 +331,8 @@ def _scan(cid, texts):
     env = {"B": bridge, "_dream": dream, "_rose_moderation": mainloop._rose_moderation,
            "_tavern": mainloop._tavern,
            "_gallery": mainloop._gallery, "_office": mainloop._office,
+           "_game_cards": mainloop._game_cards,
+           "_vote": mainloop._vote,
            "_imagegen": mainloop._imagegen,
            "_videogen": mainloop._videogen,
            "_prompt_optimizer": mainloop._prompt_optimizer,

@@ -411,11 +411,14 @@ def p(key: str, cid: str = None, **kw) -> str:
     s = phrases_for(persona_key_for(cid)).get(key)
     if s is None:
         s = PHRASES["nuo"].get(key) or ""
-    if key == "query_working" and s and persona_key_for(cid) == "lambda":
+    if key in ("query_working", "slash_space", "reg_exists", "reg_self_only") and s and persona_key_for(cid) == "lambda":
         from .lambda_persona import RUIWEN_CID
         actual_cid = cid if cid is not None else current_cid()
         if actual_cid == RUIWEN_CID:
-            s += "乖乖！准备好接受我的大调查了吗？"
+            if key == "query_working":
+                s += "乖乖！准备好接受我的大调查了吗？"
+            else:
+                s = s.replace("斜杠后", "# 后").replace("/查", "#查").replace("/注册", "#注册")
     return fill(s, cid, **kw)
 
 

@@ -64,6 +64,8 @@ from runtime import personal_letter as _personal_letter
 from runtime import rose_moderation as _rose_moderation
 from runtime import tavern as _tavern
 from runtime import gallery as _gallery
+from runtime import game_cards as _game_cards
+from runtime import vote as _vote
 from runtime import imagegen as _imagegen
 from runtime import videogen as _videogen
 from runtime import prompt_optimizer as _prompt_optimizer
@@ -828,6 +830,10 @@ def _gate_fasao(cid: str, cmd: str) -> bool:
 #   所以"骰子关着"不是它没人接的原因 —— 不能据此静默。
 
 
+def _is_dj_command_match(cmd):
+    return is_dj_command_cmd(cmd) is not None
+
+
 _CMD_FEATURE_ORDER = (
     (("dice",), lambda c: c in ("/吹牛骰子", "/加入", "/牌局", "/看骰", "/开始",
                                 "/下一轮", "/开", "/退出", "/结束")
@@ -842,7 +848,7 @@ _CMD_FEATURE_ORDER = (
     (("diaojiao",), is_dj_end_cmd, None),
     (("help",), lambda c: c.startswith("/ "), None),
     (("prompt_optimize",), _prompt_optimizer.is_command, None),
-    (("diaojiao",), lambda c: is_dj_command_cmd(c) is not None, None),
+    (("diaojiao",), _is_dj_command_match, None),
     (("diaojiao",), lambda c: is_diaojiao_cmd(c) is not None, None),
     (("scene_continue", "insult"), is_continue_cmd, None),
     (("scene_rewrite",), lambda c: is_rewrite_cmd(c) is not None, None),
@@ -893,6 +899,45 @@ def _cmd_owned_by_disabled(cid: str, cmd: str) -> bool:
     return False
 
 
+def ruiwen_hash_command(cid: str, text: str) -> str:
+    """只将瑞雯酒馆已识别的 # 指令送入原分派；保留原消息供引用和审计。"""
+    if cid != _tavern.RUIWEN_CID or not text.startswith(("#", "＃")):
+        return ""
+    cmd = "/" + text[1:]
+    tavern = _tavern.is_tavern_cmd(cmd)
+    if tavern is not None:
+        return cmd if _feat_on(cid, _tavern._FEATURES[tavern[0]]) else ""
+    if not _feat_on(cid, "slash_cmds"):
+        return ""
+    if (_haptics_bot.command(cmd) is not None
+            or (_gallery.in_scope(cid) and _gallery.command(cmd) is not None)
+            or (_prompt_optimizer.is_command(cmd) and _prompt_optimizer.enabled(cid))
+            or (_imagegen.in_scope(cid) and _imagegen.command_payload(cmd) is not None)
+            or (_videogen.in_scope(cid) and _videogen.command_payload(cmd) is not None)):
+        return cmd
+    for keys, pred, gate in _CMD_FEATURE_ORDER:
+        # 调教分支能匹配任意斜杠正文；只在场景进行中放行这种短写。
+        if not any(_feat_on(cid, key) for key in keys):
+            continue
+        if pred is _is_dj_command_match:
+            if not cmd.startswith("/命令") and not _get_dj_state(cid).get("active"):
+                continue
+        if pred(cmd) and (gate is None or gate(cid, cmd)):
+            return cmd
+    return ""
+
+
+def _ruiwen_help(cid: str, text: str) -> str:
+    text = re.sub(r"(?<![\w:/])/(?=[\w])", "#", text)
+    if _feat_on(cid, "tavern_magic"):
+        text += "\n回复发言：#除你衣物、#荧光闪烁、#塔朗泰拉舞"
+    if _feat_on(cid, "tavern_mute"):
+        text += "\n管理员：#小嘴巴闭起来 时长、#恢复如初 全名"
+    if _feat_on(cid, "rose_moderation"):
+        text += "\n管理员：#阿瓦达啃大瓜 全名（仅踢出），回复提示 #确认 或 #取消"
+    return text
+
+
 # ---------------------------------------------------------------- 分派链本体
 
 async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
@@ -919,6 +964,26 @@ async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
     state[cid] = group_state
     _save_group(cid, group_state)
     _mark_inflight(cid, (_cmd_msg or msgs[-1]).get("message_id"))   # P12-BC：被硬杀也能补
+
+    vote_request = _vote.tea_command(cid, cmd)
+    if vote_request is not None:
+        if not dry and _feat_on(cid, "vote"):
+            vote_reply = await asyncio.to_thread(_vote.tea_reply, cid, cmd_sender, vote_request)
+            if vote_reply:
+                await sender.send("🤖 " + vote_reply, cid)
+        return
+
+    resource_id = _game_cards.card_id(cid, cmd)
+    if resource_id is not None:
+        if not dry:
+            try:
+                message_id = await sender.send_character_with_id(resource_id, cid)
+                if not message_id:
+                    log(f"游戏分享卡未确认 [{cid[:8]}] {resource_id}")
+            except Exception as error:
+                # 发送结果可能不明，避免回滚消息游标后重复发送。
+                log(f"游戏分享卡未确认 [{cid[:8]}] {resource_id}: {type(error).__name__}")
+        return
 
     if _office.command(cmd) is not None:
         await _office.handle(sender, cid, cmd_sender, cmd, _cmd_msg or msgs[-1], dry=dry)
@@ -1170,7 +1235,7 @@ async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
         if _imagegen.enabled(cid):
             reply += "\n/生图 提示词 - 生成一张图片；回复图片发送此指令可修改原图"
         if _videogen.enabled(cid):
-            reply += "\n/生视频 提示词 - 生成短视频；回复图片发送此指令可让图片动起来"
+            reply += "\n/生视频 [时长] 提示词 - 默认6秒、最长2分钟；如 /生视频 30秒 动作，回复图片可让原图动起来；超过15秒分段计费后合成"
         if _prompt_optimizer.enabled(cid):
             reply += "\n/提示词 视频 想法 - 整理 Grok 视频提示词；回复图片时结合原图设计动作与运镜"
         if _dream.enabled(cid):
@@ -1185,6 +1250,8 @@ async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
             reply += "\n/我的画像 - 从多个维度看看自己（也可 @ 小小糯 我的画像）"
         if _personal_letter.enabled(cid):
             reply += "\n/致 某某 - 给群里某个人写一封信（也可 @ 小小糯 给某某写封信）"
+        if cid == _tavern.RUIWEN_CID:
+            reply = _ruiwen_help(cid, reply)
     elif _dream.command_payload(cmd) is not None:
         reply = await _dream.dream_reply(cid, cmd_sender, cmd) if _feat_on(cid, "dream") else None
     elif _personal_story.command_payload(cmd) is not None:
@@ -1259,7 +1326,8 @@ async def handle_slash(sender, cid, cmd, cmd_sender, dry, group_state, msgs,
                 reply = p("not_found", cid)
             else:
                 reply = await asyncio.to_thread(generate_profile_summary, text)
-                reply += "\n（这个人还没注册哦，发 /注册 可以建立档案～）"
+                register_cmd = "#注册" if cid == _tavern.RUIWEN_CID else "/注册"
+                reply += f"\n（这个人还没注册哦，发 {register_cmd} 可以建立档案～）"
     elif is_trend_board_cmd(cmd) and _feat_on(cid, "trend"):
         # 群运势榜（必须在 is_rank_cmd 之前，否则"运势排行"被骚度榜的"排行"吃掉）
         reply = await week_trend_board(cid)

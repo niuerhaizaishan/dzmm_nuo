@@ -29,6 +29,7 @@ from runtime import chat_archive as _chat_archive
 from runtime import rose_moderation as _rose_moderation
 from runtime import tavern as _tavern
 from runtime import gallery as _gallery
+from runtime import game_cards as _game_cards
 from runtime import imagegen as _imagegen
 from runtime import videogen as _videogen
 from runtime import prompt_optimizer as _prompt_optimizer
@@ -36,6 +37,7 @@ from runtime.haptics import bot_commands as _haptics_bot
 from runtime.haptics import raid as _haptics_raid
 from runtime.perf import OWNER_UID as _OWNER_UID
 from runtime import office as _office
+from runtime import vote as _vote
 
 
 __all__ = ["run_main_loop", "run_all"]
@@ -477,6 +479,10 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                                 _t = ((_m.get("content") or {}).get("text") or "").strip()
                                 if _t.startswith("＃") or _t.startswith("／"):
                                     _t = ("#" if _t[0] == "＃" else "/") + _t[1:]
+                                if cid == _tavern.RUIWEN_CID:
+                                    if not _t.startswith("#"):
+                                        continue
+                                    _t = "/" + _t[1:]
                                 _uid = _m.get("sent_by", "")
                                 # 诊断：静默群里像指令的消息留一行，方便对账
                                 if (_t.startswith("/") or _t.startswith("#")
@@ -538,7 +544,9 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                     for m in pending:
                         uid = m.get("sent_by", "")
                         text = (m.get("content") or {}).get("text", "").strip()
-                        if uid and not B.is_self(uid) and text and "加入了群聊" not in text and not text.startswith("/"):
+                        if (uid and not B.is_self(uid) and text and "加入了群聊" not in text
+                                and not text.startswith("/")
+                                and not (cid == _tavern.RUIWEN_CID and text.startswith(("#", "＃", "／")))):
                             if last_speak.get(uid):  # 先把「现在这条之前」的发言时间存下来
                                 prev_speak[uid] = last_speak[uid]
                             counts[uid] = counts.get(uid, 0) + 1
@@ -595,6 +603,21 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                         t = (m.get("content") or {}).get("text", "").strip()
                         if t.startswith("＃") or t.startswith("／"):
                             t = ("#" if t[0] == "＃" else "/") + t[1:]
+                        if cid == _tavern.RUIWEN_CID and t.startswith("/"):
+                            continue  # 瑞雯的旧斜杠入口一律停用，包括引用和管理员指令。
+                        if _game_cards.card_id(cid, t) is not None:
+                            if not cmd:
+                                cmd, cmd_sender, _cmd_msg = t, m.get("sent_by", ""), m
+                            else:
+                                _leftover.append(m)
+                            continue
+                        if _vote.tea_command(cid, t) is not None:
+                            if B._feat_on(cid, "vote"):
+                                if not cmd:
+                                    cmd, cmd_sender, _cmd_msg = t, m.get("sent_by", ""), m
+                                else:
+                                    _leftover.append(m)
+                            continue
                         # 茶水间专用 # 指令白名单绕过 at_only；其他指令仍按原闸门处理。
                         if cid == _office.TEA_CID and _office.command(t) is not None:
                             if _office.enabled(cid):
@@ -694,6 +717,14 @@ async def run_main_loop(interval: float, dry: bool, once: bool, *,
                             else:
                                 _leftover.append(m)
                             continue
+                        if cid == _tavern.RUIWEN_CID and t.startswith("#"):
+                            canonical = B._dispatch.ruiwen_hash_command(cid, t)
+                            if canonical:
+                                if not cmd:
+                                    cmd, cmd_sender, _cmd_msg = canonical, m.get("sent_by", ""), m
+                                else:
+                                    _leftover.append(m)
+                            continue  # 未识别的 # 不落进闲聊或其他玩法。
                         # P12-AL：`at_only` 的群里，**只有 @ 到她的消息**才继续往下走
                         # （指令、房间触发、定时播报一并免掉）。顶层茶水间（779 人、
                         # 里面有别家 bot 的游戏）要的就是这个保证。

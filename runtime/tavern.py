@@ -16,6 +16,7 @@
 import asyncio
 
 from dzmm import set_member_silence
+from personas.lambda_persona import RUIWEN_CID
 from runtime import features
 from runtime.members import _find_uid_by_name
 from runtime.identity import _load_member_names, get_full_name

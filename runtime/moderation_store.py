@@ -37,6 +37,9 @@ class Store:
                     PRIMARY KEY(cid, message_id)
                 );
             """)
+            connection.execute("BEGIN IMMEDIATE")
+            if "action" not in {row["name"] for row in connection.execute("PRAGMA table_info(tasks)")}:
+                connection.execute("ALTER TABLE tasks ADD COLUMN action TEXT NOT NULL DEFAULT 'recall_kick'")
         os.chmod(self.path, 0o600)
 
     @contextmanager
@@ -74,6 +77,23 @@ class Store:
         task = self.read("SELECT * FROM tasks WHERE cid=? AND message_id=? AND status != 'cancelled'",
                          (cid, message["message_id"]))[0]
         return task, created
+
+    def create_kick(self, cid, command_id, uid, name, actor):
+        """按 UID 保存仅踢人任务；不把命令或虚构消息当成撤回目标。"""
+        now = time.time()
+        task_id = uuid4().hex
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM tasks WHERE cid=? AND uid=? AND action='kick' "
+                "AND status IN ('prepared','pending','executing')", (cid, uid)).fetchone()
+            if existing:
+                return dict(existing), False
+            connection.execute(
+                "INSERT INTO tasks (id,cid,message_id,uid,name,excerpt,sent_at,created,actor,status,updated,action) "
+                "VALUES (?,?,?,?,?,?,'',?,?,'prepared',?,'kick')",
+                (task_id, cid, 'kick:' + command_id, uid, name, '按全名点名，仅踢出', now, actor, now))
+            return dict(connection.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()), True
 
     def bind(self, kind, item_id, prompt_id, extra_ids=()):
         table = "tasks" if kind == "task" else "batches"

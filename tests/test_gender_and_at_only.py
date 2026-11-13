@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT))
 import brains                                                  # noqa: E402
 import pytest                                                  # noqa: E402
 from runtime import features as F                              # noqa: E402
-from runtime import features, mainloop, tuning                 # noqa: E402
+from runtime import dispatch, features, mainloop, tuning       # noqa: E402
 
 PROMPT = ROOT / "prompts" / "CMD_PROMPT.md"
 
@@ -119,12 +119,15 @@ def _scan(cid, texts):
         is_fortune_cmd=lambda t: False, is_at_me=lambda text, c: text.startswith("@小小糯"),
         _quote_reply_on=lambda c: False, _quotes_self=lambda message: False,
         _is_other_bot_noise=lambda c, text: False,
-        _chat_cooling=lambda c, uid: 0, _is_room_trigger=lambda *a: False)
+        _chat_cooling=lambda c, uid: 0, _is_room_trigger=lambda *a: False,
+        _dispatch=dispatch)
     env = {"B": bridge,
            "_dream": SimpleNamespace(is_hash_request=lambda c, t: False),
            "_rose_moderation": mainloop._rose_moderation,
            "_tavern": mainloop._tavern,
            "_gallery": mainloop._gallery, "_office": mainloop._office,
+           "_game_cards": mainloop._game_cards,
+           "_vote": mainloop._vote,
            "_imagegen": mainloop._imagegen,
            "_videogen": mainloop._videogen,
            "_prompt_optimizer": mainloop._prompt_optimizer,
@@ -183,8 +186,8 @@ def test_tavern_cmd_passes_at_only_gate_when_enabled():
     features.set_overrides({cid + "|at_only": True, cid + "|slash_cmds": False,
                             cid + "|tavern_magic": True, cid + "|tavern_mute": True})
     try:
-        assert _scan(cid, ["/除你衣物 张三"])["cmd"] == "/除你衣物 张三"
-        assert _scan(cid, ["/小嘴巴闭起来 10分钟"])["cmd"] == "/小嘴巴闭起来 10分钟"
+        assert _scan(cid, ["#除你衣物 张三"])["cmd"] == "/除你衣物 张三"
+        assert _scan(cid, ["#小嘴巴闭起来 10分钟"])["cmd"] == "/小嘴巴闭起来 10分钟"
     finally:
         features.set_overrides({})
 
@@ -194,9 +197,28 @@ def test_tavern_cmd_swallowed_when_feature_off():
     cid = "13a7287a-2ec6-419e-9646-7f30a5154e6c"
     features.set_overrides({cid + "|at_only": True, cid + "|slash_cmds": False})
     try:
-        assert not _scan(cid, ["/除你衣物 张三"])["cmd"]
+        assert not _scan(cid, ["#除你衣物 张三"])["cmd"]
     finally:
         features.set_overrides({})
+
+
+def test_ruiwen_hash_migration_covers_general_tavern_and_management_commands():
+    cid = mainloop._tavern.RUIWEN_CID
+    flags = {"at_only": True, "slash_cmds": True, "query": True, "register": True,
+             "tavern_magic": True, "tavern_mute": True, "rose_moderation": True}
+    old = features.overrides()
+    features.set_overrides({cid + "|" + key: value for key, value in flags.items()})
+    try:
+        for text in ("查 张三", "注册", "荧光闪烁", "小嘴巴闭起来 10分钟", "恢复如初 张三"):
+            assert _scan(cid, ["#" + text])["cmd"] == "/" + text
+            assert not _scan(cid, ["/" + text])["cmd"]
+        for text in ("阿瓦达啃大瓜 张三", "确认", "取消"):
+            assert _scan(cid, ["＃" + text])["cmd"] == "#" + text
+            assert not _scan(cid, ["/" + text])["cmd"]
+        assert not _scan(cid, ["#随手写个话题"])["cmd"]
+        assert not _scan(cid, ["／查 张三 @小小糯"])["at_msg"]
+    finally:
+        features.set_overrides(old)
 
 
 def test_roster_whitelist_kept_in_sync_with_dispatch_matchers():
@@ -205,6 +227,41 @@ def test_roster_whitelist_kept_in_sync_with_dispatch_matchers():
     seg = src[src.index("P12-CA"):src.index("P12-CA") + 700]
     for prefix in ("/查", "/whois", "/资料", "/注册", "/register"):
         assert prefix in seg, prefix
+
+
+def test_game_cards_only_enter_command_queue_in_tea_room():
+    tea = mainloop._game_cards.TEA_CID
+    other = _ROSTER_CID
+    saved = features.overrides()
+    features.set_overrides({f"{cid}|{feature}": value for cid in (tea, other)
+                            for feature, value in (("at_only", True), ("slash_cmds", False))})
+    try:
+        selected = _scan(tea, ["＃uNo", "#摸鱼传说", "#魔塔"])
+        assert selected["cmd"] == "#uNo"
+        assert [m["content"]["text"] for m in selected["_leftover"]] == ["#摸鱼传说", "#魔塔"]
+        assert not _scan(other, ["#UNO", "#摸鱼传说", "#魔塔"])["cmd"]
+        assert not _scan(tea, ["#UNO 开局", "#魔塔攻略", "/摸鱼传说"])["cmd"]
+    finally:
+        features.set_overrides(saved)
+
+
+def test_tea_vote_hash_commands_pass_mention_gate_only_when_enabled(state):
+    cid = mainloop._vote.TEA_CID
+    saved = features.overrides()
+    gates = {cid + "|at_only": True, cid + "|slash_cmds": False,
+             _ROSTER_CID + "|at_only": True, _ROSTER_CID + "|slash_cmds": False}
+    try:
+        features.set_overrides({**gates, cid + "|vote": True})
+        for text in ("＃投票 晚饭", "#选 1", "#投票结束"):
+            assert _scan(cid, [text])["cmd"] == "#" + text[1:]
+            assert not _scan(_ROSTER_CID, [text])["cmd"]
+        assert not _scan(cid, ["#1", "#投票箱"])["cmd"]
+        mainloop._vote._set_vote_state(cid, {"active": True})
+        assert _scan(cid, ["#1"])["cmd"] == "#1"
+        features.set_overrides({**gates, cid + "|vote": False})
+        assert not _scan(cid, ["#投票 晚饭", "#选 1", "#投票结束", "#1"])["cmd"]
+    finally:
+        features.set_overrides(saved)
 
 
 @pytest.mark.parametrize("prefix", ["#", "＃"])

@@ -523,17 +523,18 @@ def test_dispatch_enters_moderation_and_preserves_cursor_protocol(setup, monkeyp
     assert len(service.store.pending(CID)) == 1
 
 
-def test_mainloop_admin_commands_bypass_owner_and_chat_gates_without_losing_batch(setup, monkeypatch, state, dbdir):
+@pytest.mark.parametrize("cid,prefix", [(CID, "/"), (moderation.RUIWEN_CID, "#")])
+def test_mainloop_admin_commands_bypass_owner_and_chat_gates_without_losing_batch(setup, monkeypatch, state, dbdir, cid, prefix):
     import bot
     import types
     from runtime import mainloop
     service, sender = setup
     monkeypatch.setattr(moderation, "_service", service)
     monkeypatch.setattr(moderation, "_feat_on", lambda *args: True)
-    service.platform.messages["target1"] = original()
+    service.platform.messages["target1"] = {**original(), "chatroom_id": cid}
     messages = [{"message_id": f"loop-{number}", "sent_by": "admin1", "content": {
         "text": text, **({"reference": {"id": "target1"}} if number == 0 else {})}}
-        for number, text in enumerate([moderation.CREATE, moderation.CONFIRM])]
+        for number, text in enumerate([prefix + moderation.CREATE[1:], prefix + moderation.CONFIRM[1:]])]
     buffer = list(messages)
     def drain(cid):
         drained = list(buffer)
@@ -564,11 +565,11 @@ def test_mainloop_admin_commands_bypass_owner_and_chat_gates_without_losing_batc
         raise AssertionError("moderation must not enter owner refusal")
     monkeypatch.setattr(bot, "_room_cmd_refused", forbidden)
     async def scenario():
-        await mainloop.run_main_loop(0, False, True, groups=[CID], sender=sender,
+        await mainloop.run_main_loop(0, False, True, groups=[cid], sender=sender,
                                      state=state, subscriber=subscriber, is_primary=False, B=bot)
-        assert len(service.store.pending(CID)) == 1
+        assert len(service.store.pending(cid)) == 1
         assert [row["message_id"] for row in buffer] == ["loop-1"]
-        await mainloop.run_main_loop(0, False, True, groups=[CID], sender=sender,
+        await mainloop.run_main_loop(0, False, True, groups=[cid], sender=sender,
                                      state=state, subscriber=subscriber, is_primary=False, B=bot)
     asyncio.run(scenario())
     assert service.platform.actions == [("recall", "target1"), ("kick", "user1")]
@@ -599,3 +600,44 @@ def test_cancelled_target_can_be_reissued_but_old_prompt_cannot_confirm_it(setup
         await send(moderation.CONFIRM, new_task["prompt_id"])
     asyncio.run(scenario())
     assert service.platform.actions == [("recall", "target1"), ("kick", "user1")]
+
+
+def test_ruiwen_named_kick_requires_confirmation_and_never_recalls(setup, monkeypatch):
+    service, sender = setup
+    cid = moderation.RUIWEN_CID
+    monkeypatch.setattr(moderation, "_feat_on", lambda *args: True)
+    async def members(room):
+        assert room == cid
+        return {"user1": {"name": "名字-user1"}, "user2": {"name": "名字-user2"}}
+    monkeypatch.setattr(service.platform, "members", members, raising=False)
+    send = commands(service, sender)
+    async def scenario():
+        await send("/阿瓦达啃大瓜 名字-user1", cid=cid)
+        await send("#阿瓦达啃大瓜 名字-user1", cid=cid)
+        pending = service.store.pending(cid)
+        assert len(pending) == 1 and pending[0]["action"] == "kick"
+        assert "#确认" in sender.sent[-1][1] and "仅踢出" in sender.sent[-1][1]
+        assert service.platform.actions == []
+        await send("/确认", pending[0]["prompt_id"], cid=cid)
+        assert service.platform.actions == []
+        await send("#确认", pending[0]["prompt_id"], cid=cid, actor="admin2", message_id="named-confirm")
+        await send("#确认", pending[0]["prompt_id"], cid=cid, actor="admin2", message_id="named-confirm")
+    asyncio.run(scenario())
+    assert service.platform.actions == [("kick", "user1")]
+    assert sender.sent[-1][1] == "Avada Kedavra！名字-user1已被踢出群聊。"
+
+
+@pytest.mark.parametrize("actor,members,expected", [
+    ("guest", {"user1": {"name": "全名 甲"}}, "只有当前群管理员"),
+    ("admin1", {"user1": {"name": "全名 甲乙"}}, "未找到全名完全一致"),
+    ("admin1", {"user1": {"name": "全名 甲"}, "user2": {"name": "全名 甲"}}, "有同名成员"),
+])
+def test_ruiwen_named_kick_rejects_unauthorized_and_nonunique_matches(setup, monkeypatch, actor, members, expected):
+    service, sender = setup
+    monkeypatch.setattr(moderation, "_feat_on", lambda *args: True)
+    async def list_members(cid):
+        return members
+    monkeypatch.setattr(service.platform, "members", list_members, raising=False)
+    asyncio.run(commands(service, sender)("#阿瓦达啃大瓜 全名 甲", actor=actor, cid=moderation.RUIWEN_CID))
+    assert expected in sender.sent[-1][1]
+    assert not service.store.pending(moderation.RUIWEN_CID) and not service.platform.actions
