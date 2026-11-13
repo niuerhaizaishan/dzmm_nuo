@@ -328,13 +328,14 @@ def test_generated_video_url_range_head_and_gallery_save(monkeypatch, tmp_path, 
 
 
 @pytest.mark.parametrize("edit", [False, True])
-def test_xai_rest_submission_poll_streamed_download_and_key_isolation(monkeypatch, movie, edit):
+@pytest.mark.parametrize("duration", [6, 15])
+def test_xai_rest_submission_poll_streamed_download_and_key_isolation(monkeypatch, movie, edit, duration):
     async def scenario():
         polls, submitted = [], []
         async def endpoint(request):
             assert request.headers["Authorization"] == "Bearer test-only"
             payload = await request.json()
-            assert payload["model"] == V.MODEL and payload["duration"] == 6
+            assert payload["model"] == V.MODEL and payload["duration"] == duration
             if edit:
                 assert "image_url" not in payload
                 assert base64.b64decode(payload["image"]["url"].split(",")[1]) == png()
@@ -368,7 +369,7 @@ def test_xai_rest_submission_poll_streamed_download_and_key_isolation(monkeypatc
         monkeypatch.setattr(V, "POLL_INTERVAL", 0)
         try:
             data = await V.XaiVideoClient("test-only").generate("cat", (png(), "image/png") if edit else None,
-                on_submitted=submitted.append)
+                duration=duration, on_submitted=submitted.append)
             assert data == movie and len(polls) == 2 and submitted == ["job-id"]
         finally:
             await server.close()

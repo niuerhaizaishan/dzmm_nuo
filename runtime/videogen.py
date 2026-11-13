@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import re
+from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -19,6 +20,8 @@ from runtime.obs import log
 from runtime.text import _normalize_command_prefix
 from runtime.transport_bot import BotApiRejected
 from runtime.tuning import get as _tune
+from runtime.video_sequence import (SequenceError, SequenceStore, segment_durations,
+                                    clip_info, compose, MAX_DURATION)
 
 MODEL = "grok-imagine-video-1.5"
 API_ROOT = "https://api.x.ai/v1"
@@ -26,7 +29,8 @@ POLL_INTERVAL = 5
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
 MAX_RESPONSE_BYTES = 65536
 COMMAND = re.compile(r"^/生视频(?=$|\s|[：:])\s*[：:]?\s*(.*)$", re.S)
-USAGE = "文生视频：/生视频 提示词\n图生视频：回复一张图片，发送 /生视频 动起来\n每次生成一个 6 秒、480p 短视频；结果回复最初的指令。"
+USAGE = ("文生视频：/生视频 15秒 提示词\n图生视频：回复图片，发送 /生视频 2分钟 动起来\n"
+         "不填时长默认6秒；支持1～120秒、480p。超过15秒分段衔接后合成，按各段累计计费；结果回复最初指令。")
 
 
 class VideogenError(ValueError):
@@ -36,6 +40,18 @@ class VideogenError(ValueError):
 def command_payload(text):
     match = COMMAND.fullmatch(_normalize_command_prefix(text))
     return match[1].strip() if match else None
+
+
+def duration_prompt(payload):
+    """Only a leading duration token changes the paid request, never prose."""
+    match = re.match(r"^([+-]?\d+(?:\.\d+)?)\s*(分钟|秒|分|sec|s|min|m)(?=\s|$)\s*(.*)$", payload, re.I | re.S)
+    if not match:
+        return 6, payload
+    amount, unit, prompt = match.groups()
+    seconds = float(amount) * (60 if unit.lower() in ("分钟", "分", "m", "min") else 1)
+    if not seconds.is_integer() or not 1 <= seconds <= MAX_DURATION:
+        raise VideogenError("视频时长需要是1～120的整数秒，最长2分钟。")
+    return int(seconds), prompt.strip()
 
 
 def in_scope(cid):
@@ -59,10 +75,12 @@ class XaiVideoClient:
     def __init__(self, key=None):
         self.key = (os.environ.get("XAI_API_KEY", "") if key is None else key).strip()
 
-    async def generate(self, prompt, source=None, *, timeout=300, on_submitted=None):
+    async def generate(self, prompt, source=None, *, duration=6, timeout=300, on_submitted=None):
         if not self.key:
             raise VideogenError("生视频服务尚未配置，请联系管理员。")
-        payload = {"model": MODEL, "prompt": prompt, "duration": 6, "resolution": "480p"}
+        if isinstance(duration, bool) or not isinstance(duration, int) or not 1 <= duration <= 15:
+            raise VideogenError("单段视频只支持1～15秒，本次未提交生成。")
+        payload = {"model": MODEL, "prompt": prompt, "duration": duration, "resolution": "480p"}
         if source is None:
             payload["aspect_ratio"] = "1:1"
         else:
@@ -137,6 +155,7 @@ class XaiVideoClient:
 class Service:
     def __init__(self, store=None, platform=None, client=None):
         self.store = store or Store()
+        self.sequences = SequenceStore(self.store.path)
         self.platform = platform or GalleryPlatform()
         self.client = client or XaiVideoClient()
         self.tasks = {}
@@ -193,6 +212,10 @@ class Service:
         name = self.display_name(uid)
         try:
             if not prompt:
+                await self.notice(sender, cid, USAGE, dry, name=name)
+                return
+            duration, visual_prompt = duration_prompt(prompt)
+            if not visual_prompt:
                 await self.notice(sender, cid, USAGE, dry, name=name)
                 return
             limit = int(_tune("videogen.input_limit", cid))
@@ -262,6 +285,47 @@ class Service:
         await self.notice(sender, cid, f"正在努力想象中~前面有 {waiting} 个视频排队，另有 {working} 个正在处理。"
                           + ("这次会把已经生成的视频发给你。" if previous else ""), name=name)
 
+    async def generate_sequence(self, sender, cid, mid, uid, prompt, source, duration):
+        from pathlib import Path
+        parts = segment_durations(duration)
+        self.sequences.begin(cid, mid, duration, prompt)
+        clips = []
+        for index, seconds in enumerate(parts):
+            if not enabled(cid):
+                raise VideogenError("视频功能已关闭，已生成片段保留，本次停止。")
+            # Check membership at every billing boundary, not just once at start.
+            await self.platform.member(uid)
+            previous = self.sequences.get(cid, mid, index)
+            if previous and previous["status"] == "ready" and previous["data"]:
+                data = previous["data"]
+            else:
+                if previous:
+                    raise VideogenError("上一段请求结果待核对，已生成片段保留，不会重复扣费。")
+                await self.notice(sender, cid,
+                    f"正在努力想象中~这次共{duration}秒，正在生成第{index + 1}/{len(parts)}段（{seconds}秒）。",
+                    name=self.display_name(uid))
+                self.sequences.claim(cid, mid, index, seconds)
+                segment_prompt = prompt
+                if index:
+                    segment_prompt += (f"\n这是同一连续场景的第{index + 1}/{len(parts)}段。"
+                        "附图为上一段末帧，请从该姿态自然接续，保持人物外貌、服装、光线、场景和镜头方向一致，"
+                        "不重新开场、不加转场或字幕，不突然重复已完成动作。")
+                def submitted(request_id):
+                    self.sequences.submitted(cid, mid, index, request_id)
+                    self.store.save_request_id(cid, mid, request_id)
+                data = await self.client.generate(segment_prompt, source, duration=seconds,
+                    timeout=max(600, int(_tune("videogen.timeout", cid))), on_submitted=submitted)
+                # Save before validation/composition so a later local failure never
+                # loses a successfully paid clip or authorizes another POST.
+                self.sequences.save(cid, mid, index, data)
+            await asyncio.to_thread(clip_info, data, expected=seconds)
+            clips.append((data, seconds))
+            if index < len(parts) - 1:
+                source = await asyncio.to_thread(clip_info, data, expected=seconds, last_frame=True)
+        await self.notice(sender, cid, "各段已经想象好啦！正在把画面合成一个完整视频~", name=self.display_name(uid))
+        with TemporaryDirectory(prefix="nuo-video-", dir=str(self.store.path.parent)) as tmp:
+            return await asyncio.to_thread(compose, clips, Path(tmp)/"result.mp4", duration)
+
     async def run(self, sender, cid, mid, uid, prompt, message, previous):
         announcement = None
         try:
@@ -289,8 +353,13 @@ class Service:
                         return
                     self.store.mode(cid, mid, "video_edit" if source else "video_generate")
                     self.store.status(cid, mid, "generating")
-                    data = await self.client.generate(prompt, source, timeout=int(_tune("videogen.timeout", cid)),
-                        on_submitted=lambda request_id: self.store.save_request_id(cid, mid, request_id))
+                    duration, visual_prompt = duration_prompt(prompt)
+                    if duration > 15:
+                        data = await self.generate_sequence(sender, cid, mid, uid, visual_prompt, source, duration)
+                    else:
+                        data = await self.client.generate(visual_prompt, source, duration=duration,
+                            timeout=int(_tune("videogen.timeout", cid)),
+                            on_submitted=lambda request_id: self.store.save_request_id(cid, mid, request_id))
                     _, _, mime, _ = await asyncio.to_thread(inspect_media, data, "result.mp4", "video/mp4")
                     if mime != "video/mp4":
                         raise VideogenError("生成结果不是有效 MP4，本次未发送。")
@@ -309,11 +378,13 @@ class Service:
             if row and row["status"] in ("queued", "generating", "sending"):
                 self.store.status(cid, mid, "delivery_unknown" if row["status"] == "sending" else "interrupted")
             raise
-        except (VideogenError, GalleryError, GalleryUnavailable, ModerationUnavailable) as exc:
+        except (VideogenError, SequenceError, GalleryError, GalleryUnavailable, ModerationUnavailable) as exc:
             row = self.store.get(cid, mid)
             if row and row["status"] not in ("ready", "send_failed", "delivery_unknown"):
                 self.store.status(cid, mid, "failed")
-            await self.notice(sender, cid, "不过，" + str(exc), name=self.display_name(uid))
+            checkpoint = self.sequences.get(cid, mid, 0)
+            suffix = " 已生成片段和任务编号已保留，不会自动重新生成。" if checkpoint else ""
+            await self.notice(sender, cid, "不过，" + str(exc) + suffix, name=self.display_name(uid))
         except Exception as exc:
             log("videogen: 任务失败 " + type(exc).__name__)
             row = self.store.get(cid, mid)
