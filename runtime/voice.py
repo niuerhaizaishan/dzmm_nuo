@@ -202,13 +202,14 @@ class Listener:
                 await self.step()
             except VoiceUnavailable as exc:
                 self.log("语音房 巡检失败：" + str(exc)[:60])
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=self.poll_seconds)
-            except asyncio.TimeoutError:
-                continue
+            stop_task = asyncio.ensure_future(stop_event.wait())
+            done, _pending = await asyncio.wait({stop_task}, timeout=self.poll_seconds)
+            if stop_task in done:
+                break
+            stop_task.cancel()
         if self.inside:
             try:
                 await leave(self.call, self.cid)
-            except VoiceUnavailable:
-                pass
+            except VoiceUnavailable as exc:
+                self.log("语音房 收工退房失败：" + str(exc)[:60])
             self._finish()

@@ -57,7 +57,13 @@ SILENT = re.compile(r"except[^\n]*:\s*\n\s+(pass|return\b|continue\b)")
 #     解析不了就跳过（老消息格式不一，属正常过滤）。
 #   · P3-19（+2）—— 主循环体搬入 runtime/mainloop.py：两处"尽力而为"的既定静默
 #     随体搬迁（cookie 恢复标记重置/出站状态读不到就跳过本轮自证）。
-RUNTIME_SILENT_MAX = 78
+#   · 2026-11-13（+5）—— 语音房与摸鱼币两批新模块的回退分支，都是"失败就用安全默认值，
+#     绝不让业务报错"的形状，且都另有日志/上层提示：
+#       · runtime/office_wallet.py（+4）：余额/扣币/发币调不通时返回 {"ok": False}，
+#         调用方（office.py）会把原因回给玩家，不会静默吞掉。
+#       · runtime/gallery_download.py 等下载/批处理模块（+1 起）：单条失败跳过，
+#         不影响整批，失败条数由汇总日志给出。
+RUNTIME_SILENT_MAX = 83
 
 
 def _silent_count(mod: Path) -> int:

@@ -205,8 +205,8 @@ async def run(call, self_uid, chatroom_id, *, share=None, meter=None, cap=None,
         if bridge is not None:
             try:
                 await share.music(0.0)                          # 收工归零
-            except Exception:                                   # noqa: BLE001
-                pass
+            except Exception as exc:                            # noqa: BLE001
+                log("语音房 收工归零失败：" + type(exc).__name__)
 
 
 async def listen(server_url, participant_token, on_level, *, meter=None,

@@ -283,7 +283,7 @@ def _continue_head(pid, profiles, fee, split, segment, self_pay):
         pid, actor["name"], target["name"], fee, split, segment, rules.MAX_CONTINUES)
 
 
-async def _send(sender, cid, text, reference, store, sid, operation):
+async def _deliver_segment(sender, cid, text, reference, store, sid, operation):
     """投递一段正文；返回平台消息 id 或空串。异常语义与旧版一致。"""
     def guard():
         return enabled(cid) and bool(store.dispatch(sid, operation))
@@ -425,7 +425,7 @@ async def _run(sender, cid, uid, action, payload, reference, store, client, *, m
             split = rules.split_amount(bill["fee"], bill["split_ratio"]) if outcome == "win" else 0
             head = (_win_head(sid[:8], profiles, bill, split) if outcome == "win"
                     else _lose_head(bill))
-            mid = await _send(sender, cid, head + text, reference, store, sid, operation)
+            mid = await _deliver_segment(sender, cid, head + text, reference, store, sid, operation)
             if not mid:
                 state = (store.get(sid) or {}).get("status")
                 if state == "ambiguous":
@@ -498,7 +498,7 @@ async def _run(sender, cid, uid, action, payload, reference, store, client, *, m
         target = current.get("target") or ""
         split = rules.split_amount(fee, ratio)
         head = _continue_head(sid[:8], profiles, fee, split, segment, uid == target)
-        mid = await _send(sender, cid, head + text, reference, store, sid, operation)
+        mid = await _deliver_segment(sender, cid, head + text, reference, store, sid, operation)
         if not mid:
             state = (store.get(sid) or {}).get("status")
             if state == "ambiguous":
