@@ -27,11 +27,11 @@ CATEGORY_ALIASES = {"脑洞大开": "大开脑洞"}
 MAX_BYTES = 10 * 1024 * 1024
 MAX_VIDEO_BYTES = 50 * 1024 * 1024
 MAX_PIXELS = 40_000_000
-COMMAND = re.compile(r"^/(漫画|保存|删除图片|恢复图片|移动图片)(?=$|\s)(.*)$", re.S)
+COMMAND = re.compile(r"^/(漫画|图集|保存|删除图片|恢复图片|移动图片)(?=$|\s)(.*)$", re.S)
 USAGE = "回复群里的图片或视频，发送 /保存 个人立绘 名称\n名称可不填。可选图集：" + "、".join(ALL_CATEGORIES)
 MOVE_USAGE = "移动：/移动图片 图片编号 目标图集\n例如：/移动图片 123 姐妹日常\n可选图集：" + "、".join(ALL_CATEGORIES)
 MANAGE_USAGE = "删除：/删除图片 图片编号\n误删恢复：/恢复图片 图片编号\n" + MOVE_USAGE + "\n编号可在图集大图或保存回复中查看，仅妹子群成员可操作。"
-CARD_INTRO = "姐妹图集 · 好图一起存\n公开图集所有人可查看；私密相册仅妹子群成员可查看和操作。\n" + USAGE + "\n" + MANAGE_USAGE
+CARD_INTRO = "姐妹图集 · 好图一起存\n/漫画 或 /图集 均可打开。公开图集所有人可查看，下载仅限妹子群成员；私密相册仅妹子群成员可查看和操作。\n" + USAGE + "\n" + MANAGE_USAGE
 
 
 class GalleryError(ValueError):
@@ -59,7 +59,7 @@ def platform_unavailable(exc, stage):
 
 def command(text):
     match = COMMAND.fullmatch((text or "").strip())
-    return (match[1], match[2].strip()) if match else None
+    return ("漫画" if match[1] == "图集" else match[1], match[2].strip()) if match else None
 
 
 def in_scope(cid):

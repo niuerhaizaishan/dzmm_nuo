@@ -120,3 +120,4 @@ body{background:#eeeee8}
 /* 兼容宿主不提供 HTMLDialogElement.showModal 的 iframe。 */
 dialog.dialog-fallback[open]{display:block;position:fixed;inset:50% auto auto 50%;transform:translate(-50%,-50%);z-index:100;background:var(--bg);}
 dialog.dialog-fallback[open]::backdrop{background:#20251c88;}
+.download-help{margin:16px;padding:16px;background:#f1f0e9;border:1px solid var(--line);border-radius:10px;overflow-wrap:anywhere}.download-help p,.download-help label{display:block;font-size:13px;line-height:1.7;margin:10px 0}.download-help input{display:block;box-sizing:border-box;width:100%;min-width:0;padding:10px;margin:10px 0;border:1px solid var(--line);border-radius:6px;background:white;color:var(--ink);font:inherit;font-size:12px}.download-help a{margin-bottom:6px}

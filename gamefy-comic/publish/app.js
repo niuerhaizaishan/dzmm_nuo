@@ -109,6 +109,10 @@ function updatePermissions(){
   $("#title-editor").hidden=!canEdit;
   $("#move-editor").hidden=!canEdit;
   $("#viewer-delete").hidden=!canEdit;
+  $("#viewer-download").hidden=!canEdit;
+  $("#viewer-video").setAttribute("controlsList",canEdit?"":"nodownload");
+  $("#viewer-readonly").textContent="所有人可查看，下载、上传和编辑仅限当前妹子群成员。";
+  if(!canEdit)resetDownload();
   $("#viewer-readonly").hidden=canEdit;
   syncPrivateTabs();
   if(current)updateSave();
@@ -262,12 +266,8 @@ function updateImage(){
   $("#previous").hidden=current.images.length===1;$("#next").hidden=current.images.length===1;
   $("#previous").disabled=imageIndex===0;$("#next").disabled=imageIndex===current.images.length-1;
   $("#image-scroll").classList.remove("zoomed");$("#viewer-zoom").setAttribute("aria-pressed","false");
-  const download=$("#viewer-download"),source=current.images[imageIndex],secret=privateIds.has(String(source));
-  download.removeAttribute("href");
-  // Gamefy iframe 的 sandbox 会拦截 blob 自动下载；公开原图改走带 attachment 头的直链，交给宿主浏览器处理。
-  if(liveMode&&!secret&&/^\d+$/.test(String(source))) download.href=`${apiBase}/images/${source}?download=1`;
-  else sourceURL(source).then(url=>{if(current?.images[imageIndex]===source&&memberReady)download.href=url;}).catch(error=>showToast(error.message));
-  download.download=downloadFilename(current,imageIndex);
+  resetDownload();
+  $("#viewer-download").href="#download-help";
   $("#viewer-thumbs").hidden=current.images.length===1;
   $("#viewer-thumbs").replaceChildren(...current.images.map((src,index)=>{const button=el("button",`viewer-thumb${index===imageIndex?" active":""}`);button.type="button";button.setAttribute("aria-label",`查看第 ${index+1} 张`);button.setAttribute("aria-pressed",String(index===imageIndex));const thumb=el("img");setImage(thumb,src);thumb.alt="";button.append(thumb);button.addEventListener("click",()=>{imageIndex=index;updateImage();});return button;}));
 }
@@ -427,18 +427,39 @@ $("#group-open").addEventListener("click",()=>openUpload(true));
 $("#device-tab").addEventListener("click",()=>uploadTab(false));$("#group-tab").addEventListener("click",()=>uploadTab(true));
 $("#upload-close").addEventListener("click",()=>closeGalleryDialog($("#upload-dialog")));
 $("#viewer-close").addEventListener("click",()=>closeGalleryDialog($("#viewer")));$("#viewer-save").addEventListener("click",()=>current&&toggleSave(current));
-$("#viewer-download").addEventListener("click",event=>{
-  const url=$("#viewer-download").getAttribute("href");
-  if(!url){event.preventDefault();showToast("原图还在准备，请稍等后再点一次。");return;}
-  // Gamefy 的 iframe 会拦截 download 属性；宿主允许 window.open，API 的 attachment 头负责下载。
-  event.preventDefault();
+// Persistent fallback: sandboxed popups may inherit the download restriction.
+// An HTTPS page copied to the browser's address bar runs outside that sandbox.
+const downloadHelp=el("section","download-help");downloadHelp.id="download-help";downloadHelp.hidden=true;
+downloadHelp.innerHTML='<strong>保存原文件</strong><p id="download-status" role="status"></p><a id="download-open" class="download-button" target="_blank" rel="noopener noreferrer" hidden>打开下载页</a><label for="download-url">若打不开或无法保存，请复制地址到浏览器地址栏打开。</label><input id="download-url" readonly aria-label="下载页地址"><button id="download-copy" type="button" class="fullscreen-button">复制下载地址</button>';
+$("#viewer-thumbs").before(downloadHelp);
+let downloadSequence=0;
+function resetDownload(){downloadSequence++;downloadHelp.hidden=true;$("#download-open").hidden=true;$("#download-open").removeAttribute("href");$("#download-url").value="";}
+function showDownloadURL(url){
+  $("#download-url").value=url;$("#download-open").href=url;$("#download-open").hidden=false;
+  $("#download-status").textContent="成员下载地址 5 分钟内有效，仅供本人使用。图片、GIF 和视频均保存原文件；过期后请重新点击保存。";
+}
+$("#viewer-download").removeAttribute("download");
+$("#viewer-download").addEventListener("click",async event=>{
+  event.preventDefault();if(!current)return;
+  if(liveMode&&!canEdit){await loadSession();if(!canEdit){showToast("下载仅限当前妹子群成员，请从 DZMM 登录后重试。");return;}}
+  if(!current)return;
+  resetDownload();const sequence=downloadSequence,item=current,source=item.images[imageIndex];
+  downloadHelp.hidden=false;$("#download-status").textContent="正在准备下载地址…";
+  downloadHelp.scrollIntoView?.({block:"nearest"});
   try{
-    window.open(url,"_blank","noopener");
-    // noopener 下打开成功也可能返回 null，不能据此判定为被拦截。
-    showToast("已请求打开下载页面；若未出现，请允许浏览器弹出窗口。");
-  }catch{showToast("无法打开下载页面，请检查浏览器的弹出窗口设置。");}
+    if(!liveMode){const url=await sourceURL(source);if(sequence===downloadSequence){showDownloadURL(url);$("#download-status").textContent="本地预览文件：可打开原文件后保存。";}return;}
+    let url=`${apiBase}/download?id=${encodeURIComponent(source)}`;
+    const grant=await(await api(`/images/${source}/download-ticket`,{method:"POST"},true)).json();url+=`#ticket=${encodeURIComponent(grant.token)}`;
+    if(sequence!==downloadSequence||current!==item)return;
+    showDownloadURL(url);
+  }catch(error){showToast(error.message);if(sequence===downloadSequence)$("#download-status").textContent=error.message;}
 });
-$("#viewer").addEventListener("close",()=>{const video=$("#viewer-video");video.pause();video.removeAttribute("src");video.load();});
+$("#download-copy").addEventListener("click",async()=>{
+  const input=$("#download-url");if(!input.value){showToast("下载地址还未就绪，请重新点击保存。");return;}
+  try{await navigator.clipboard.writeText(input.value);showToast("地址已复制，请粘贴到浏览器地址栏打开。");}
+  catch{input.focus();input.select();input.setSelectionRange(0,input.value.length);showToast("请长按地址选择复制，电脑可按 Ctrl+C。");}
+});
+$("#viewer").addEventListener("close",()=>{resetDownload();const video=$("#viewer-video");video.pause();video.removeAttribute("src");video.load();});
 $("#viewer-video").addEventListener("error",()=>{if($("#viewer-video").getAttribute("src"))showToast("浏览器无法播放此视频，可以保存后查看，或转为 H.264 MP4 后重新上传。");});
 $("#previous").addEventListener("click",()=>moveImage(-1));$("#next").addEventListener("click",()=>moveImage(1));
 $("#viewer-zoom").addEventListener("click",()=>{const zoomed=$("#image-scroll").classList.toggle("zoomed");$("#viewer-zoom").setAttribute("aria-pressed",String(zoomed));});
@@ -477,10 +498,10 @@ syncPrivateTabs();
 if(liveMode){
   $(".sample-badge").textContent="所有人可查看";
   $(".upload-footer span").textContent="保存到妹子群的共享图集";
-  $("#footer-info").textContent="所有人可看 · 妹子群可传图";
+  $("#footer-info").textContent="所有人可看 · 妹子群可上传和下载";
   $("#info-open").setAttribute("aria-label","查看图集说明");
   $("#preview-heading span:last-child").textContent="每个图片或视频分别收进所选分区";
-  $("#info-dialog p:last-of-type").textContent="公开图集所有人可查看和保存图片、视频；私密相册只有当前妹子群成员能查看和操作。当前妹子群成员可上传、改名、移动和删除图片或视频。视频支持 MP4、WebM、MOV，推荐 H.264 MP4，单个不超过 50 MB。大图中可查看图片编号，群里发送 /删除图片 编号，误删发送 /恢复图片 编号；发送 /移动图片 编号 分区名 可换分区（含私密相册）。群里回复原图或视频发送 /保存 分区名 名称，名称可不填。";
+  $("#info-dialog p:last-of-type").textContent="公开图集所有人可查看；下载仅限当前妹子群成员，图片、GIF、视频均需成员下载凭证。私密相册只有当前妹子群成员能查看和操作。当前妹子群成员可上传、改名、移动和删除图片或视频。视频支持 MP4、WebM、MOV，推荐 H.264 MP4，单个不超过 50 MB。群里发送 /图集 或 /漫画 可打开入口。大图中可查看编号，群里发送 /删除图片 编号，误删发送 /恢复图片 编号；发送 /移动图片 编号 分区名 可换分区。群里回复原图或视频发送 /保存 分区名 名称，名称可不填。";
   $("#empty-message").textContent="正在加载画廊…";
   refreshGallery();
 }

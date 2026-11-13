@@ -75,10 +75,14 @@ def test_members_only_and_no_private_database_created(dbdir):
     assert not any(call[0] == "original" for call in platform.calls)
 
 
-def test_link_command_no_media_fetch(dbdir):
+@pytest.mark.parametrize("cmd", ["/漫画", "/图集", " /图集 "])
+def test_link_command_no_media_fetch(dbdir, cmd):
     platform = Platform()
     service = G.Service(G.Store(dbdir / "gallery.db"), platform)
-    assert run(service, "/漫画") == G.CARD_INTRO
+    assert run(service, cmd) == G.CARD_INTRO
+    assert G.command("/图集相册") is None
+    assert "仅限" in run(service, cmd, uid="outsider")
+    assert "仅限" in run(service, cmd, cid="other-room")
     assert "https://" not in G.CARD_INTRO
     assert not any(call[0] in ("download", "original") for call in platform.calls)
     assert not service.store.path.exists()

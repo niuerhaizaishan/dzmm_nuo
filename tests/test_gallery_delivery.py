@@ -4,6 +4,7 @@ import asyncio
 import pytest
 
 from runtime import dispatch, gallery, sender as account_sender
+from runtime.game_cards import TEA_CID
 from runtime.outbox import OutboxSender, OutboxStore
 from runtime.routing import RoutingSender
 from sio_subscribe import SioSubscriber
@@ -38,7 +39,8 @@ class Bot:
         return "intro-id"
 
 
-def test_comic_dispatch_sends_intro_then_typed_card_through_audited_chain(monkeypatch, dbdir):
+@pytest.mark.parametrize("command", ["/漫画", "/图集"])
+def test_comic_dispatch_sends_intro_then_typed_card_through_audited_chain(monkeypatch, dbdir, command):
     socket, bot = Socket(), Bot()
     monkeypatch.setattr(account_sender, "_LIVE_SIO", connection(socket))
     monkeypatch.setattr(dispatch, "_feat_on", lambda *a: True)
@@ -48,8 +50,8 @@ def test_comic_dispatch_sends_intro_then_typed_card_through_audited_chain(monkey
     with_store = OutboxStore(dbdir / "outbox.db")
     try:
         chain = OutboxSender(RoutingSender(account_sender.Sender(), {gallery.PRIMARY_CID: bot}), with_store)
-        msg = {"message_id": "command", "content": {"text": "/漫画"}}
-        asyncio.run(dispatch.handle_slash(chain, gallery.PRIMARY_CID, "/漫画", "member", False,
+        msg = {"message_id": "command", "content": {"text": command}}
+        asyncio.run(dispatch.handle_slash(chain, gallery.PRIMARY_CID, command, "member", False,
             {}, [msg], msg, {}, _save_group=lambda *a: None, _mark_inflight=lambda *a: None,
             _remember_turn=lambda *a: None, rank_summary=lambda: "", sync_profiles=lambda: ""))
         assert bot.calls == [(gallery.PRIMARY_CID, "🤖 " + gallery.CARD_INTRO)]
@@ -101,6 +103,33 @@ def test_share_dry_run_and_disconnected_socket_do_not_send(monkeypatch, dbdir):
     try:
         assert asyncio.run(OutboxSender(account, store, dry=True).send_character_with_id(gallery.CARD_ID, gallery.PRIMARY_CID)) == ""
         assert store.pending_count() == 0 and socket.calls == []
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("cmd,card_id", [
+    ("#UNO", "3867964"), ("＃摸鱼传说", "3834588"), ("#魔塔", "3844599"),
+])
+def test_tea_game_command_sends_single_native_share_card(monkeypatch, dbdir, cmd, card_id):
+    socket, bot = Socket(), Bot()
+    subscriber = SioSubscriber([TEA_CID])
+    subscriber._sio = socket
+    subscriber._connected.set()
+    monkeypatch.setattr(account_sender, "_LIVE_SIO", subscriber)
+    store = OutboxStore(dbdir / "outbox.db")
+    try:
+        chain = OutboxSender(RoutingSender(account_sender.Sender(), {TEA_CID: bot}), store)
+        msg = {"message_id": "command", "content": {"text": cmd}}
+        asyncio.run(dispatch.handle_slash(chain, TEA_CID, cmd, "member", False,
+            {}, [msg], msg, {}, _save_group=lambda *a: None, _mark_inflight=lambda *a: None,
+            _remember_turn=lambda *a: None, rank_summary=lambda: "", sync_profiles=lambda: ""))
+        assert bot.calls == [] and len(socket.calls) == 1
+        event, payload = socket.calls[0]
+        assert event == "message:send" and payload["chatroomId"] == TEA_CID
+        assert payload["message"]["content"] == {
+            "type": "share", "shareType": "character", "resourceId": card_id}
+        row, = store.by_status("sent")
+        assert row["content_type"] == "share" and row["text"] == card_id
     finally:
         store.close()
 

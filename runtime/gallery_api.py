@@ -95,17 +95,25 @@ def create_app(*, store=None, platform=None, auth=None, origins=(), imagegen_sto
                 return web.Response(status=204, headers=headers)
             public_read = request.method in ("GET", "HEAD") and (
                 request.path == "/api/gallery/items" or
+                request.path == "/api/gallery/download" or
+                re.fullmatch(r"/api/gallery/downloads/\d+", request.path) or
                 re.fullmatch(r"/api/gallery/images/\d+", request.path) or
                 re.fullmatch(r"/api/gallery/generated/[a-f0-9]{64}", request.path))
             private_read = request.method in ("GET", "HEAD") and (
                 request.path == "/api/gallery/private-items" or
                 re.fullmatch(r"/api/gallery/private-images/\d+", request.path))
+            # Viewing stays public; explicit attachment downloads require a current member,
+            # including HEAD, byte ranges and old links published before scoped tickets.
+            member_download = request.method in ("GET", "HEAD") and request.query.get("download") == "1" and bool(
+                re.fullmatch(r"/api/gallery/(?:images|private-images)/\d+", request.path))
+            if member_download:
+                public_read = False
             if request.path.startswith("/api/gallery/") and not public_read:
                 bearer = request.headers.get("Authorization", "")
                 if not bearer.startswith("Bearer ") or len(bearer) > 8192:
                     raise web.HTTPUnauthorized(text="请从 DZMM 登录后打开图集。")
                 request[UID_KEY] = await auth.verify(bearer[7:])
-                if private_read or (request.method not in ("GET", "HEAD") and not request.path.endswith("/favorite")):
+                if member_download or private_read or (request.method not in ("GET", "HEAD") and not request.path.endswith("/favorite")):
                     await platform.member(request[UID_KEY])
             response = await handler(request)
         except GalleryUnavailable as exc:
@@ -347,6 +355,8 @@ def create_app(*, store=None, platform=None, auth=None, origins=(), imagegen_sto
     app.router.add_put("/api/gallery/images/{image_id}/title", rename)
     app.router.add_put("/api/gallery/images/{image_id}/category", move)
     app.router.add_post("/api/gallery/upload", upload)
+    from runtime.gallery_download import add_download_routes
+    add_download_routes(app, store=store, platform=platform, uid_key=UID_KEY, image_handler=image)
     if has_publish:
         app.router.add_get("/", index)
         app.router.add_get("/config.js", config)
