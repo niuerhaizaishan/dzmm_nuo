@@ -108,6 +108,23 @@ class ShareClient:
             log("haptics-bot: 下发失败 " + type(exc).__name__)
             return {"ok": False, "detail": "连接失败（" + type(exc).__name__ + "）"}
 
+    async def music(self, value, beat=False):
+        """推送音乐律动档位（0~1）。
+
+        房主页按 手动 > 剧情段落 > 音乐 > 底噪 的优先级取用，所以这条可以高频刷；
+        服务端已经做了速率与上限保护，这里只负责转达。
+        """
+        try:
+            level = float(value)
+        except (TypeError, ValueError):
+            return {"ok": False, "detail": "强度不对"}
+        if level != level or level < 0:
+            return {"ok": False, "detail": "强度不对"}
+        payload = {"t": "music", "value": min(level, 1.0)}
+        if beat:
+            payload["beat"] = True
+        return await self._send(payload, {"music_ok"})
+
     async def _send(self, payload, want):
         """发一条小程序消息，等一个回执 kind。成功返回 {"ok":True,...}。"""
         if not self.token:

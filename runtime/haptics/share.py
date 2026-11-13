@@ -69,6 +69,7 @@ class Session:
         self.last_ack = {}
         self.level = 0.0             # 当前实时强度（预设/长按执行期间可随时改）
         self.baseline = 0.0          # 背景层档位（0=关）
+        self.music = 0.0             # 音乐律动档位（语音房实时，0=没在放）
         self.beat = {}               # 最近一条剧情段落
         self.seq = 0
         self.stop_task = None
@@ -84,7 +85,7 @@ class Session:
                 "program": self.program is not None, "allow_program": self.allow_program,
                 "device": self.device, "last_cmd": self.last_cmd,
                 "last_ack": self.last_ack, "level": self.level,
-                "baseline": self.baseline, "beat": self.beat,
+                "baseline": self.baseline, "beat": self.beat, "music": self.music,
                 "caps": {"max_level": MAX_LEVEL, "max_duration_ms": MAX_DURATION_MS,
                          "capped": MAX_LEVEL < 1.0 or MAX_DURATION_MS > 0},
                 "locked": self.locked_until > time.monotonic()}
@@ -266,6 +267,30 @@ async def _relay_baseline(session, data):
     return value, None
 
 
+async def _relay_music(session, data):
+    """音乐律动层：语音房实时算出的 0~1 档位，持续更新，不占用剧情段落。
+
+    优先级在房主页上是 手动 > 剧情段落 > 音乐 > 底噪，所以这里只负责把值送过去。
+    """
+    try:
+        value = float(data.get("value", 0))
+    except (TypeError, ValueError):
+        return None, "强度不对"
+    if value != value or value < 0:                     # NaN / 负数
+        return None, "强度不对"
+    cap = MAX_LEVEL if MAX_LEVEL < 1.0 else 1.0
+    value = min(value, cap)
+    if session.host is None:
+        return None, "房主不在线"
+    session.music = value
+    payload = {"t": "music", "value": value}
+    if data.get("beat"):
+        payload["beat"] = True
+    if not await _to_host(session, payload):
+        return None, "房主不在线"
+    return value, None
+
+
 async def _relay_beat(session, data):
     """剧情段落：一段涨起来的震动，跑完由房主页自己回落到底噪。"""
     rhythm = str(data.get("rhythm") or "steady")
@@ -408,6 +433,14 @@ def create_app(*, base_url="", hub=None):
                         continue
                     await ws.send_json({"t": "beat_ok", "beat": beat})
                     continue
+                if kind == "music":
+                    # 语音房音乐律动：服务端听完算出的 0~1 档位，直接推给房主页
+                    value, why = await _relay_music(session, data)
+                    if why:
+                        await ws.send_json({"t": "denied", "reason": why})
+                        continue
+                    await ws.send_json({"t": "music_ok", "value": value})
+                    continue
                 if kind == "stop":
                     await _to_host(session, {"t": "stop", "reason": "控制者停止"})
                     await ws.send_json({"t": "result", "id": None, "ok": True, "raw": "stop"})
@@ -540,6 +573,13 @@ def create_app(*, base_url="", hub=None):
                         await ws.send_json({"t": "denied", "reason": why})
                         continue
                     await ws.send_json({"t": "beat_ok", "beat": beat})
+                    continue
+                if kind == "music":
+                    value, why = await _relay_music(session, data)
+                    if why:
+                        await ws.send_json({"t": "denied", "reason": why})
+                        continue
+                    await ws.send_json({"t": "music_ok", "value": value})
                     continue
                 if kind == "stop":
                     await _to_host(session, {"t": "stop", "reason": "机器人停止"})

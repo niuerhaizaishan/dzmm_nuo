@@ -12,3 +12,7 @@ Pillow==12.3.0
 av==16.1.0
 PyJWT==2.10.1
 cryptography==46.0.3
+# 2026-11-13 语音房音乐律动（C2：服务器端听）：只给 runtime/voice_audio.py 用，
+# 两个都在镜像里实测装过且导入正常（livekit 提供 livekit.rtc，numpy 做低通/包络）。
+livekit==1.2.1
+numpy==2.4.6

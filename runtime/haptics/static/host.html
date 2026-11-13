@@ -83,7 +83,7 @@ const SETS=STATIC_SETS.concat(GEN3);
 const SERVICES=SETS.map(s=>s.service);
 
 const S={device:null,server:null,char:null,rx:null,deviceName:"",ws:null,sid:"",pin:"",lastAck:null,ackWaiter:null,
-         base:0,beat:null,manual:null,patternRun:false,lastN:-1};
+         base:0,beat:null,manual:null,patternRun:false,lastN:-1,music:0,musicBeat:false};
 const $=s=>document.querySelector(s);
 const logBox=$("#log");
 function log(m,c=""){const d=document.createElement("div");if(c)d.className=c;d.textContent=`[${new Date().toTimeString().slice(0,8)}] ${m}`;logBox.appendChild(d);logBox.scrollTop=logBox.scrollHeight}
@@ -185,7 +185,11 @@ async function motorTick(){
   else if(S.beat&&now<S.beat.endAt) want=S.beat.level*RHYTHMS[S.beat.rhythm](now-S.beat.startAt);
   else{
     if(S.beat){S.beat=null;log("段落结束 → 回到底噪","dim")}
-    want=S.base;
+    /* 音乐律动夹在段落和底噪之间：有人放歌时按实时档位跟，没放歌才落回底噪。
+       拍点（musicBeat）给一个短促的抬升，其余时间跟着平滑档位走。 */
+    want=S.music>0
+      ? Math.min(1,S.music*(S.musicBeat?1.35:1))
+      : S.base;
   }
   const n=clampLevel(want);
   if(n===S.lastN)return;
@@ -199,7 +203,7 @@ function startMotor(){
 }
 async function stopNow(reason){
   stopRun();                                   // 预设执行器也让位
-  S.beat=null;S.manual=null;S.base=0;S.lastN=-1;
+  S.beat=null;S.manual=null;S.base=0;S.music=0;S.musicBeat=false;S.lastN=-1;
   if(!S.char)return;
   try{await write("Vibrate:0;");log("停止（"+reason+"）","warn")}catch(e){}
 }
@@ -311,6 +315,17 @@ function openHostWS(){
       S.base=Math.max(0,Math.min(1,Number(d.value)||0));
       S.lastN=-1;
       log("背景层 "+(S.base>0?Math.round(S.base*100)+"%":"关"),"dim");
+    }
+    if(d.t==="music"){
+      /* 语音房音乐律动：服务端算好的 0~1 档位，可能每秒来好几条，所以不写日志 */
+      S.music=Math.max(0,Math.min(1,Number(d.value)||0));
+      S.musicBeat=!!d.beat;
+      S.lastN=-1;
+      if(S.music>0){
+        $("#sharestate").textContent="音乐律动 "+Math.round(S.music*100)+"%";
+      }else{
+        $("#sharestate").textContent="音乐律动 关";
+      }
     }
     if(d.t==="level"){
       // 手动档位：绝对值，直接按这个强度震，不看预设
